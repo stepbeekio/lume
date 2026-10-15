@@ -111,15 +111,19 @@ Harness specs are, in effect, saved REPL sessions — which is why they can stay
 
 ## What lume refuses to be (v1)
 
-No daemon, server, or message bus — files and processes, until measured pain says otherwise (the log is the migration contract if that day comes; Kotlin is the pre-decided tool). No prompt library, planner, or RAG. No sandboxing beyond what the agent CLI provides. No npm — the UI is server-rendered HTML plus in-browser Clojure (scittle). No distribution; one machine.
+No database as source of truth — the log is an EDN file; an index (Datalevin, Datascript) may be derived from it when queries hurt, and stays disposable. No daemon, server, or message bus — files and processes, until measured pain says otherwise (the log is the migration contract if that day comes; Kotlin is the pre-decided tool). No prompt library, planner, or RAG. No sandboxing beyond what the agent CLI provides. No npm — the UI is server-rendered HTML plus in-browser Clojure (scittle). No distribution; one machine.
 
 ## Building it on itself
 
-Each stage must be usable on a real task the day it lands. Dogfooding starts at M0, not after it.
+**Building lume with lume is the test.** Not a paper exercise against imagined task shapes, and not a rebuild of one past workflow: every gap in `lume status` gets felt as friction while building the next feature. So nothing is designed further ahead than it's needed. Status starts deliberately naive and grows from use — whenever a driver (me or an agent) wanted something it didn't show, that's the next work item. This only works if status is cheap to change, which is why the substrate is REPL-first.
 
-- **M0 — The loop** *(days).* Event log, ledger, one ACP adapter spawning Devin CLI workers (print-mode fallback), a spec with one measurement and one gate, `lume status`, and a skill teaching an agent to drive it. Because the driver is just whoever runs the CLI, this is usable by me and by an agent from the same day. Done when a build-perf-style task runs five decisions with nothing hand-carried between them — driven once by me, once by a respawned agent.
-- **M1 — Specs as the lever** *(a week).* Drivers edit specs mid-run; `lume check`, budgets, configurable hand-back. Done when an agent driver improves its own feedback loop mid-task and the change is visible in the log.
-- **M2 — Inspect & replay** *(a week).* `lume repl` attach to live and dead sessions, terminal replay, queries over the log, a second worker adapter (proving vendor-neutrality). Done when a new harness is prototyped REPL-first before its spec exists.
+The general shape underneath is **a ledger of work items**: each has an intent, evidence (output, measurements, verdicts) and a disposition. A build-perf experiment, a module in a migration, a hypothesis in a bug hunt are all work items; harnesses add the task-specific parts.
+
+Each stage must be usable on a real task the day it lands.
+
+- **M0 — The kernel** *(hours).* The smallest thing worth writing by hand: a Babashka CLI (fast startup matters when an agent calls it constantly), an append-only EDN log per session, work items, notes, a naive `lume status`, and `lume spawn` running one worker. The first worker adapter is whatever's on the machine — Claude Code at home; Devin at work makes the second. Done when the next lume feature is built through `lume item add` → `lume spawn` → `lume status`, with nothing hand-carried in my head.
+- **M1 — The loop** *(built with lume).* Gates and measurements on work items, specs, `lume check`, budgets, configurable hand-back, and a skill teaching an agent to drive the CLI. Done when an agent driver, respawned per decision, runs a multi-decision task — and improves its own feedback loop mid-task, visibly in the log.
+- **M2 — Inspect & replay** *(built with lume).* `lume repl` attach to live and dead sessions, terminal replay, queries over the log, the ACP adapter and Devin CLI (proving vendor-neutrality). Done when a new harness is prototyped REPL-first before its spec exists.
 - **M3 — The flip** *(ongoing).* Substrate development goes through harnesses by default; out-of-harness changes need written justification. Every gap that forces you outside is the backlog, self-generated.
 - **M4 — Concurrency & UI** *(built by harnesses).* Concurrency budgets, opt-in worktrees, merging; then the web UI, whose views are parallel, independently verifiable work — the ideal proving load. If lume can't build its own UI pleasantly, that's the most important bug report the project can produce.
 
@@ -140,7 +144,7 @@ Each stage must be usable on a real task the day it lands. Dogfooding starts at 
 
 Driver thrash → budgets and hand-back limits I set, enforced by the substrate. Agent-written spec sprawl → schemas for every event and spec, enforced by `lume check`; new operations must subsume or retire an old one. Status that omits what matters, or bloats → status is code, versioned and replayable against old logs. Agent-first output drifting toward verbosity → size budgets on every command, tested. ACP immaturity → the print-mode fallback keeps every adapter at "spawn a process, read its output" in the worst case. Concurrent file writes → single-writer log, atomic renames. Noisy measurements on a laptop → sequential by default, and measurements record their environment. UI creep → no build step, and the UI stays a pure projection. And zero footprint is not zero disclosure — lume runs the agent CLIs you already run, as you; whether that's acceptable at work is a question about agent use, not about lume.
 
-## Open questions (settle during M0–M2, in the REPL where possible)
+## Open questions (settle by building lume with lume, in the REPL where possible)
 
 1. What goes in `lume status`, and how is it kept to one screen? Is one shape enough, or do workers and drivers need different projections?
 2. How does the human steer mid-run: spec edits only, or a note channel that `lume status` surfaces?
