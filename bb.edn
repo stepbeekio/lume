@@ -1,0 +1,6 @@
+{:paths ["src"]
+ :tasks {test {:doc "Run the test suite"
+               :extra-paths ["test"]
+               :requires ([clojure.test :as t] [lume.kernel-test])
+               :task (let [{:keys [fail error]} (t/run-tests 'lume.kernel-test)]
+                       (when (pos? (+ fail error)) (System/exit 1)))}}}

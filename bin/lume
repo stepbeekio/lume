@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Symlink this onto your PATH; it resolves the source tree through the link.
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec bb -cp "$DIR/src" -m lume.cli "$@"
