@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Write|Edit",
+        "hooks": [{ "type": "command", "command": "clj-paren-repair-claude-hook" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Write|Edit",
+        "hooks": [{ "type": "command", "command": "clj-paren-repair-claude-hook" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "clj-paren-repair-claude-hook" }] }
+    ]
+  }
+}
