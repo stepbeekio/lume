@@ -1,0 +1,29 @@
+# bb test on every push and PR. The clean test (pitch criterion 9: lume
+# leaves no footprint) needs git and jj, so the runner gets both.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bb and jj (latest releases)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/.local/bin" "$RUNNER_TEMP/dl"
+          cd "$RUNNER_TEMP/dl"
+          gh release download --repo babashka/babashka --pattern 'babashka-*-linux-amd64-static.tar.gz'
+          gh release download --repo jj-vcs/jj --pattern 'jj-v*-x86_64-unknown-linux-musl.tar.gz'
+          for f in *.tar.gz; do tar -xzf "$f"; done
+          install bb jj "$HOME/.local/bin/"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - run: git --version && jj --version && bb --version
+
+      - run: bb test
