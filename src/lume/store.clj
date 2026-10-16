@@ -16,6 +16,10 @@
 (def ^:dynamic *home*
   (or (System/getenv "LUME_HOME") (str (fs/path (fs/home) ".lume"))))
 
+(def ^:dynamic *session*
+  "The session workers inherit; tests bind it to nil so they never touch it."
+  (System/getenv "LUME_SESSION"))
+
 (defn repo-root
   "The git toplevel of the current directory, or the directory itself."
   []
@@ -66,7 +70,7 @@
   "The session to act on: LUME_SESSION if set (workers inherit it), else the
   repo's current session. nil if there is none."
   [root]
-  (or (System/getenv "LUME_SESSION")
+  (or *session*
       (let [current (fs/path (repo-dir root) "current")]
         (when (fs/exists? current)
           (str (fs/path (repo-dir root) "sessions" (str/trim (slurp (str current)))))))))

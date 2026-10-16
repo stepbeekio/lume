@@ -15,7 +15,10 @@
      (case type
        :session/started (assoc s :goal (:goal e) :repo (:repo e))
        :item/added      (update s :items assoc (:item/id e)
-                                {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))})
+                                (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
+                                  (:gate e) (assoc :gate (:gate e))))
+       :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
+       :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -53,6 +56,12 @@
        " · " (ago now t)
        (when result (str " · " (clip result 60)))))
 
+(defn- gate-line [now {:keys [gate last-gate]}]
+  (str "gate " (clip gate 40)
+       (when-let [{:keys [exit t tail] gid :gate/id} last-gate]
+         (str " · " gid " " (if (zero? exit) "pass" (str "fail exit " exit)) " · " (ago now t)
+              (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
+
 (defn- section [label lines]
   (when (seq lines)
     (cons (format "%-8s%s" label (first lines))
@@ -65,7 +74,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:item/id :spawn/id :disposition :exit :intent :text :goal])) 70)))
+       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :disposition :exit :intent :gate :text :goal])) 70)))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
@@ -82,9 +91,11 @@
       (section "open"
                (capped 10 "lume log"
                        (mapcat (fn [{:keys [id intent] :as item}]
-                                 (cons (str id "  " (clip intent 80))
-                                       (when-let [sp (get spawns (peek (:spawns item)))]
-                                         [(str "    " (spawn-line now sp))])))
+                                 (concat [(str id "  " (clip intent 80))]
+                                         (when (:gate item)
+                                           [(str "    " (gate-line now item))])
+                                         (when-let [sp (get spawns (peek (:spawns item)))]
+                                           [(str "    " (spawn-line now sp))])))
                                open)))
       (section "closed"
                (capped 5 "lume log"
@@ -95,5 +106,5 @@
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
                                     (reverse notes))))
       (section "recent" (map event-line (take-last 6 events)))
-      (section "next" ["lume item add \"<intent>\" · lume spawn <id> · lume item close <id> done|dropped \"<why>\""
-                       "lume note \"<text>\" · lume log [-n N]"])))))
+      (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
+                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note \"<text>\" · lume log"])))))
