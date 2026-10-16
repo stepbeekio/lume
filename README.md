@@ -6,12 +6,13 @@ Nothing is written inside your repo. All state lives under `~/.lume`.
 
 ## Install
 
-Needs [Babashka](https://babashka.org) and the `claude` CLI.
+Needs [Babashka](https://babashka.org), [bbin](https://github.com/babashka/bbin) and the `claude` CLI.
 
 ```
-git clone git@github.com:stepbeekio/lume.git
-ln -s "$PWD/lume/bin/lume" ~/.local/bin/lume
+bbin install io.github.stepbeekio/lume
 ```
+
+Re-run it to upgrade. To work on lume itself, run `bbin install .` from a checkout instead.
 
 ## Use
 
