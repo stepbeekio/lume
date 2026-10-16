@@ -24,6 +24,7 @@
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
+       :note/unpinned   (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
                             (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e)))
@@ -80,7 +81,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :disposition :exit :intent :gate :command :text :goal])) 70)))
+       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :note/id :disposition :exit :intent :gate :command :text :goal])) 70)))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
@@ -95,6 +96,9 @@
       [(str "lume status · " session-id (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
       (when (seq allow) (section "allow" [(clip (str/join " · " allow) (- width 8))]))
+      (section "pinned" (capped 8 "lume log"
+                                (map #(clip (str (:note/id %) " " (:text %)) (- width 8))
+                                     (filter :pinned notes))))
       (section "open"
                (capped 10 "lume log"
                        (mapcat (fn [{:keys [id intent] :as item}]
@@ -111,9 +115,9 @@
                             (reverse (sort-by :closed-at closed)))))
       (section "notes" (capped 5 "lume log"
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
-                                    (reverse notes))))
+                                    (reverse (remove :pinned notes)))))
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.
       (section "recent" (map event-line (take-last 6 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
-                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note \"<text>\" · lume log"
-                       "lume allow \"<cmd>\" (workers may run it, and their item's gate)"])))))
+                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
+                       "lume allow \"<cmd>\" (workers may run it, and their item's gate) · lume note --unpin <id> · lume log"])))))

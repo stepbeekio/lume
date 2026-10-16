@@ -96,10 +96,26 @@
                                ran (assoc :gate/id (:gate/id ran)))))
     (str id " " disposition (when ran (str " · " (gate-summary ran))))))
 
-(defn note [session [text]]
-  (when (str/blank? text) (fail! "usage: lume note \"<text>\""))
-  (store/append! session (constantly {:type :note/added :text text :by (actor)}))
-  "noted")
+;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
+(defn note [session [a b]]
+  (let [usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>"]
+    (case a
+      "--unpin"
+      (do (when (str/blank? b) (fail! usage))
+          (store/append! session (fn [events]
+                                   (when-not (some #(and (= b (:note/id %)) (:pinned %))
+                                                   (:notes (status/project events)))
+                                     (fail! "no pinned note:" b))
+                                   {:type :note/unpinned :note/id b :by (actor)}))
+          (str "unpinned " b))
+      (let [pin (= "--pin" a)
+            text (if pin b a)]
+        (when (str/blank? text) (fail! usage))
+        (let [e (store/append! session (fn [events]
+                                         (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
+                                                  :text text :by (actor)}
+                                           pin (assoc :pinned true))))]
+          (str (if pin "pinned " "noted ") (:note/id e)))))))
 
 ;; Only the driver grants permissions: a worker that needs a command asks with a note or item.
 (defn allow [session [a b]]
@@ -113,14 +129,15 @@
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
 (defn- worker-prompt [events item]
-  (let [{:keys [goal notes]} (status/project events)]
+  (let [{:keys [goal notes]} (status/project events)
+        bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (:text %)) ns))))]
     (str/join "\n"
               (concat
                ["You are a worker in a lume session."
                 (str "Session goal: " goal)
                 (str "Your work item (" (:id item) "): " (:intent item))]
-               (when (seq notes)
-                 (cons "Notes from the session:" (map #(str "- " (:text %)) notes)))
+               (bullets "Pinned notes:" (filter :pinned notes))
+               (bullets "Recent notes from the session:" (take-last 10 (remove :pinned notes)))
                ["Work in the current directory. Record findings with `lume note \"<text>\"`"
                 "and follow-up work with `lume item add \"<intent>\"`."
                 "When you finish, end with a short summary"
@@ -209,7 +226,8 @@ lume status                                 one screen: goal, items, notes, rece
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
-lume note \"<text>\"                          steering for drivers and workers
+lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
+lume note --unpin <id>                      let a pinned note age out like the rest
 lume allow [--revoke] \"<cmd>\"               let workers run commands starting with <cmd> (their gate is always allowed)
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground
 lume log [-n N]                             raw events (default last 20)")

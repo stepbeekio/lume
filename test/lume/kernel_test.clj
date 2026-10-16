@@ -161,8 +161,38 @@
   (let [s (new-session "goal")]
     (dotimes [n 200] (cli/item-add s [(str "item " n " " (apply str (repeat 50 "x")))]))
     (dotimes [n 50] (cli/note s [(str "note " n)]))
+    (dotimes [n 20] (cli/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
     (let [out (status/render "sess" (store/read-events s) (Instant/now))
           lines (str/split-lines out)]
       (is (< (count lines) 40) out)
       (is (every? #(<= (count %) 110) lines) out)
-      (is (str/includes? out "+190 more")))))
+      (is (str/includes? out "+190 more"))
+      (is (str/includes? out "+12 more")))))
+
+(defmethod agents/command :prompt [_ prompt _opts]
+  ["printf" "%s" prompt])
+
+(deftest pinned-notes-outlive-the-window
+  (let [s (new-session "goal")
+        id (cli/item-add s ["read the notes"])]
+    (is (= "pinned n1" (cli/note s ["--pin" "run bb test before done"])))
+    (dotimes [n 12] (cli/note s [(str "chatter " n)]))
+    (is (= "noted n14" (cli/note s ["latest"])))
+    (let [out (status/render "sess" (store/read-events s) (Instant/now))]
+      (is (re-find #"(?m)^pinned  n1 run bb test before done$" out))
+      (is (not (re-find #"\] run bb test" out)) "pinned notes are left out of notes")
+      (is (< (str/index-of out "pinned  n1") (str/index-of out "open    i1"))))
+    (testing "workers see every pinned note and the last 10 others"
+      (cli/spawn s *root* [id "--agent" "prompt"])
+      (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
+        (is (str/includes? prompt "Pinned notes:\n- run bb test before done\n"))
+        (is (str/includes? prompt "- chatter 3\n"))
+        (is (not (str/includes? prompt "- chatter 2\n")))
+        (is (str/includes? prompt "- latest\n"))))
+    (testing "unpinning returns a note to the notes section"
+      (is (= "unpinned n1" (cli/note s ["--unpin" "n1"])))
+      (is (thrown-with-msg? Exception #"no pinned note: n1" (cli/note s ["--unpin" "n1"])))
+      (is (thrown-with-msg? Exception #"no pinned note: n99" (cli/note s ["--unpin" "n99"])))
+      (let [out (status/render "sess" (store/read-events s) (Instant/now))]
+        (is (not (re-find #"(?m)^pinned" out)))
+        (is (str/includes? out "+9 more") "14 notes, 5 shown")))))
