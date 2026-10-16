@@ -23,6 +23,28 @@
 
 (defn- driver? [] (boolean (re-matches #"d\d+" (actor))))
 
+;; Human-only commands need more than LUME_ACTOR, which an agent running as your
+;; uid can forge (a1): an interactive stdin and a typed confirmation. Spawns and
+;; drives run with no tty, so they can't pass.
+(defn- tty-confirm
+  "True if stdin is a terminal and the user types `expected` at the prompt."
+  [prompt expected]
+  (and (zero? (:exit (p/shell {:in :inherit :out :string :err :string :continue true} "test" "-t" "0")))
+       (do (binding [*out* *err*] (print (str prompt " Type " expected " to confirm: ")) (flush))
+           (= expected (some-> (read-line) str/trim)))))
+
+(def ^:dynamic *confirm*
+  "(fn [prompt expected]) → true when a human at a terminal confirmed. Tests bind it."
+  tty-confirm)
+
+(defn- human-only!
+  "Refuse unless the actor is the human and a human at a terminal confirms."
+  [refusal prompt expected]
+  (when-not (= "human" (actor)) (fail! refusal))
+  (when-not (*confirm* prompt expected)
+    (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
+           "agents ask with lume ask \"<question>\"")))
+
 (defn- open-item [events id]
   (let [item (get-in (status/project events) [:items id])]
     (cond (nil? item) (fail! "no such item:" id)
@@ -52,8 +74,9 @@
         gate (first gates)
         allows (distinct allows)]
     (when (or (str/blank? goal) (seq extra) (next gates)) (fail! usage))
-    (when (and (seq allows) (not= "human" (actor)))
-      (fail! "only the human changes permissions; ask with lume ask \"<question>\""))
+    (when (seq allows)
+      (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
+                   (str "Workers will be allowed to run: " (str/join " · " allows) ".") "yes"))
     (let [session (store/new-session! root)]
       (store/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
       (when gate
@@ -208,8 +231,8 @@
   (let [revoke (= "--revoke" a)
         command (if revoke b a)]
     (when (str/blank? command) (fail! "usage: lume allow [--revoke] \"<cmd>\""))
-    (when-not (= "human" (actor))
-      (fail! "only the human changes permissions; ask with lume ask \"<question>\""))
+    (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
+                 (str (if revoke "Workers may no longer run: " "Workers may run: ") command ".") "yes")
     (store/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
                                         :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
@@ -224,8 +247,8 @@
 
 (defn answer [session [id text]]
   (when (or (str/blank? id) (str/blank? text)) (fail! "usage: lume answer <id> \"<text>\""))
-  (when-not (= "human" (actor))
-    (fail! "only the human answers asks; record what you think with lume note"))
+  (human-only! "only the human answers asks; record what you think with lume note"
+               (str "Answer " id ": " text) id)
   (store/append! session (fn [events]
                            (case (get-in (status/project events) [:asks id :state])
                              nil (fail! "no such ask:" id)
@@ -499,8 +522,8 @@ lume item show <id>                         one item in full: intent, gate, disp
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
 lume ask \"<question>\"                       put a question to the human; open asks top status
-lume answer <id> \"<text>\"                   answer an ask (human only); answers join the notes
-lume allow [--revoke] \"<cmd>\"               let workers run commands starting with <cmd> (their gate is always allowed)
+lume answer <id> \"<text>\"                   answer an ask (human at a tty: retype the id); answers join the notes
+lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
 lume drive [--turns N] [--agent claude]     driver turns until an ask is open, no items are open, or N (10) run
 lume log [-n N]                             raw events (default last 20)")

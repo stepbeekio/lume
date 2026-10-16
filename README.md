@@ -22,7 +22,7 @@ lume install
 
 It writes a Claude skill, `~/.claude/skills/lume/SKILL.md` (or under `$CLAUDE_CONFIG_DIR`), that teaches any Claude session to work in a repo through lume: start from `lume status`, add gated items, spawn and drive, review and commit, ask you rather than allow, answer or push. It prints each file it wrote, updated or left unchanged, so it's safe to re-run after an upgrade.
 
-It also prints one line for you to add yourself, because it never edits your settings: `"LUME_ACTOR": "claude"` in the `env` of `~/.claude/settings.json`. That makes interactive Claude sessions act as `claude` rather than as you, so lume refuses them `lume allow` and `lume answer`.
+It also prints one line for you to add yourself, because it never edits your settings: `"LUME_ACTOR": "claude"` in the `env` of `~/.claude/settings.json`. That makes interactive Claude sessions act as `claude` rather than as you, so lume refuses them `lume allow` and `lume answer` before it even asks for a confirmation (see below).
 
 ## Use
 
@@ -61,6 +61,8 @@ When it stops on a question:
 lume answer a1 "yes, drop the first run"
 lume drive
 ```
+
+`lume answer`, `lume allow` and `init --allow` are yours alone. Agents run as your user, so they could fake any environment variable or file lume reads. These commands therefore need an interactive terminal and a typed confirmation: retype the ask id to answer, or `yes` to change permissions. Spawns and drives have no terminal, so lume refuses them and says why.
 
 Pushing is up to you. Drivers commit, but they can't push.
 

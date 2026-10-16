@@ -18,6 +18,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
+                  cli/*confirm* (constantly true)
                   agents/*claude-home* (str (fs/path home "claude"))]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
@@ -282,6 +283,44 @@
         (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "yes"])) who)))
     (is (empty? (:allow (status/project (store/read-events s)))))
     (is (= "a1 answered" (cli/answer s ["a1" "yes"])))))
+
+(deftest human-only-needs-a-terminal-and-a-confirmation
+  (let [s (new-session "goal")
+        confirms (atom [])
+        typed #(fn [prompt expected] (swap! confirms conj [prompt expected]) (= % expected))]
+    (cli/ask s ["ok?"])
+    (testing "a wrong confirmation is refused"
+      (binding [cli/*confirm* (typed "a2")]
+        (is (thrown-with-msg? Exception #"need an interactive terminal and a typed confirmation"
+                              (cli/answer s ["a1" "yes"])))
+        (is (thrown-with-msg? Exception #"typed confirmation" (cli/allow s ["rm"])))
+        (is (thrown-with-msg? Exception #"typed confirmation" (cli/init *root* ["g" "--allow" "rm"])))))
+    (is (= [["Answer a1: yes" "a1"] ["Workers may run: rm." "yes"]
+            ["Workers will be allowed to run: rm." "yes"]] @confirms)
+        "answer asks for the ask id, permissions for yes")
+    (is (= :open (get-in (status/project (store/read-events s)) [:asks "a1" :state])))
+    (is (= s (store/current-session *root*)) "a refused init starts no session")
+    (testing "LUME_ACTOR is still checked first, before any prompt"
+      (reset! confirms [])
+      (binding [cli/*actor* "s1" cli/*confirm* (typed "a1")]
+        (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "yes"]))))
+      (is (empty? @confirms)))
+    (testing "the human at a terminal who types it passes"
+      (binding [cli/*confirm* (typed "a1")]
+        (is (= "a1 answered" (cli/answer s ["a1" "yes"]))))
+      (binding [cli/*confirm* (typed "yes")]
+        (is (= "workers may run rm" (cli/allow s ["rm"])))))
+    (testing "with no tty (as in spawns and drives) the real check refuses, naming the rule"
+      (cli/ask s ["again?"])
+      (let [{:keys [exit err]} (p/shell {:dir *root* :in "" :out :string :err :string :continue true
+                                         :extra-env {"LUME_HOME" store/*home* "LUME_SESSION" s
+                                                     "LUME_ACTOR" "human"}}
+                                        "bb" "-cp" (str (fs/absolutize "src")) "-m" "lume.cli"
+                                        "answer" "a2" "yes")]
+        (is (not= 0 exit))
+        (is (re-find #"human-only commands need an interactive terminal" err))
+        (is (= 1 (count (str/split-lines (str/trim err)))) "a one-line reason")
+        (is (= :open (get-in (status/project (store/read-events s)) [:asks "a2" :state])))))))
 
 (deftest claude-args-from-env
   (is (= ["--allowedTools" "Bash(bb test)" "--allowedTools" "Bash(jj st:*)"]

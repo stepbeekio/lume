@@ -159,7 +159,7 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 
 - When only the human can decide, `lume ask \"<question>\"` and stop that line of work.
 - Never run `lume allow` or `lume answer`: permissions and answers are the human's,
-  and lume refuses them from agents anyway.
+  and lume refuses them from agents anyway: they need a terminal and a typed confirmation.
 - Never push. Commit locally; pushing is up to the human.
 - Lume writes nothing in the repo; its state lives under ~/.lume. Don't read or edit
   it directly; use the commands.
