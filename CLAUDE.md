@@ -30,4 +30,5 @@ Delimiter errors in `.clj` edits are repaired by hooks in `.claude/settings.json
 ## Working here
 
 - Version control is jj (colocated with git): `jj st`, `jj commit -m`.
-- Lume is built with lume. If a session exists (`bin/lume status`), record work as items and notes. When status lacks something you needed, add an item for it.
+- Lume is built with lume. Start every session with `lume status`: it is the handoff, so there is no handoff file. Pinned notes are standing lessons, open items are the backlog (`decide (human):` items wait for Stephen).
+- Drive through lume: `lume item add --gate "bb test"`, `lume spawn <id>`, review the diff, commit. Record what you learn with `lume note`, and `lume note --pin` anything the next session must not forget. When status lacks something you needed, add an item for it.
