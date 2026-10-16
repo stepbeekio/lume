@@ -65,19 +65,20 @@
                                   (str "plateau " (:plateau ceiling) " → " (or (:plateau c) "none")))]))))
 
 ;; A plateau is counted per item and measurement spec: rows since the last one
-;; that set a new best. Lower is better, except for the row's :higher names; a
-;; number not seen before is a new best. A change of direction starts over.
+;; that set a new best. Lower is better, except for the row's :higher names. A
+;; failed row, or one without numbers, is no evidence and leaves the count be. A
+;; change of direction, or of the numbers' names (a misparse, say), starts over.
 (defn- plateau [{:keys [best stale best-id] :as p} {:keys [exit values higher] mid :measure/id}]
   (let [higher (set higher)
-        best (when (= higher (:higher p #{})) best)
-        better? (fn [k v b] (if (higher k) (> v b) (< v b)))
-        values (when (zero? exit) values)
-        better (and (seq values)
-                    (or (nil? best) (some (fn [[k v]] (or (nil? (get best k)) (better? k v (get best k)))) values)))]
-    (if better
-      {:best (reduce (fn [b [k v]] (if (or (nil? (get b k)) (better? k v (get b k))) (assoc b k v) b)) (or best {}) values)
-       :stale 0 :best-id mid :higher higher}
-      {:best best :stale (inc (or stale 0)) :best-id best-id :higher higher})))
+        best (when (and (= higher (:higher p #{})) (= (set (keys values)) (set (keys best)))) best)
+        better? (fn [k v b] (if (higher k) (> v b) (< v b)))]
+    (cond
+      (or (not (zero? exit)) (empty? values)) p
+      (or (nil? best) (some (fn [[k v]] (better? k v (get best k))) values))
+      {:best (reduce-kv (fn [b k v] (cond-> b (or (nil? (get b k)) (better? k v (get b k))) (assoc k v)))
+                        (or best {}) values)
+       :stale 0 :best-id mid :higher higher :counted mid}
+      :else {:best best :stale (inc (or stale 0)) :best-id best-id :higher higher :counted mid})))
 
 (defn amount [k v]
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]

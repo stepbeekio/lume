@@ -838,6 +838,39 @@
         (is (= {:stale 0 :best-id "m8"}
                (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id])))))))
 
+(deftest cadence-plateau-counts-only-evidence
+  (testing "failed rows and rows without numbers don't count toward a plateau"
+    (let [s (cadence-session "batch 5 on plateau 2" "false")
+          t #(spit (str (fs/path *root* "t")) %)
+          row #(cli/measure s ["i1"])
+          plateau #(select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id])]
+      (cli/item-measure s ["i1" "cat t"])
+      (row)
+      (is (= {} (plateau)) "a failed first row starts nothing")
+      (t "secs=5") (row)
+      (t "secs=6") (row)
+      (is (= {:stale 1 :best-id "m2"} (plateau)))
+      (fs/delete (fs/path *root* "t"))
+      (is (not (str/includes? (row) "ask")) "a failed row is no evidence")
+      (t "no numbers") (row)
+      (is (= {:stale 1 :best-id "m2"} (plateau)))
+      (testing "a row whose number names differ from the best's starts over"
+        (t "value=915454175") (row)
+        (is (= {:stale 0 :best-id "m6"} (plateau)))
+        (t "secs=9") (row)
+        (is (= {:stale 0 :best-id "m7"} (plateau)) "secs isn't compared with the misparsed value"))
+      (testing "the row that makes K asks, but a failed row after it doesn't ask again"
+        (row)
+        (is (str/includes? (row) "\nask a1 i1 plateaued: 2 measurement rows"))
+        (cli/answer s ["a1" "keep going"])
+        (fs/delete (fs/path *root* "t"))
+        (is (not (str/includes? (row) "ask"))))
+      (testing "a closed item opens no plateau ask"
+        (t "secs=9") (row)
+        (cli/item-close s ["i1" "dropped" "enough"])
+        (is (not (str/includes? (row) "ask")))
+        (is (= {:stale 4 :best-id "m7"} (plateau)))))))
+
 (deftest cadence-plateau-higher-is-better
   (testing "--higher: a score's new best is a higher number, and rows mark it name↑"
     (let [s (cadence-session "batch 5 on plateau 2" "false")

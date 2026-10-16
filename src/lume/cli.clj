@@ -248,15 +248,16 @@
 (defn- plateau-ask!
   "Under cadence on plateau K, the row that makes K (2K, …) rows without a new
   best on its item hands back to the human: an ask is opened and returned,
-  unless one about the item is already open."
+  unless the item is closed or an ask about it is already open. A row that
+  didn't count (failed, or no numbers) never asks."
   [session {id :item/id mid :measure/id}]
   (store/append! session
                  (fn [events]
                    (let [s (status/project events)
                          k (:plateau (status/cadence s))
-                         {:keys [stale best-id higher]} (get-in s [:items id :plateau])]
-                     (when (and k (pos? stale) (zero? (mod stale k))
-                                (= mid (get-in s [:items id :last-measure :measure/id]))
+                         {:keys [stale best-id higher counted]} (get-in s [:items id :plateau])]
+                     (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
+                                (= :open (get-in s [:items id :state]))
                                 (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
                        {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
                         :question (str id " plateaued: " stale " measurement rows without a new best"
