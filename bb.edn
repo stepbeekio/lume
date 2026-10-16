@@ -2,6 +2,6 @@
  :bbin/bin {lume {:main-opts ["-m" "lume.cli"]}}
  :tasks {test {:doc "Run the test suite"
                :extra-paths ["test"]
-               :requires ([clojure.test :as t] [lume.kernel-test])
-               :task (let [{:keys [fail error]} (t/run-tests 'lume.kernel-test)]
+               :requires ([lume.runner :as r] [lume.kernel-test])
+               :task (let [{:keys [fail error]} (r/run-tests 'lume.kernel-test)]
                        (when (pos? (+ fail error)) (System/exit 1)))}}}
