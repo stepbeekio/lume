@@ -68,11 +68,13 @@
       (is (= {:steps 1 :last "started"} (select-keys (progress) [:steps :last])))
       (is (= "started\n" (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out])))
           "out is written as the worker goes")
-      (is (re-find #"s1 running · \d+s ago · 1 steps · started \(\d+s ago\)"
+      (is (re-find #"s1 running · \d+s ago · 1 step · started \(\d+s ago\)"
                    (status/render "sess" (store/read-events s) (Instant/now))))
       (spit (str (fs/path *root* "go")) "")
       (is (re-find #"^s1 i1 exit 0 in \d+s · finished" @run))
-      (is (= 2 (get-in (status/project (store/read-events s)) [:spawns "s1" :steps]))))))
+      (is (= 2 (get-in (status/project (store/read-events s)) [:spawns "s1" :steps])))
+      (is (re-find #"s1 exit 0 · \d+s ago · 2 steps · "
+                   (status/render "sess" (store/read-events s) (Instant/now)))))))
 
 (deftest claude-stream-json
   (let [lines [(json/generate-string {:type "system" :subtype "init"})

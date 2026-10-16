@@ -58,7 +58,7 @@
                running "running"
                :else (str "exit " exit))
          " · " (ago now t)
-         (when-let [steps (or (:steps sp) (:steps progress))] (str " · " steps " steps"))
+         (when-let [steps (or (:steps sp) (:steps progress))] (str " · " steps (if (= 1 steps) " step" " steps")))
          (cond result (str " · " (clip result 60))
                (and running (:last progress)) (str " · " (clip (:last progress) 50) " (" (ago now (:t progress)) ")")))))
 
