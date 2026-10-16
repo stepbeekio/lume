@@ -65,9 +65,11 @@
          "--disallowedTools" (str/join "," (map bash-rule ["jj git push" "git push"]))]))
 
 ;; stream-json writes one event per line as it happens, so a running spawn can be followed.
+;; --strict-mcp-config with no --mcp-config loads no MCP servers: the user's own
+;; servers and claude.ai connectors (which can write to external services) stay out.
 (defmethod command :claude [_ prompt {:keys [allow role]}]
   (let [env (System/getenv "LUME_CLAUDE_ARGS")]
-    (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"]
+    (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose" "--strict-mcp-config"]
           (if (= :driver role) (claude-driver-args env allow) (claude-args env allow)))))
 
 (defn- parse [line]

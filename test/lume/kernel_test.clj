@@ -275,6 +275,11 @@
           "--disallowedTools" "Bash(jj git push:*),Bash(git push:*)"]
          (agents/claude-driver-args "[\"--model\" \"opus\"]" ["bb test"]))))
 
+(deftest claude-runs-get-no-mcp-servers
+  (doseq [role [:worker :driver]]
+    (is (some #{"--strict-mcp-config"} (agents/command :claude "p" {:role role :allow []}))
+        (str (name role) " runs must not load the user's MCP servers"))))
+
 (deftest pinned-notes-outlive-the-window
   (let [s (new-session "goal")
         id (cli/item-add s ["read the notes"])]
