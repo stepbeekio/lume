@@ -2,10 +2,12 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.agents :as agents]
             [lume.cli :as cli]
+            [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -672,6 +674,100 @@
           (is (re-find #"^m8 i1 t=4\(-1\)" (cli/measure s ["i1"])))
           (is (= {:stale 0 :best-id "m8"}
                  (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id]))))))))
+
+(defn- session-from-spec
+  "A session started from a spec's events, as lume run will."
+  [sp]
+  (let [s (store/new-session! *root*)]
+    (doseq [e (spec/events sp *root*)]
+      (store/append! s (constantly (assoc e :by "human"))))
+    s))
+
+(defn- spec-file [sp]
+  (let [f (str (fs/path store/*home* (str (gensym "spec") ".edn")))]
+    (spit f (if (string? sp) sp (pr-str sp)))
+    f))
+
+(deftest specs-round-trip-and-check
+  (let [sp {:goal "cut cold build time; tests must stay green"
+            :gate "bb test"
+            :allow ["bb test" "jj"]
+            :budget {:usd 20 :spawns 30 :minutes 120}
+            :cadence {:batch 3 :gate-fail true :plateau 4}
+            :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
+                    {:intent "document the cache" :gate "bb lint"}
+                    {:intent "just measured" :measure "bb size"}]}]
+    (is (empty? (spec/problems sp)))
+    (testing "spec -> session -> spec"
+      (let [s (session-from-spec sp)
+            state (status/project (store/read-events s))]
+        (is (= sp (edn/read-string (cli/show-spec s []))))
+        (is (= ["bb test" "bb lint" "bb test"] (map :gate (sort-by :order (vals (:items state)))))
+            "items without a gate get the default")
+        (is (= {:measure "bb bench" :runs 10 :drop 1} (select-keys (get-in state [:items "i1"]) [:measure :runs :drop])))
+        (testing "closed items are left out unless --all"
+          (cli/item-close s ["i2" "dropped" "not needed"])
+          (let [out (cli/show-spec s [])]
+            (is (= ["cut cold build time" "just measured"] (map :intent (:items (edn/read-string out)))))
+            (is (str/ends-with? out ";; 1 closed item left out — lume spec --all")))
+          (is (= sp (edn/read-string (cli/show-spec s ["--all"])))))))
+    (testing "session -> spec -> session: a hand-built session's harness is reusable"
+      (cli/init *root* ["by hand" "--gate" "bb test" "--allow" "jj"])
+      (let [s (store/current-session *root*)]
+        (cli/item-add s ["first"])
+        (cli/item-measure s ["i1" "bb bench" "--runs" "5" "--drop" "1"])
+        (cli/item-add s ["second" "--gate" "make check"])
+        (cli/budget s ["--usd" "10"])
+        (cli/cadence s ["batch 2 on plateau 3"])
+        (let [sp (edn/read-string (cli/show-spec s []))]
+          (is (= {:goal "by hand" :gate "bb test" :allow ["jj"] :budget {:usd 10.0}
+                  :cadence {:batch 2 :plateau 3}
+                  :items [{:intent "first" :measure "bb bench" :runs 5 :drop 1}
+                          {:intent "second" :gate "make check"}]}
+                 sp))
+          (is (= "ok" (re-find #"ok" (cli/check [(spec-file (cli/show-spec s []))]))))
+          (is (= sp (edn/read-string (cli/show-spec (session-from-spec sp) [])))))))
+    (testing "a spec prints one key and one item per line"
+      (is (= 8 (count (str/split-lines (spec/pretty sp))))))
+    (testing "lume check prints ok with a count"
+      (let [f (spec-file sp)] (is (= (str f ": ok · 3 items · 2 measured") (cli/check [f])))))
+    (testing "lume check lists every problem, with where it is"
+      (let [f (spec-file '{:alow [] :gate 3 :budget {:usd -1 :tokens 3}
+                           :cadence {:batch 0 :gate-fail "yes"}
+                           :items [{:intent "x" :runs 3 :drop 3} "y" {:measure "bb bench" :drop 2}]})
+            msg (try (cli/check [f]) nil (catch clojure.lang.ExceptionInfo e (ex-message e)))]
+        (is (= [(str f ": 12 problems")
+                "  [:alow] unknown key; expected one of :allow :budget :cadence :gate :goal :items"
+                "  [:goal] is required"
+                "  [:gate] must be a command (non-blank string), got 3"
+                "  [:budget :tokens] unknown key; expected one of :minutes :spawns :usd"
+                "  [:budget :usd] must be a non-negative number, got -1"
+                "  [:cadence :batch] must be a positive whole number, got 0"
+                "  [:cadence :gate-fail] must be true or false, got \"yes\""
+                "  [:items 0] :runs and :drop need a :measure"
+                "  [:items 0 :drop] must be less than :runs (3), got 3"
+                "  [:items 1] must be a map with :intent, got \"y\""
+                "  [:items 2 :intent] is required"
+                "  [:items 2 :drop] must be less than :runs (1), got 2"]
+               (str/split-lines msg)))))
+    (testing "the list is bounded"
+      (let [f (spec-file {:goal "g" :items (vec (repeat 30 {}))})
+            lines (str/split-lines (try (cli/check [f]) (catch clojure.lang.ExceptionInfo e (ex-message e))))]
+        (is (= (str f ": 30 problems") (first lines)))
+        (is (= 22 (count lines)))
+        (is (= "  +10 more" (last lines)))))
+    (testing "an unreadable file is one problem"
+      (doseq [[content problem] [["" "is empty"] ["{:goal" "is not EDN"] ["{:goal \"a\"} {}" "more than one form"]
+                                 ["[1 2]" "a spec must be a map"]]]
+        (is (thrown-with-msg? Exception (re-pattern (str ": 1 problem\n  .*" problem)) (cli/check [(spec-file content)]))
+            content))
+      (is (thrown-with-msg? Exception #"no such file" (cli/check ["/no/such/spec.edn"]))))
+    (testing "check and spec write nothing in the repo"
+      (is (empty? (fs/list-dir *root*))))
+    (testing "usage"
+      (is (thrown-with-msg? Exception #"usage" (cli/check [])))
+      (is (thrown-with-msg? Exception #"usage" (cli/show-spec (store/current-session *root*) ["--open"])))
+      (is (= "usage: lume check <spec.edn>" (cli/run ["check" "--help"]))))))
 
 (deftest claude-driver-args
   (is (= ["--model" "opus" "--tools" "Bash,Read"

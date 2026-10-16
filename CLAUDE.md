@@ -7,6 +7,7 @@ A durable substrate for disposable agent harnesses. Read `pitch.md` for the why;
 - `bin/lume` — CLI launcher (Babashka)
 - `src/lume/store.clj` — state under `LUME_HOME` (default `~/.lume`), append-only EDN session log
 - `src/lume/status.clj` — `lume status`: fold the log, render one bounded screen
+- `src/lume/spec.clj` — harness specs: the schema (`lume check`), folding a session into one (`lume spec`), and the events that start one
 - `src/lume/agents.clj` — adapters; the only code that knows which agent CLI is in play
 - `src/lume/cli.clj` — commands
 - `test/lume/` — `bb test`

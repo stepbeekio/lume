@@ -65,6 +65,20 @@ lume cadence batch 3 on gate-fail on plateau 4
 
 `every-spawn` (the default) lets a driver turn request one spawn. `batch N` lets it request up to N, which run in order after the turn, saving driver turns. `on gate-fail` ends a batch at the first failed gate and hands back, logging the requests it skipped. `on plateau K` opens an ask once an item has K measurement rows in a row without a new best (lower is better), so the drive stops for you. Status shows the cadence on the allow line. Your latest cadence is the ceiling: a driver may set its own to hand back as often or more often (e.g. `batch 2` under your `batch 3`), never less; going above it is yours alone, like raising a budget.
 
+A session's harness (goal, default gate, allow, budget, cadence, and its items with their gates and measurements) is one page of EDN. `lume spec` prints the current session's, folded from the log, so a feedback loop that worked can be saved outside the repo and reused (`lume spec > ~/harnesses/build-perf.edn`; open items only, `--all` for closed too):
+
+```clojure
+{:goal "cut cold build time; tests must stay green"
+ :gate "bb test"
+ :allow ["bb test" "jj"]
+ :budget {:usd 20 :spawns 30 :minutes 120}
+ :cadence {:batch 3 :gate-fail true :plateau 4}
+ :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
+         {:intent "document the cache" :gate "bb lint"}]}
+```
+
+Only `:goal` is required; an item without `:gate` gets the spec's. `lume check <spec.edn>` validates one, whoever wrote it, and lists every problem with where it is (e.g. `[:items 0 :drop] must be less than :runs (3), got 3`), exiting 1 on any.
+
 Follow along in another terminal:
 
 ```
@@ -107,6 +121,8 @@ lume note [--pin] "<text>"     steering; pinned notes stay in status and every p
 lume ask "<question>"          agents ask; only you answer
 lume answer <id> "<text>"
 lume allow [--revoke] "<cmd>"  only you grant permissions
+lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any
+lume spec [--all]              this session's harness as spec EDN
 lume log [-n N]                raw events
 ```
 

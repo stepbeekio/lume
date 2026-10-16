@@ -5,6 +5,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.agents :as agents]
+            [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -690,6 +691,36 @@
         n (if (= "-n" flag) (parse-long n) 20)]
     (str/join "\n" (map pr-str (take-last n events)))))
 
+;; Specs: a harness as one page of EDN. check validates a file; spec prints the
+;; current session's harness, folded from the log, so it can be saved and reused.
+
+(def ^:private check-usage "usage: lume check <spec.edn>")
+
+(defn check [[path & extra]]
+  (when (or (str/blank? path) (seq extra)) (fail! check-usage))
+  (let [[s unreadable] (spec/read-spec path)
+        ps (if unreadable [unreadable] (spec/problems s))
+        shown (take 20 ps)]
+    (if (seq ps)
+      (fail! (str/join "\n" (concat [(str path ": " (count ps) (if (= 1 (count ps)) " problem" " problems"))]
+                                   (map #(str "  " (clip-to 200 (spec/problem-text %))) shown)
+                                   (when (> (count ps) (count shown))
+                                     [(str "  +" (- (count ps) (count shown)) " more")]))))
+      (let [items (:items s)]
+        (str path ": ok · " (count items) (if (= 1 (count items)) " item" " items")
+             (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured")))))))
+
+(def ^:private spec-usage "usage: lume spec [--all]")
+
+(defn show-spec [session args]
+  (when (seq (remove #{"--all"} args)) (fail! spec-usage))
+  (let [all (boolean (some #{"--all"} args))
+        state (status/project (store/read-events session))
+        closed (count (remove #(= :open (:state %)) (vals (:items state))))]
+    (str (spec/pretty (spec/from-state state :all all))
+         (when (and (not all) (pos? closed))
+           (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all")))))
+
 (defn- terminal? []
   ;; Java 22+ Console.isTerminal; before that, a console meant a terminal.
   (when-let [c (System/console)]
@@ -736,6 +767,8 @@ lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                             latest cadence is the human's
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
 lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run
+lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
+lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
 lume log [-n N]                             raw events (default last 20)")
 
 (defn run [args]
@@ -764,6 +797,8 @@ lume log [-n N]                             raw events (default last 20)")
       "cadence" (if (#{"-h" "--help"} sub)
                   cadence-usage
                   (cadence (session) (rest args)))
+      "check" (if (#{"-h" "--help"} sub) check-usage (check (rest args)))
+      "spec" (if (#{"-h" "--help"} sub) spec-usage (show-spec (session) (rest args)))
       "spawn" (spawn (session) root (rest args))
       "drive" (drive (session) root (rest args))
       "log" (show-log (session) (rest args))
