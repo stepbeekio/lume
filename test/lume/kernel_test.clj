@@ -154,6 +154,16 @@
           (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["rm"])))
           (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["--revoke" "bb test"]))))))))
 
+(deftest only-the-exact-human-holds-policy
+  (let [s (new-session "goal")]
+    (cli/ask s ["ok?"])
+    (doseq [who ["claude" "s1" "d1" "Human" "human " ""]]
+      (binding [cli/*actor* who]
+        (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["rm"])) who)
+        (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "yes"])) who)))
+    (is (empty? (:allow (status/project (store/read-events s)))))
+    (is (= "a1 answered" (cli/answer s ["a1" "yes"])))))
+
 (deftest claude-args-from-env
   (is (= ["--allowedTools" "Bash(bb test)" "--allowedTools" "Bash(jj st:*)"]
          (agents/claude-args "[\"--allowedTools\" \"Bash(bb test)\"]" ["jj st"]))
