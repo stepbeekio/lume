@@ -59,12 +59,23 @@
 
 ;; Sessions
 
-(defn new-session! [root]
-  (let [id (.format (LocalDateTime/now) (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))
-        session (str (fs/path (repo-dir root) "sessions" id))]
-    (fs/create-dirs session)
-    (spit (str (fs/path (repo-dir root) "current")) id)
-    session))
+(defn new-session!
+  "Start a session with id yyyyMMdd-HHmmss, suffixed -2, -3… if that second is
+  taken. The directory is claimed with an atomic create, so two inits in the
+  same second (even in different processes) never share a log."
+  [root]
+  (let [stamp (.format (LocalDateTime/now) (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))
+        sessions (fs/path (repo-dir root) "sessions")]
+    (fs/create-dirs sessions)
+    (loop [n 1]
+      (let [id (if (= 1 n) stamp (str stamp "-" n))
+            session (str (fs/path sessions id))
+            claimed (try (fs/create-dir session) true
+                         (catch java.nio.file.FileAlreadyExistsException _ false))]
+        (if claimed
+          (do (spit (str (fs/path (repo-dir root) "current")) id)
+              session)
+          (recur (inc n)))))))
 
 (defn current-session
   "The session to act on: LUME_SESSION if set (workers inherit it), else the

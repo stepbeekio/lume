@@ -43,6 +43,12 @@
     (testing "unknown items are refused"
       (is (thrown-with-msg? Exception #"no such item" (cli/item-close s ["i9" "done" "x"]))))))
 
+(deftest sessions-in-the-same-second-are-distinct
+  (let [ss (repeatedly 3 #(new-session "goal"))]
+    (is (= 3 (count (distinct ss))))
+    (is (= (last ss) (store/current-session *root*)))
+    (is (every? #(= 1 (count (store/read-events %))) ss))))
+
 (deftest spawn-logs-start-and-exit
   (let [s (new-session "goal")
         id (cli/item-add s ["do the thing"])
