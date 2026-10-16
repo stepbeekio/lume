@@ -760,7 +760,25 @@
           (spit (str (fs/path *root* "t")) "t=4")
           (is (re-find #"^m8 i1 t=4\(-1\)" (cli/measure s ["i1"])))
           (is (= {:stale 0 :best-id "m8"}
-                 (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id]))))))))
+                 (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id]))))))
+    (testing "--higher: a score's new best is a higher number, and rows mark it name↑"
+      (let [s (session "batch 5 on plateau 2" "false")
+            row #(cli/measure s ["i1"])
+            plateau #(select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id])]
+        (spit (str (fs/path *root* "t")) "score=5 ms=10")
+        (is (= "i1 measure cat t higher score" (cli/item-measure s ["i1" "cat t" "--higher" "score"])))
+        (is (re-find #"^m1 i1 ms=10 score↑=5 · " (row)))
+        (spit (str (fs/path *root* "t")) "score=7 ms=10")
+        (is (re-find #"^m2 i1 ms=10 score↑=7\(\+2\) · " (row)))
+        (is (= {:stale 0 :best-id "m2"} (plateau)) "higher score is a new best")
+        (spit (str (fs/path *root* "t")) "score=6 ms=11")
+        (row)
+        (is (re-find #"\nask a1 i1 plateaued: 2 measurement rows without a new best \(best m2, higher is better for score, lower for the rest\)"
+                     (row)))
+        (testing "a change of direction starts the count over"
+          (cli/item-measure s ["i1" "cat t"])
+          (row)
+          (is (= {:stale 0 :best-id "m5"} (plateau))))))))
 
 (defn- session-from-spec
   "A session started from a spec's events, as lume run will."
@@ -783,7 +801,7 @@
             :cadence {:batch 3 :gate-fail true :plateau 4}
             :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
                     {:intent "document the cache" :gate "bb lint"}
-                    {:intent "just measured" :measure "bb size"}]}]
+                    {:intent "just measured" :measure "bb size" :higher ["hits"]}]}]
     (is (empty? (spec/problems sp)))
     (testing "spec -> session -> spec"
       (let [s (session-from-spec sp)
@@ -821,9 +839,9 @@
     (testing "lume check lists every problem, with where it is"
       (let [f (spec-file '{:alow [] :gate 3 :budget {:usd -1 :tokens 3}
                            :cadence {:batch 0 :gate-fail "yes"}
-                           :items [{:intent "x" :runs 3 :drop 3} "y" {:measure "bb bench" :drop 2}]})
+                           :items [{:intent "x" :runs 3 :drop 3} "y" {:measure "bb bench" :drop 2 :higher "score"}]})
             msg (try (cli/check [f]) nil (catch clojure.lang.ExceptionInfo e (ex-message e)))]
-        (is (= [(str f ": 12 problems")
+        (is (= [(str f ": 13 problems")
                 "  [:alow] unknown key; expected one of :allow :budget :cadence :gate :goal :items"
                 "  [:goal] is required"
                 "  [:gate] must be a command (non-blank string), got 3"
@@ -831,10 +849,11 @@
                 "  [:budget :usd] must be a non-negative number, got -1"
                 "  [:cadence :batch] must be a positive whole number, got 0"
                 "  [:cadence :gate-fail] must be true or false, got \"yes\""
-                "  [:items 0] :runs and :drop need a :measure"
+                "  [:items 0] :runs, :drop and :higher need a :measure"
                 "  [:items 0 :drop] must be less than :runs (3), got 3"
                 "  [:items 1] must be a map with :intent, got \"y\""
                 "  [:items 2 :intent] is required"
+                "  [:items 2 :higher] must be a vector of number names, got \"score\""
                 "  [:items 2 :drop] must be less than :runs (1), got 2"]
                (str/split-lines msg)))))
     (testing "the list is bounded"

@@ -156,7 +156,8 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 - `lume cadence` says when drive hands back: how many spawns a driver turn may
   request (`batch N`, run in order), whether a failed gate ends the batch
   (`on gate-fail`), and when a stalled measurement asks the human (`on plateau K`).
-  You may hand back more often than the human's cadence, never less.
+  Lower is better for a measured number unless `lume item measure` names it with
+  `--higher <name>` (a score); rows mark those `name↑`. You may hand back more often than the human's cadence, never less.
 - `lume spec` prints the session's harness (goal, gate, allow, budget, cadence,
   items) as one page of EDN; `lume check <spec.edn>` validates a spec file, and
   `lume run <spec.edn>` starts a session from one, baselines it and drives

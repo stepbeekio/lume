@@ -112,11 +112,14 @@
 
 ;; A measurement runs after every spawn on the item, and on demand with lume measure.
 ;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
+;; Lower is better unless a number is named with --higher (repeatable).
 (defn item-measure [session args]
-  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K]"
-        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop"}] (take-flags args #{"--runs" "--drop"} usage)
+  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]..."
+        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher"}]
+        (take-flags args #{"--runs" "--drop" "--higher"} usage)
         runs (if runs (parse-long runs) 1)
-        drop (if drop (parse-long drop) 0)]
+        drop (if drop (parse-long drop) 0)
+        higher (vec (sort (distinct higher)))]
     (when (or (str/blank? cmd) (seq extra) (seq rs) (seq ds)) (fail! usage))
     (when-not (and runs drop (pos? runs) (<= 0 drop) (< drop runs))
       (fail! "--runs must be a positive whole number and --drop less than it;" usage))
@@ -124,8 +127,9 @@
                              (open-item events id)
                              (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
                                (> runs 1) (assoc :runs runs)
-                               (pos? drop) (assoc :drop drop))))
-    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop}))))
+                               (pos? drop) (assoc :drop drop)
+                               (seq higher) (assoc :higher higher))))
+    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher}))))
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
@@ -236,13 +240,13 @@
                  (fn [events]
                    (let [s (status/project events)
                          k (:plateau (status/cadence s))
-                         {:keys [stale best-id]} (get-in s [:items id :plateau])]
+                         {:keys [stale best-id higher]} (get-in s [:items id :plateau])]
                      (when (and k (pos? stale) (zero? (mod stale k))
                                 (= mid (get-in s [:items id :last-measure :measure/id]))
                                 (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
                        {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
                         :question (str id " plateaued: " stale " measurement rows without a new best"
-                                       (when best-id (str " (best " best-id ", lower is better)"))
+                                       (when best-id (str " (best " best-id ", " (status/direction-text (sort higher)) ")"))
                                        "; keep going, change approach, or stop?")
                         :by (actor)})))))
 
@@ -251,7 +255,7 @@
   :measure/ran row, which is returned (with :ask if it opened a plateau ask).
   A failed run ends the measurement; the row has the runs kept so far and the
   failing run's exit."
-  [session {:keys [id measure runs drop] :or {runs 1 drop 0}}]
+  [session {:keys [id measure runs drop higher] :or {runs 1 drop 0}}]
   (let [env (environment (:repo (status/project (store/read-events session))))
         ran (run-in-repo session "measures" measure
                          (fn [events ran]
@@ -262,6 +266,7 @@
                                                  (when (seq kept) (summarize-runs kept)))
                                     (> runs 1) (assoc :runs runs)
                                     (pos? drop) (assoc :drop drop)
+                                    (seq higher) (assoc :higher higher)
                                     (and failed (> runs 1)) (assoc :failed-run failed))]))
                          :n runs)]
     (if-let [ask (plateau-ask! session ran)] (assoc ran :ask ask) ran)))
@@ -902,10 +907,11 @@ lume status [<session>] [--color]           one screen: goal, items, notes, rece
                                             a past session's by id (lume ls)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
-lume item measure <id> \"<cmd>\" [--runs N] [--drop K]
+lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]...
                                             measure an item after each spawn: output's name=number pairs
                                             (or else its last number) and wall time become a ledger row;
-                                            N runs, first K dropped, give medians and min..max
+                                            N runs, first K dropped, give medians and min..max; lower is
+                                            better unless --higher names it (shown name↑)
 lume measure <id>                           run the item's measurement now and print its row (a baseline)
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume item show <id>                         one item in full: intent, gate, disposition and its events
@@ -921,7 +927,7 @@ lume budget [--usd N] [--spawns N] [--minutes N]
 lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                             when drive hands back: N spawn requests a turn, run in order;
                                             a failed gate ends the batch; K rows without a new best (lower
-                                            is better) ask the human. No rules: print it. Above the human's
+                                            is better, unless --higher) ask the human. No rules: print it. Above the human's
                                             latest cadence is the human's
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
 lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run

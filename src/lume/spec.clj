@@ -7,7 +7,8 @@
      :budget  {:usd 20 :spawns 30 :minutes 120}
      :cadence {:batch 3 :gate-fail true :plateau 4}
      :items   [{:intent \"cut cold build time\"
-                :measure \"bb bench\" :runs 10 :drop 1} ; :gate too, if not the default
+                :measure \"bb bench\" :runs 10 :drop 1 ; :gate too, if not the default
+                :higher [\"hit_rate\"]}              ; numbers where higher is better
                {:intent \"document the cache\"}]}
 
   Only :goal is required. `problems` is the schema, `from-state` folds a
@@ -31,7 +32,8 @@
    :gate command
    :measure command
    :runs (check positive? "a positive whole number")
-   :drop (check whole? "a whole number")})
+   :drop (check whole? "a whole number")
+   :higher (check #(and (sequential? %) (seq %) (every? text? %)) "a vector of number names")})
 
 (def ^:private spec-keys
   {:goal (check text? "a non-blank string")
@@ -60,8 +62,8 @@
     (if-not (map? item)
       [[path (str "must be a map with :intent, got " (pr-str item))]]
       (concat (keys-problems path item item-keys [:intent])
-              (when (and (or (contains? item :runs) (contains? item :drop)) (not (contains? item :measure)))
-                [[path ":runs and :drop need a :measure"]])
+              (when (and (some #(contains? item %) [:runs :drop :higher]) (not (contains? item :measure)))
+                [[path ":runs, :drop and :higher need a :measure"]])
               (let [{:keys [runs drop] :or {runs 1 drop 0}} item]
                 (when (and (positive? runs) (whole? drop) (>= drop runs))
                   [[(conj path :drop) (str "must be less than :runs (" runs "), got " drop)]]))))))
@@ -119,12 +121,13 @@
 
 ;; Spec ⇄ session
 
-(defn- item-spec [default-gate {:keys [intent gate measure runs drop]}]
+(defn- item-spec [default-gate {:keys [intent gate measure runs drop higher]}]
   (cond-> {:intent intent}
     (and gate (not= gate default-gate)) (assoc :gate gate)
     measure (assoc :measure measure)
     (and measure runs (> runs 1)) (assoc :runs runs)
-    (and measure drop (pos? drop)) (assoc :drop drop)))
+    (and measure drop (pos? drop)) (assoc :drop drop)
+    (and measure (seq higher)) (assoc :higher higher)))
 
 (defn from-state
   "The harness of a projected session (lume.status/project) as a spec: its
@@ -153,7 +156,7 @@
    (when cadence [(merge {:type :session/cadence :batch 1} (select-keys cadence [:batch :gate-fail :plateau]))])
    (apply concat
           (map-indexed
-           (fn [i {:keys [intent measure runs drop] :as item}]
+           (fn [i {:keys [intent measure runs drop higher] :as item}]
              (let [id (str "i" (inc i))
                    gate (or (:gate item) (:gate spec))]
                (concat [(cond-> {:type :item/added :item/id id :intent intent}
@@ -161,7 +164,8 @@
                        (when measure
                          [(cond-> {:type :item/measuring :item/id id :measure measure}
                             (and runs (> runs 1)) (assoc :runs runs)
-                            (and drop (pos? drop)) (assoc :drop drop))]))))
+                            (and drop (pos? drop)) (assoc :drop drop)
+                            (seq higher) (assoc :higher (vec (sort (distinct higher)))))]))))
            items))))
 
 (defn pretty

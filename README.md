@@ -47,6 +47,8 @@ The command's `name=number` (or `name: number`) pairs become the row; with none,
 
 Noisy numbers want repeats: `lume item measure i1 'bb bench' --runs 10 --drop 1` runs the command ten times, drops the first (a warm-up), and records one row of each number's median with its min..max across the kept runs, e.g. `m3 i1 build_s=38.9(-2.3)[38.1..40.2] · 39.0s · 9 of 10 runs · vs m2`. A failing run ends the measurement (`fail exit 1 in run 4 of 10`), and all runs' output is in one file. Runs and drop are part of the measurement's spec, so changing them starts a new baseline, as changing the command does. Each row also records where it was taken (host, load average, git HEAD and jj change), which `lume item show` prints, so a noisy row can be explained.
 
+Lower is better by default. For a number where higher is better (a score, a hit rate), name it: `lume item measure i1 'bb eval' --higher score` (repeat `--higher` for more). Rows mark it `score↑=0.82(+0.03)`, and the plateau count (below) treats a higher one as a new best. Changing the direction starts the plateau count over.
+
 `lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 
 Bound what agents spend with a budget:
@@ -63,7 +65,7 @@ When control comes back to the driver is set with a cadence:
 lume cadence batch 3 on gate-fail on plateau 4
 ```
 
-`every-spawn` (the default) lets a driver turn request one spawn. `batch N` lets it request up to N, which run in order after the turn, saving driver turns. `on gate-fail` ends a batch at the first failed gate and hands back, logging the requests it skipped. `on plateau K` opens an ask once an item has K measurement rows in a row without a new best (lower is better), so the drive stops for you. Status shows the cadence on the allow line. Your latest cadence is the ceiling: a driver may set its own to hand back as often or more often (e.g. `batch 2` under your `batch 3`), never less; going above it is yours alone, like raising a budget.
+`every-spawn` (the default) lets a driver turn request one spawn. `batch N` lets it request up to N, which run in order after the turn, saving driver turns. `on gate-fail` ends a batch at the first failed gate and hands back, logging the requests it skipped. `on plateau K` opens an ask once an item has K measurement rows in a row without a new best (lower is better, unless `--higher` names the number), so the drive stops for you. Status shows the cadence on the allow line. Your latest cadence is the ceiling: a driver may set its own to hand back as often or more often (e.g. `batch 2` under your `batch 3`), never less; going above it is yours alone, like raising a budget.
 
 A session's harness (goal, default gate, allow, budget, cadence, and its items with their gates and measurements) is one page of EDN. `lume spec` prints the current session's, folded from the log, so a feedback loop that worked can be saved outside the repo and reused (`lume spec > ~/harnesses/build-perf.edn`; open items only, `--all` for closed too):
 
@@ -74,7 +76,8 @@ A session's harness (goal, default gate, allow, budget, cadence, and its items w
  :budget {:usd 20 :spawns 30 :minutes 120}
  :cadence {:batch 3 :gate-fail true :plateau 4}
  :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
-         {:intent "document the cache" :gate "bb lint"}]}
+         {:intent "document the cache" :gate "bb lint"}
+         {:intent "raise the cache hit rate" :measure "bb cache-stats" :higher ["hit_rate"]}]}
 ```
 
 Only `:goal` is required; an item without `:gate` gets the spec's. `lume check <spec.edn>` validates one, whoever wrote it, and lists every problem with where it is (e.g. `[:items 0 :drop] must be less than :runs (3), got 3`), exiting 1 on any.
@@ -111,9 +114,10 @@ lume status [<session>] [--color]
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"
 lume item show <id>            one item in full: intent, gate, disposition, its events
-lume item measure <id> "<cmd>" [--runs N] [--drop K]
+lume item measure <id> "<cmd>" [--runs N] [--drop K] [--higher <name>]...
                                measure the item after every spawn on it: one ledger row per
-                               measurement (N runs, first K dropped: medians and min..max)
+                               measurement (N runs, first K dropped: medians and min..max);
+                               lower is better unless --higher names the number
 lume measure <id>              run the measurement now (a baseline) and print its row
 lume spawn <id>                run one worker on an item
 lume drive [--turns N]         driver turns until an ask, a budget limit, no open items, or N turns

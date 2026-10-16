@@ -20,10 +20,19 @@
   {:measure measure :runs (or runs 1) :drop (or drop 0)})
 
 (defn spec-text
-  "The command, then how it repeats, e.g. bb bench ×10 drop 1."
-  [{:keys [measure] :as m}]
+  "The command, then how it repeats, then the numbers where higher is better,
+  e.g. bb bench ×10 drop 1 higher score."
+  [{:keys [measure higher] :as m}]
   (let [{:keys [runs drop]} (spec m)]
-    (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop)))))
+    (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop))
+         (when (seq higher) (str " higher " (str/join "," higher))))))
+
+(defn direction-text
+  "Which way is better, as the plateau ask says it."
+  [higher]
+  (if (seq higher)
+    (str "higher is better for " (str/join "," higher) ", lower for the rest")
+    "lower is better"))
 
 ;; Cadence: when drive hands control back. A driver may request up to :batch
 ;; spawns a turn (every-spawn is 1), run in order; :gate-fail ends a batch at a
@@ -54,14 +63,19 @@
                                   (str "plateau " (:plateau ceiling) " → " (or (:plateau c) "none")))]))))
 
 ;; A plateau is counted per item and measurement spec: rows since the last one
-;; that set a new best. Lower is better; a number not seen before is a new best.
-(defn- plateau [{:keys [best stale best-id]} {:keys [exit values] mid :measure/id}]
-  (let [values (when (zero? exit) values)
+;; that set a new best. Lower is better, except for the row's :higher names; a
+;; number not seen before is a new best. A change of direction starts over.
+(defn- plateau [{:keys [best stale best-id] :as p} {:keys [exit values higher] mid :measure/id}]
+  (let [higher (set higher)
+        best (when (= higher (:higher p #{})) best)
+        better? (fn [k v b] (if (higher k) (> v b) (< v b)))
+        values (when (zero? exit) values)
         better (and (seq values)
-                    (or (nil? best) (some (fn [[k v]] (or (nil? (get best k)) (< v (get best k)))) values)))]
+                    (or (nil? best) (some (fn [[k v]] (or (nil? (get best k)) (better? k v (get best k)))) values)))]
     (if better
-      {:best (merge-with min (or best {}) values) :stale 0 :best-id mid}
-      {:best best :stale (inc (or stale 0)) :best-id best-id})))
+      {:best (reduce (fn [b [k v]] (if (or (nil? (get b k)) (better? k v (get b k))) (assoc b k v) b)) (or best {}) values)
+       :stale 0 :best-id mid :higher higher}
+      {:best best :stale (inc (or stale 0)) :best-id best-id :higher higher})))
 
 (defn amount [k v]
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
@@ -83,7 +97,7 @@
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
        :item/measuring  (update-in s [:items (:item/id e)]
-                                   #(merge (dissoc % :runs :drop) (select-keys e [:measure :runs :drop])))
+                                   #(merge (dissoc % :runs :drop :higher) (select-keys e [:measure :runs :drop :higher])))
        ;; Each row carries the row it's compared with: the latest earlier one
        ;; of the same spec (command, runs and drop) that passed with numbers.
        :measure/ran     (update-in s [:items (:item/id e)]
@@ -194,13 +208,14 @@
       (str "(" (when-not (str/starts-with? d "-") "+") d ")"))))
 
 (defn measure-text
-  "A ledger row's numbers: name=value pairs, each with its change against the
-  row's :base when it has one, then wall time, then a failure, then which row
-  it was compared with (unless :vs is false)."
-  [{:keys [values spread ms exit base runs drop failed-run] :or {drop 0}} & {:keys [vs] :or {vs true}}]
+  "A ledger row's numbers: name=value pairs (name↑ where higher is better),
+  each with its change against the row's :base when it has one, then wall
+  time, then a failure, then which row it was compared with (unless :vs is
+  false)."
+  [{:keys [values spread ms exit base runs drop failed-run higher] :or {drop 0}} & {:keys [vs] :or {vs true}}]
   (str (if (seq values)
          (str/join " " (map (fn [[k v]]
-                              (str k "=" v (change v (get (:values base) k))
+                              (str k (when (some #{k} higher) "↑") "=" v (change v (get (:values base) k))
                                    (when-let [[lo hi] (get spread k)] (when (not= lo hi) (str "[" lo ".." hi "]")))))
                             (sort values)))
          "no numbers")
