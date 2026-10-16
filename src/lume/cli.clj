@@ -624,13 +624,42 @@
               (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
             (recur more)))))))
 
+;; A drive outlives the commits its turns make, so before each turn it checks
+;; the lume source it loaded. When that changed and the new code loads, the
+;; drive logs :drive/reloaded and re-execs itself on it, carrying on from the
+;; same turn (--from); when the new code doesn't load, it notes so and keeps
+;; running the old.
+
+(def ^:dynamic *source*
+  "The src directory this lume runs from."
+  (some-> (io/resource "lume/cli.clj") io/file fs/parent fs/parent str))
+
+(defn- fingerprint [src]
+  (when src
+    (into (sorted-map) (map (juxt str #(fs/file-time->millis (fs/last-modified-time %))))
+          (fs/glob src "**.clj"))))
+
+(defn- load-error
+  "nil if src's lume.cli loads in a fresh bb, else its first error line."
+  [src]
+  (let [{:keys [exit err]} @(p/process ["bb" "-cp" src "-e" "(require 'lume.cli)"] {:out :string :err :string})]
+    (when-not (zero? exit)
+      (or (first (remove str/blank? (str/split-lines err))) (str "exit " exit)))))
+
+(def ^:dynamic *reexec*
+  "Replace this process with lume from src, run with args."
+  (fn [src args] (p/exec (into ["bb" "-cp" src "-m" "lume.cli"] args))))
+
 (defn drive
   "Run up to --turns driver turns, each followed by the spawns it requested,
   printing a line per turn and spawn. Returns why it stopped."
   [session root opts]
   (let [turns (parse-long (or (flag opts "--turns") "10"))
         agent (or (flag opts "--agent") "claude")
-        _ (when-not (and turns (pos? turns)) (fail! "usage: lume drive [--turns N] [--agent claude]"))
+        from (parse-long (or (flag opts "--from") "1"))
+        _ (when-not (and turns (pos? turns) from (pos? from)) (fail! "usage: lume drive [--turns N] [--agent claude]"))
+        src *source*
+        loaded (atom (fingerprint src))
         say #(do (println %) (flush))
         done (promise)
         stop! (fn [why]
@@ -639,18 +668,29 @@
                 (str "drive stopped: " why))
         hook (Thread. #(when-not (realized? done)
                          (store/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
-    (store/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)}))
+    (when (= 1 from)
+      (store/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (try
-      (loop [n 1]
+      (loop [n from]
         (let [{:keys [items asks allow] :as state} (status/project (store/read-events session))
               ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
-              over (status/over-budget state)]
+              over (status/over-budget state)
+              now (when (> n from) (fingerprint src))
+              changed (and now (not= now @loaded))
+              broken (when changed (load-error src))]
+          (when broken
+            (reset! loaded now)
+            (note session [(str "drive: lume source changed but doesn't load, so turn " n
+                                " runs the code the drive started with: " broken)]))
           (cond
             ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
             over (stop! over)
             (not-any? #(= :open (:state %)) (vals items)) (stop! "no open items")
             (> n turns) (stop! (str turns " turns run"))
+            (and changed (not broken))
+            (do (store/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
+                (*reexec* src ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]))
             :else
             (let [{did :drive/id} (store/append! session (fn [events]
                                                            {:type :drive/turn :drive/id (next-id "d" :drive/turn events)

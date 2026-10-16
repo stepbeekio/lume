@@ -25,6 +25,7 @@
       (try
         (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
                   cli/*confirm* (constantly true)
+                  cli/*source* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
                   agents/*claude-home* (str (fs/path home "claude"))]
           (t))
@@ -658,6 +659,42 @@
           "driver ids keep counting across drives")
       (is (re-find #"^ask a1 is open: which\? " (drive! s (lume-cmd "ask" "which?") (lume-cmd "note" "never"))))
       (is (= 1 (count @*driver-calls*)) "no turn runs while an ask is open"))))
+
+;; i49: a drive started before a commit ran the old code for every later turn.
+(deftest drive-reloads-changed-source
+  (let [src (str (fs/path *root* "lume-src"))
+        _ (fs/create-dirs (fs/path src "lume"))
+        cli-file (str (fs/path src "lume" "cli.clj"))
+        write-cli (fn [code] (str "printf '" code "' > " cli-file))
+        execs (atom [])
+        drive (fn [& opts]
+                (with-out-str (cli/drive (store/current-session *root*) *root*
+                                         (into ["--agent" "driver" "--turns" "3"] opts))))
+        s (new-session "goal")]
+    (spit cli-file "(ns lume.cli)")
+    (cli/item-add s ["never done"])
+    (binding [cli/*source* src
+              cli/*reexec* (fn [src args] (swap! execs conj [src args]) "re-exec'd")]
+      (testing "when the source changes under it and loads, the drive re-execs on it from the next turn"
+        (reset! *driver-turns* [(str (write-cli "(ns lume.cli) ;; new") "; " (lume-cmd "note" "a"))])
+        (drive)
+        (is (= [[src ["drive" "--turns" "3" "--agent" "driver" "--from" "2"]]] @execs))
+        (is (= [:drive/turn :note/added :drive/exited :drive/reloaded] (map :type (take-last 4 (store/read-events s)))))
+        (is (= 1 (count @*driver-calls*)) "turn 2 runs in the new process"))
+      (testing "the new process carries on from that turn, without starting another drive"
+        (reset! *driver-turns* ["true"])
+        (drive "--from" "2")
+        (let [events (store/read-events s)]
+          (is (= 1 (count (filter #(= :drive/started (:type %)) events))))
+          (is (= 2 (:n (last (filter #(= :drive/turn (:type %)) events)))))))
+      (testing "when the new source doesn't load, the drive notes it and keeps running the old code"
+        (reset! execs [])
+        (reset! *driver-turns* [(str (write-cli "(ns lume.cli") "; " (lume-cmd "note" "b")) (lume-cmd "note" "c") "true"])
+        (drive)
+        (is (empty? @execs))
+        (is (= 3 (count (filter #(= :drive/turn (:type %)) (take-while #(not= :drive/started (:type %)) (reverse (store/read-events s)))))))
+        (is (some #(str/includes? % "doesn't load, so turn 2 runs the code the drive started with")
+                  (map :text (:notes (status/project (store/read-events s))))))))))
 
 ;; Fake drivers summarize like claude, so a turn can report a cost on a result line.
 (defmethod agents/summarize :driver [_ out] (agents/summarize :claude out))
