@@ -103,7 +103,9 @@
                 (str "Your work item (" (:id item) "): " (:intent item))]
                (when (seq notes)
                  (cons "Notes from the session:" (map #(str "- " (:text %)) notes)))
-               ["Work in the current directory. When you finish, end with a short summary"
+               ["Work in the current directory. Record findings with `lume note \"<text>\"`"
+                "and follow-up work with `lume item add \"<intent>\"`."
+                "When you finish, end with a short summary"
                 "of what you did and anything left undone."]))))
 
 (defn spawn [session root [id & opts]]
