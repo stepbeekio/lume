@@ -95,6 +95,11 @@
   (store/append! session (constantly {:type :note/added :text text :by (actor)}))
   "noted")
 
+(defn allow [session [command]]
+  (when (str/blank? command) (fail! "usage: lume allow \"<cmd>\""))
+  (store/append! session (constantly {:type :session/allowed :command command :by (actor)}))
+  (str "workers may run " command))
+
 (defn- worker-prompt [events item]
   (let [{:keys [goal notes]} (status/project events)]
     (str/join "\n"
@@ -154,7 +159,9 @@
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (let [t0 (System/currentTimeMillis)
-          proc (p/process (agents/command agent (worker-prompt events item))
+          ;; A worker may run the session's allowed commands, and its own gate.
+          allowed (distinct (cond-> (:allow (status/project events)) (:gate item) (conj (:gate item))))
+          proc (p/process (agents/command agent (worker-prompt events item) {:allow allowed})
                           {:dir root :in ""
                            :err :write :err-file (fs/file (str out ".err"))
                            :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid}})
@@ -191,6 +198,7 @@ lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume note \"<text>\"                          steering for drivers and workers
+lume allow \"<cmd>\"                          let workers run commands starting with <cmd> (their gate is always allowed)
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground
 lume log [-n N]                             raw events (default last 20)")
 
@@ -207,6 +215,7 @@ lume log [-n N]                             raw events (default last 20)")
                "gate" (item-gate (session) more)
                (fail! "usage: lume item add|gate|close ..."))
       "note" (note (session) (rest args))
+      "allow" (allow (session) (rest args))
       "spawn" (spawn (session) root (rest args))
       "log" (show-log (session) (rest args))
       (nil "help" "-h" "--help") usage

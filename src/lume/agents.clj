@@ -8,8 +8,9 @@
             [clojure.string :as str]))
 
 (defmulti command
-  "argv that runs `agent` on `prompt`, in the current directory."
-  (fn [agent _prompt] agent))
+  "argv that runs `agent` on `prompt`, in the current directory. `opts` has
+  :allow, shell command prefixes the worker may run (e.g. \"bb test\")."
+  (fn [agent _prompt _opts] agent))
 
 (defmulti summarize
   "{:result \"short text\"} plus anything else worth logging, from raw stdout."
@@ -30,16 +31,20 @@
 
 ;; Claude Code. Extra flags (permissions, model) come from LUME_CLAUDE_ARGS.
 ;; The default lets workers edit files and run lume, so they can add notes and items.
+;; Allowed commands are added either way, so workers can run the repo's feedback loop.
 
-(defn- claude-args []
+(defn- bash-rule [cmd] (str "Bash(" cmd ":*)"))
+
+(defn- claude-args [allow]
   (if-let [args (System/getenv "LUME_CLAUDE_ARGS")]
-    (remove str/blank? (str/split args #"\s+"))
+    (cond-> (vec (remove str/blank? (str/split args #"\s+")))
+      (seq allow) (into ["--allowedTools" (str/join "," (map bash-rule allow))]))
     ["--permission-mode" "acceptEdits"
-     "--allowedTools" "Bash(lume:*),Bash(bin/lume:*)"]))
+     "--allowedTools" (str/join "," (map bash-rule (into ["lume" "bin/lume"] allow)))]))
 
 ;; stream-json writes one event per line as it happens, so a running spawn can be followed.
-(defmethod command :claude [_ prompt]
-  (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"] (claude-args)))
+(defmethod command :claude [_ prompt {:keys [allow]}]
+  (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"] (claude-args allow)))
 
 (defn- parse [line]
   (try (json/parse-string line) (catch Exception _ nil)))

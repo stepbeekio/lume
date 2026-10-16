@@ -24,7 +24,7 @@
   (cli/init *root* [goal])
   (store/current-session *root*))
 
-(defmethod agents/command :test [_ _prompt]
+(defmethod agents/command :test [_ _prompt _opts]
   ["sh" "-c" "printf 'working\\ndone by %s\\n' \"$LUME_ACTOR\"; exit 3"])
 
 (deftest items-and-notes
@@ -55,7 +55,7 @@
     (is (= ["s1"] (get-in items ["i1" :spawns])))
     (is (fs/exists? (:out sp)))))
 
-(defmethod agents/command :slow [_ _prompt]
+(defmethod agents/command :slow [_ _prompt _opts]
   ["sh" "-c" "echo started; while [ ! -f go ]; do sleep 0.05; done; echo finished"])
 
 (deftest running-spawns-show-progress
@@ -118,6 +118,21 @@
       (is (= :open (get-in items [fail :state]))))
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now))
                        "gate false · g2 fail exit 1"))))
+
+(defmethod agents/command :allowed [_ _prompt {:keys [allow]}]
+  ["echo" (str/join "|" allow)])
+
+(deftest workers-may-run-allowed-commands-and-their-gate
+  (let [s (new-session "goal")
+        id (cli/item-add s ["verify" "--gate" "true"])]
+    (cli/allow s ["jj"])
+    (cli/allow s ["bb test"])
+    (cli/allow s ["jj"])
+    (is (str/includes? (cli/spawn s *root* [id "--agent" "allowed"]) "· jj|bb test|true\n"))
+    (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "allow   jj · bb test"))
+    (when-not (System/getenv "LUME_CLAUDE_ARGS")
+      (is (= ["--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(bb test:*)"]
+             (take-last 2 (agents/command :claude "p" {:allow ["bb test"]})))))))
 
 (deftest concurrent-writers-get-unique-ids
   (let [s (new-session "goal")

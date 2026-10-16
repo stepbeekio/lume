@@ -14,6 +14,7 @@
    (fn [s {:keys [type] :as e}]
      (case type
        :session/started (assoc s :goal (:goal e) :repo (:repo e))
+       :session/allowed (update s :allow #(vec (distinct (conj % (:command e)))))
        :item/added      (update s :items assoc (:item/id e)
                                 (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
                                   (:gate e) (assoc :gate (:gate e))))
@@ -28,7 +29,7 @@
        :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
        :spawn/exited    (update-in s [:spawns (:spawn/id e)] merge e)
        s))
-   {:items {} :notes [] :spawns {}}
+   {:items {} :notes [] :spawns {} :allow []}
    events))
 
 ;; Rendering
@@ -78,13 +79,13 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :disposition :exit :intent :gate :text :goal])) 70)))
+       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :disposition :exit :intent :gate :command :text :goal])) 70)))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
   long the session runs."
   [session-id events now]
-  (let [{:keys [goal repo items notes spawns]} (project events)
+  (let [{:keys [goal repo items notes spawns allow]} (project events)
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)]
     (str/join
@@ -92,6 +93,7 @@
      (concat
       [(str "lume status · " session-id (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
+      (when (seq allow) (section "allow" [(clip (str/join " · " allow) (- width 8))]))
       (section "open"
                (capped 10 "lume log"
                        (mapcat (fn [{:keys [id intent] :as item}]
@@ -112,4 +114,5 @@
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.
       (section "recent" (map event-line (take-last 6 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
-                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note \"<text>\" · lume log"])))))
+                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note \"<text>\" · lume log"
+                       "lume allow \"<cmd>\" (workers may run it, and their item's gate)"])))))
