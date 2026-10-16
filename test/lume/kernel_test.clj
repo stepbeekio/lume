@@ -238,6 +238,19 @@
     (is (= {"build_s" 9.5 "hits" 40 "tests" 21} (cli/measure-values "build_s=12 hits: 40\ntests=21\nbuild_s=9.5")))
     (is (= {"value" 0} (cli/measure-values "Ran 21 tests containing 197 assertions. 0 failures")))
     (is (nil? (cli/measure-values "nothing here"))))
+  (testing "numbers with no digit before or after the point, as bc prints them"
+    (is (= {"secs" 0.915} (cli/measure-values "secs=.915 915454175")))
+    (is (= {"a" -0.5 "b" 5.0} (cli/measure-values "a=-.5 b=5.")))
+    (is (= {"value" 0.25} (cli/measure-values "took .25")))
+    (is (= {"value" -0.5} (cli/measure-values "delta -.5")))
+    (is (= {"value" 5.0} (cli/measure-values "done in 5."))))
+  (let [s (new-session "goal")
+        id (cli/item-add s ["bc" "--gate" "false"])]
+    (cli/item-measure s [id "echo secs=.915 915454175"])
+    (testing "a bc-style row logs secs, not the trailing number as value"
+      (is (re-matches #"m1 i1 secs=0\.915 · \d+\.\ds" (cli/measure s [id])))
+      (is (= {"secs" 0.915}
+             (:values (get-in (status/project (store/read-events s)) [:items id :last-measure]))))))
   (let [s (new-session "goal")
         id (cli/item-add s ["faster" "--gate" "false"])]
     (is (thrown-with-msg? Exception #"no measurement" (cli/measure s [id])))

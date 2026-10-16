@@ -182,13 +182,15 @@
 
 (defn measure-values
   "The numbers in a measurement's output: each name=number or name: number
-  (the last one wins), or with none of those, the last number, as value."
+  (the last one wins), or with none of those, the last number, as value.
+  A number may lack digits on one side of its point (.5, -.5, 5.), as bc
+  prints them."
   [output]
   (let [num #(or (parse-long %) (parse-double %))
-        named (re-seq #"([A-Za-z_][\w.-]*)\s*[=:]\s*(-?\d+(?:\.\d+)?)(?![\w.])" output)]
+        named (re-seq #"([A-Za-z_][\w.-]*)\s*[=:]\s*(-?(?:\d+(?:\.\d*)?|\.\d+))(?![\w.])" output)]
     (if (seq named)
       (reduce (fn [m [_ k v]] (assoc m k (num v))) {} named)
-      (when-let [n (last (re-seq #"-?\d+(?:\.\d+)?" output))]
+      (when-let [n (last (re-seq #"-?(?:\d+(?:\.\d*)?|\.\d+)" output))]
         {"value" (num n)}))))
 
 (defn- median [xs]
