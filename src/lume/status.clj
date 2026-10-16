@@ -79,6 +79,18 @@
     (concat (take n xs) [(str "+" (- (count xs) n) " more — " more-hint)])
     xs))
 
+(defn- capped-items
+  "Like capped, for items that each take several lines: whole items only, as
+  many as fit in n lines, and the hint counts items."
+  [n more-hint groups]
+  (if (<= (reduce + (map count groups)) n)
+    (apply concat groups)
+    (let [shown (->> (reductions + (map count groups))
+                     (take-while #(< % n))
+                     count)]
+      (concat (apply concat (take shown groups))
+              [(str "+" (- (count groups) shown) " more items — " more-hint)]))))
+
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
        (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :note/id :disposition :exit :intent :gate :command :text :goal])) 70)))
@@ -101,8 +113,8 @@
       (section "pinned" (capped 6 "lume log"
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
-               (capped 10 "lume log"
-                       (mapcat (fn [{:keys [id intent] :as item}]
+               (capped-items 10 "lume log"
+                       (map (fn [{:keys [id intent] :as item}]
                                  (concat [(str id "  " (clip intent 80))]
                                          (when (:gate item)
                                            [(str "    " (gate-line now item))])
