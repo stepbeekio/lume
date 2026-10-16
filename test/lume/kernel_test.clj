@@ -53,6 +53,37 @@
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["--gate" "bb test"])))
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["one" "two"]))))))
 
+(deftest init-sets-a-default-gate-and-allows
+  (let [before (set (fs/list-dir *root*))
+        out (cli/init *root* ["ship it" "--gate" "bb test" "--allow" "jj" "--allow" "make" "--allow" "jj"])
+        s (store/current-session *root*)]
+    (is (str/includes? out "default gate bb test · workers may run jj · make"))
+    (is (= before (set (fs/list-dir *root*))) "init writes nothing inside the repo")
+    (is (= [:session/started :session/gated :session/allowed :session/allowed]
+           (map :type (store/read-events s))))
+    (testing "items added without --gate inherit the default; --gate overrides it"
+      (cli/item-add s ["inherits"])
+      (cli/item-add s ["own gate" "--gate" "true"])
+      (let [{:keys [items allow default-gate]} (status/project (store/read-events s))]
+        (is (= ["bb test" "true"] (map #(get-in items [% :gate]) ["i1" "i2"])))
+        (is (= ["jj" "make"] allow))
+        (is (= "bb test" default-gate))))
+    (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now))
+                       "allow   default gate bb test · jj · make"))
+    (testing "a default gate alone still gets an allow line; with none, items stay ungated"
+      (let [s2 (do (cli/init *root* ["other" "--gate" "make check"]) (store/current-session *root*))]
+        (is (str/includes? (status/render "sess" (store/read-events s2) (Instant/now)) "allow   default gate make check\n"))
+        (let [s3 (new-session "plain")]
+          (cli/item-add s3 ["loose"])
+          (is (nil? (get-in (status/project (store/read-events s3)) [:items "i1" :gate]))))))
+    (testing "bad flags are refused, and only the human may --allow"
+      (doseq [args [["g" "--gate"] ["g" "--allow"] ["g" "--gate" "a" "--gate" "b"] ["g" "--gat" "x"] ["g" "h"] ["--gate" "x"]]]
+        (is (thrown-with-msg? Exception #"usage" (cli/init *root* args)) (pr-str args)))
+      (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["x" "--gate"])) "a trailing --gate is not ungated")
+      (binding [cli/*actor* "d1"]
+        (is (thrown-with-msg? Exception #"only the human" (cli/init *root* ["g" "--allow" "rm"])))
+        (is (str/includes? (cli/init *root* ["g" "--gate" "bb test"]) "default gate bb test"))))))
+
 (deftest sessions-in-the-same-second-are-distinct
   (let [ss (repeatedly 3 #(new-session "goal"))]
     (is (= 3 (count (distinct ss))))

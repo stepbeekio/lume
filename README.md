@@ -29,11 +29,12 @@ It also prints one line for you to add yourself, because it never edits your set
 In any repo:
 
 ```
-lume init "cut cold build time; tests stay green"
-lume allow "make test"                                # commands workers may run
-lume item add "cache the dependency step" --gate "make test"
+lume init "cut cold build time; tests stay green" --gate "make test" --allow "make"
+lume item add "cache the dependency step"             # gets the default gate, make test
 lume drive                                            # agents work until they need you
 ```
+
+`--gate` is the session's default gate: items added without their own `--gate` get it, so none end up ungated by omission. Each `--allow` is a `lume allow`: a command workers may run.
 
 `lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 
@@ -56,6 +57,7 @@ Pushing is up to you. Drivers commit, but they can't push.
 
 ```
 lume install                   set up agents on this machine (the lume skill); safe to re-run
+lume init "<goal>" [--gate "<cmd>"] [--allow "<cmd>"]...
 lume status                    one screen: goal, asks, pinned notes, items, recent events
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"

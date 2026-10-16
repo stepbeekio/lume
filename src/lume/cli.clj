@@ -32,24 +32,51 @@
 ;; Commands. Each takes the session dir (or repo root, for init) and its args,
 ;; and returns the text to print.
 
-(defn init [root [goal]]
-  (when (str/blank? goal) (fail! "usage: lume init \"<goal>\""))
-  (let [session (store/new-session! root)]
-    (store/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
-    (str "session " (store/session-id session) " started")))
+(defn- take-flags
+  "Split args into positionals and the values of the given flags, in order.
+  A flag with no value, or any other flag-like arg, is a usage error."
+  [args flags usage]
+  (loop [[a & more :as args] args, pos [], vals {}]
+    (cond (empty? args) [pos vals]
+          (flags a) (let [[v & more] more]
+                      (when (or (str/blank? v) (str/starts-with? v "--")) (fail! usage))
+                      (recur more pos (update vals a (fnil conj []) v)))
+          (str/starts-with? a "--") (fail! usage)
+          :else (recur more (conj pos a) vals))))
+
+;; A session may have a default gate: items added without --gate get it, so
+;; nothing is ungated by omission. --allow is lume allow, so it's human-only too.
+(defn init [root args]
+  (let [usage "usage: lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]..."
+        [[goal & extra] {gates "--gate" allows "--allow"}] (take-flags args #{"--gate" "--allow"} usage)
+        gate (first gates)
+        allows (distinct allows)]
+    (when (or (str/blank? goal) (seq extra) (next gates)) (fail! usage))
+    (when (and (seq allows) (not= "human" (actor)))
+      (fail! "only the human changes permissions; ask with lume ask \"<question>\""))
+    (let [session (store/new-session! root)]
+      (store/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
+      (when gate
+        (store/append! session (constantly {:type :session/gated :gate gate :by (actor)})))
+      (doseq [command allows]
+        (store/append! session (constantly {:type :session/allowed :command command :by (actor)})))
+      (str "session " (store/session-id session) " started"
+           (when gate (str " · default gate " gate))
+           (when (seq allows) (str " · workers may run " (str/join " · " allows)))))))
 
 (defn- flag [opts name]
   (second (drop-while #(not= name %) opts)))
 
 (defn item-add [session args]
-  (let [[before [_ gate & after]] (split-with #(not= "--gate" %) args)
-        [intent & extra] (concat before after)]
-    (when (or (str/blank? intent) (str/starts-with? intent "--") (seq extra))
-      (fail! "usage: lume item add \"<intent>\" [--gate \"<cmd>\"]"))
+  (let [usage "usage: lume item add \"<intent>\" [--gate \"<cmd>\"]"
+        [[intent & extra] {[gate & gates] "--gate"}] (take-flags args #{"--gate"} usage)]
+    (when (or (str/blank? intent) (seq extra) (seq gates)) (fail! usage))
+    ;; Without --gate the item gets the session's default gate, written on the event.
     (let [e (store/append! session (fn [events]
-                                     (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
-                                              :intent intent :by (actor)}
-                                       gate (assoc :gate gate))))]
+                                     (let [gate (or gate (:default-gate (status/project events)))]
+                                       (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
+                                                :intent intent :by (actor)}
+                                         gate (assoc :gate gate)))))]
       (:item/id e))))
 
 (defn item-gate [session [id gate]]
@@ -382,7 +409,8 @@
 
 (def usage
   "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
-lume init \"<goal>\"                         start a session for this repo
+lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
+                                            start a session; items added without --gate get its --gate
 lume status                                 one screen: goal, items, notes, recent events
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate

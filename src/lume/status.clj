@@ -14,6 +14,7 @@
    (fn [s {:keys [type] :as e}]
      (case type
        :session/started (assoc s :goal (:goal e) :repo (:repo e))
+       :session/gated   (assoc s :default-gate (:gate e))
        :session/allowed (update s :allow #(vec (distinct (conj % (:command e)))))
        :session/disallowed (update s :allow #(vec (remove #{(:command e)} %)))
        :item/added      (update s :items assoc (:item/id e)
@@ -106,7 +107,7 @@
   "Status as text. Every section is capped, so it stays one screen however
   long the session runs: at most 40 lines with every section full."
   [session-id events now]
-  (let [{:keys [goal repo items notes spawns allow asks]} (project events)
+  (let [{:keys [goal repo items notes spawns allow asks default-gate]} (project events)
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
         ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
@@ -122,7 +123,9 @@
                                    (filter #(= :open (:state %)))
                                    (sort-by #(parse-long (subs (:id %) 1)))
                                    (map #(clip (str (:id %) " " (:question %)) (- width 8))))))
-      (when (seq allow) (section "allow" [(clip (str/join " · " allow) (- width 8))]))
+      (when (or (seq allow) default-gate)
+        (section "allow" [(clip (str/join " · " (cond->> allow default-gate (cons (str "default gate " default-gate))))
+                                (- width 8))]))
       (section "pinned" (capped 6 "lume log"
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
