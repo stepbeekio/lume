@@ -137,7 +137,8 @@ Run `lume status` first. It is one screen:
   measurement row if it has one (`lume measure <id>` runs it again)
 - recent notes and events: what the last session did
 
-`lume item show <id>` prints an item's full intent, gate and history when status clips it.
+`lume item show <id>` prints an item's full intent, gate and history when status clips it;
+`lume ask show <id>` does the same for an ask (who asked, its item, its answer).
 `lume ls` lists the repo's sessions, newest first; `lume status <session>` and
 `lume log --session <session>` read a past one without touching it. `lume clean`
 deletes sessions and is the human's; never run it.

@@ -552,6 +552,36 @@
         (is (str/includes? prompt "- a1 ship on fridays? → never\n"))
         (is (not (str/includes? prompt "which db")))))))
 
+(deftest ask-show-reads-an-ask-in-full
+  (let [s (new-session "goal")
+        id (cli/item-add s ["pick a db"])
+        long-q (str "which db? " (apply str (repeat 100 "q")) " the end")]
+    (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id id}))
+    (binding [cli/*actor* "s1"] (cli/ask s [long-q]))
+    (cli/ask s ["short?"])
+    (testing "status clips a long question and points at ask show"
+      (let [out (status/render "sess" (store/read-events s) (Instant/now))]
+        (is (re-find #"(?m)^asks    a1 which db\? q+… — lume ask show a1$" out))
+        (is (re-find #"(?m)^        a2 short\?$" out) "a question that fits has no hint")))
+    (testing "the question in full, who asked and when, the asking worker's item"
+      (let [out (cli/ask-show s ["a1"])]
+        (is (str/includes? out (str "question " long-q)))
+        (is (re-find #"(?m)^a1 open\n" out))
+        (is (re-find #"(?m)^asked    \d{4}-\d\d-\d\dT\d\d:\d\d by s1$" out))
+        (is (re-find #"(?m)^item     i1$" out))
+        (is (str/includes? out "answer   none yet; only the human answers: lume answer a1"))))
+    (testing "the answer once there is one; a human's ask concerns no item"
+      (cli/answer s ["a2" "yes"])
+      (let [out (cli/ask-show s ["a2"])]
+        (is (re-find #"(?m)^a2 answered\n" out))
+        (is (not (str/includes? out "item")))
+        (is (re-find #"(?m)^answer   yes\nanswered \S+ by human$" out))))
+    (testing "routing and errors"
+      (binding [store/*session* s]
+        (is (str/starts-with? (cli/run ["ask" "show" "a2"]) "a2 answered")))
+      (is (thrown-with-msg? Exception #"no such ask: a9" (cli/ask-show s ["a9"])))
+      (is (thrown-with-msg? Exception #"usage: lume ask show <id>" (cli/ask-show s []))))))
+
 ;; A fake driver: each turn runs the next shell script, which can call lume.
 (def ^:private driver-turns (atom []))
 (def ^:private driver-calls (atom []))

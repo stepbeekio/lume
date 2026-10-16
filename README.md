@@ -123,6 +123,7 @@ lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                when drive hands back; agents may tighten it, only you loosen it
 lume note [--pin] "<text>"     steering; pinned notes stay in status and every prompt
 lume ask "<question>"          agents ask; only you answer
+lume ask show <id>             one ask in full: question, who asked and when, its item, its answer
 lume answer <id> "<text>"
 lume allow [--revoke] "<cmd>"  only you grant permissions
 lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any

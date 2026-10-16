@@ -270,7 +270,14 @@
                               (->> (vals asks)
                                    (filter #(= :open (:state %)))
                                    (sort-by #(parse-long (subs (:id %) 1)))
-                                   (map #(paint :yellow (clip (str (:id %) " " (:question %)) (- width 8)))))))
+                                   ;; A clipped question says where the rest is.
+                                   (map (fn [{:keys [id question]}]
+                                          (let [line (str id " " question)
+                                                n (- width 8)]
+                                            (paint :yellow (if (str/ends-with? (clip line n) "…")
+                                                             (let [hint (str " — lume ask show " id)]
+                                                               (str (clip line (- n (count hint))) hint))
+                                                             (clip line n)))))))))
       (when (or (seq allow) default-gate cadence-line)
         (section "allow" [(clip (str/join " · " (cond->> allow
                                                   default-gate (cons (str "default gate " default-gate))
@@ -285,15 +292,15 @@
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
                (capped-items 10 "lume log"
-                       (map (fn [{:keys [id intent] :as item}]
-                                 (concat [(str id "  " (clip intent 80))]
-                                         (when (:gate item)
-                                           [(str "    " (gate-line now item))])
-                                         (when (:measure item)
-                                           [(str "    " (measure-line now item))])
-                                         (when-let [sp (get spawns (peek (:spawns item)))]
-                                           [(str "    " (spawn-line now sp))])))
-                               open)))
+                            (map (fn [{:keys [id intent] :as item}]
+                                   (concat [(str id "  " (clip intent 80))]
+                                           (when (:gate item)
+                                             [(str "    " (gate-line now item))])
+                                           (when (:measure item)
+                                             [(str "    " (measure-line now item))])
+                                           (when-let [sp (get spawns (peek (:spawns item)))]
+                                             [(str "    " (spawn-line now sp))])))
+                                 open)))
       (section "closed"
                (capped 4 "lume log"
                        (map (fn [{:keys [id state intent why]}]

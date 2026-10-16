@@ -406,6 +406,27 @@
                              :open {:type :ask/answered :ask/id id :answer text :by (actor)})))
   (str id " answered"))
 
+;; Ask show: what status clips. The question in full, who asked and when, the
+;; item it concerns (a plateau's, or the asking worker's), and the answer.
+(defn ask-show [session [id]]
+  (when (str/blank? id) (fail! "usage: lume ask show <id>"))
+  (let [events (store/read-events session)
+        opened (or (some #(when (and (= :ask/opened (:type %)) (= id (:ask/id %))) %) events)
+                   (fail! "no such ask:" id))
+        answered (some #(when (and (= :ask/answered (:type %)) (= id (:ask/id %))) %) events)
+        item (or (:item/id opened)
+                 (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events))
+        at #(str (subs (:t %) 0 16) " by " (:by %))]
+    (str/join "\n"
+              (concat
+               [(str id " " (if answered "answered" "open"))
+                (str "question " (:question opened))
+                (str "asked    " (at opened))]
+               (when item [(str "item     " item (when (:measure/id opened) (str " at " (:measure/id opened))))])
+               (if answered
+                 [(str "answer   " (:answer answered)) (str "answered " (at answered))]
+                 [(str "answer   none yet; only the human answers: lume answer " id " \"<text>\"")])))))
+
 (defn- worker-prompt [events item]
   (let [{:keys [goal notes]} (status/project events)
         line #(if (:ask/id %) (str (:ask/id %) " " (:question %) " → " (:answer %)) (:text %))
@@ -891,6 +912,7 @@ lume item show <id>                         one item in full: intent, gate, disp
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
 lume ask \"<question>\"                       put a question to the human; open asks top status
+lume ask show <id>                          one ask in full: question, who asked and when, its item, its answer
 lume answer <id> \"<text>\"                   answer an ask (human at a tty: retype the id); answers join the notes
 lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)
 lume budget [--usd N] [--spawns N] [--minutes N]
@@ -932,7 +954,9 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                (fail! "usage: lume item add|gate|measure|close|show ..."))
       "measure" (measure (session) (rest args))
       "note" (note (session) (rest args))
-      "ask" (ask (session) (rest args))
+      "ask" (if (and (= "show" sub) (= 2 (count (rest args))))
+              (ask-show (session) (drop 2 args))
+              (ask (session) (rest args)))
       "answer" (answer (session) (rest args))
       "allow" (allow (session) (rest args))
       "budget" (if (#{"-h" "--help"} sub)
