@@ -130,15 +130,21 @@
     (cli/allow s ["jj"])
     (is (str/includes? (cli/spawn s *root* [id "--agent" "allowed"]) "· jj|bb test|true\n"))
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "allow   jj · bb test"))
-    (when-not (System/getenv "LUME_CLAUDE_ARGS")
-      (is (= ["--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(bb test:*)"]
-             (take-last 2 (agents/command :claude "p" {:allow ["bb test"]})))))
     (testing "revoking removes a command; workers can't change permissions"
       (cli/allow s ["--revoke" "jj"])
       (is (= ["bb test"] (:allow (status/project (store/read-events s)))))
       (binding [cli/*actor* "s1"]
         (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["rm"])))
         (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["--revoke" "bb test"])))))))
+
+(deftest claude-args-from-env
+  (is (= ["--allowedTools" "Bash(bb test)" "--allowedTools" "Bash(jj st:*)"]
+         (agents/claude-args "[\"--allowedTools\" \"Bash(bb test)\"]" ["jj st"]))
+      "EDN keeps arguments with spaces whole")
+  (is (= ["--permission-mode" "acceptEdits" "--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(bb test:*)"]
+         (agents/claude-args nil ["bb test"])))
+  (is (thrown-with-msg? Exception #"must be an EDN vector of strings"
+                        (agents/claude-args "--permission-mode acceptEdits" []))))
 
 (deftest concurrent-writers-get-unique-ids
   (let [s (new-session "goal")

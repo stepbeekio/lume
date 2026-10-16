@@ -5,6 +5,7 @@
   into progress while it runs, and its whole output into a short summary for
   the log."
   (:require [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.string :as str]))
 
 (defmulti command
@@ -29,22 +30,33 @@
     prog
     (-> prog (update :steps (fnil inc 0)) (assoc :last line))))
 
-;; Claude Code. Extra flags (permissions, model) come from LUME_CLAUDE_ARGS.
+;; Claude Code. Extra flags (permissions, model) come from LUME_CLAUDE_ARGS, an EDN
+;; vector of strings so arguments with spaces survive: ["--model" "opus"].
 ;; The default lets workers edit files and run lume, so they can add notes and items.
 ;; Allowed commands are added either way, so workers can run the repo's feedback loop.
 
 (defn- bash-rule [cmd] (str "Bash(" cmd ":*)"))
 
-(defn- claude-args [allow]
-  (if-let [args (System/getenv "LUME_CLAUDE_ARGS")]
-    (cond-> (vec (remove str/blank? (str/split args #"\s+")))
+(defn- user-args [s]
+  (let [v (try (edn/read-string s) (catch Exception _ nil))]
+    (if (and (vector? v) (every? string? v))
+      v
+      (throw (ex-info (str "LUME_CLAUDE_ARGS must be an EDN vector of strings, e.g. [\"--model\" \"opus\"]; got: " s)
+                      {:lume/user-error true})))))
+
+(defn claude-args
+  "Flags after the prompt: `env` (LUME_CLAUDE_ARGS) replaces the defaults, and
+  the allowed commands are added either way."
+  [env allow]
+  (if env
+    (cond-> (user-args env)
       (seq allow) (into ["--allowedTools" (str/join "," (map bash-rule allow))]))
     ["--permission-mode" "acceptEdits"
      "--allowedTools" (str/join "," (map bash-rule (into ["lume" "bin/lume"] allow)))]))
 
 ;; stream-json writes one event per line as it happens, so a running spawn can be followed.
 (defmethod command :claude [_ prompt {:keys [allow]}]
-  (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"] (claude-args allow)))
+  (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"] (claude-args (System/getenv "LUME_CLAUDE_ARGS") allow)))
 
 (defn- parse [line]
   (try (json/parse-string line) (catch Exception _ nil)))
