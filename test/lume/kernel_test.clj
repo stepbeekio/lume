@@ -455,7 +455,7 @@
       (cli/ask s ["again?"])
       (let [{:keys [exit err]} (p/shell {:dir *root* :in "" :out :string :err :string :continue true
                                          :extra-env {"LUME_HOME" store/*home* "LUME_SESSION" s
-                                                     "LUME_ACTOR" "human"}}
+                                                     "LUME_ACTOR" "human" "LUME_SPAWNED_AS" ""}}
                                         "bb" "-cp" (str (fs/absolutize "src")) "-m" "lume.cli"
                                         "answer" "a2" "yes")]
         (is (not= 0 exit))

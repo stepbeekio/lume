@@ -24,8 +24,9 @@
 ;; sessions, and wins over the env lume passes (i46).
 (def ^:dynamic *actor*
   "Who is acting: a spawn or drive id inside an agent lume started, else
-  LUME_ACTOR, else \"human\". Tests bind it."
-  (or (System/getenv "LUME_SPAWNED_AS") (System/getenv "LUME_ACTOR") "human"))
+  LUME_ACTOR, else \"human\". An empty var counts as unset, so a test's
+  subprocess can clear the LUME_SPAWNED_AS it inherits inside a spawn. Tests bind it."
+  (or (some not-empty [(System/getenv "LUME_SPAWNED_AS") (System/getenv "LUME_ACTOR")]) "human"))
 
 (defn- actor [] *actor*)
 
