@@ -15,7 +15,13 @@
 (defn- next-id [prefix type events]
   (str prefix (inc (count (filter #(= type (:type %)) events)))))
 
-(defn- actor [] (or (System/getenv "LUME_ACTOR") "human"))
+(def ^:dynamic *actor*
+  "Who is acting: a spawn id inside a worker, else \"human\". Tests bind it."
+  (or (System/getenv "LUME_ACTOR") "human"))
+
+(defn- actor [] *actor*)
+
+(defn- worker? [] (boolean (re-matches #"s\d+" (actor))))
 
 (defn- open-item [events id]
   (let [item (get-in (status/project events) [:items id])]
@@ -95,10 +101,16 @@
   (store/append! session (constantly {:type :note/added :text text :by (actor)}))
   "noted")
 
-(defn allow [session [command]]
-  (when (str/blank? command) (fail! "usage: lume allow \"<cmd>\""))
-  (store/append! session (constantly {:type :session/allowed :command command :by (actor)}))
-  (str "workers may run " command))
+;; Only the driver grants permissions: a worker that needs a command asks with a note or item.
+(defn allow [session [a b]]
+  (let [revoke (= "--revoke" a)
+        command (if revoke b a)]
+    (when (str/blank? command) (fail! "usage: lume allow [--revoke] \"<cmd>\""))
+    (when (worker?)
+      (fail! "workers can't change permissions; ask the driver with lume note or lume item add"))
+    (store/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
+                                        :command command :by (actor)}))
+    (str (if revoke "workers may no longer run " "workers may run ") command)))
 
 (defn- worker-prompt [events item]
   (let [{:keys [goal notes]} (status/project events)]
@@ -198,7 +210,7 @@ lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume note \"<text>\"                          steering for drivers and workers
-lume allow \"<cmd>\"                          let workers run commands starting with <cmd> (their gate is always allowed)
+lume allow [--revoke] \"<cmd>\"               let workers run commands starting with <cmd> (their gate is always allowed)
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground
 lume log [-n N]                             raw events (default last 20)")
 

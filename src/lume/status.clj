@@ -15,6 +15,7 @@
      (case type
        :session/started (assoc s :goal (:goal e) :repo (:repo e))
        :session/allowed (update s :allow #(vec (distinct (conj % (:command e)))))
+       :session/disallowed (update s :allow #(vec (remove #{(:command e)} %)))
        :item/added      (update s :items assoc (:item/id e)
                                 (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
                                   (:gate e) (assoc :gate (:gate e))))

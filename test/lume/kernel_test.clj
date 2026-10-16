@@ -17,7 +17,7 @@
     (let [home (str (fs/create-temp-dir {:prefix "lume-home"}))
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
-        (binding [store/*home* home store/*session* nil *root* root] (t))
+        (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root] (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
@@ -132,7 +132,13 @@
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "allow   jj · bb test"))
     (when-not (System/getenv "LUME_CLAUDE_ARGS")
       (is (= ["--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(bb test:*)"]
-             (take-last 2 (agents/command :claude "p" {:allow ["bb test"]})))))))
+             (take-last 2 (agents/command :claude "p" {:allow ["bb test"]})))))
+    (testing "revoking removes a command; workers can't change permissions"
+      (cli/allow s ["--revoke" "jj"])
+      (is (= ["bb test"] (:allow (status/project (store/read-events s)))))
+      (binding [cli/*actor* "s1"]
+        (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["rm"])))
+        (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["--revoke" "bb test"])))))))
 
 (deftest concurrent-writers-get-unique-ids
   (let [s (new-session "goal")
