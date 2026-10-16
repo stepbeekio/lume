@@ -79,6 +79,8 @@ A session's harness (goal, default gate, allow, budget, cadence, and its items w
 
 Only `:goal` is required; an item without `:gate` gets the spec's. `lume check <spec.edn>` validates one, whoever wrote it, and lists every problem with where it is (e.g. `[:items 0 :drop] must be less than :runs (3), got 3`), exiting 1 on any.
 
+`lume run <spec.edn> ["<goal>"]` runs one in one command: it checks the spec and refuses on any problem, starts a session from it (the same events `init`, `item add`, `budget` and so on would log; a goal given here replaces the spec's), takes a baseline row for each measured item, then drives (`--turns N`, `--agent`). The harness is the same whoever drives it: `--turns 0` stops after the baselines, so you can drive by hand or `lume drive` later. A spec's `:allow`, and a `:cadence` above every-spawn, are yours as they are on the command line: you confirm them at a terminal, and an agent's `lume run` of such a spec is refused. A budget only adds limits to a fresh session, so anyone may set one.
+
 Follow along in another terminal:
 
 ```
@@ -123,6 +125,8 @@ lume answer <id> "<text>"
 lume allow [--revoke] "<cmd>"  only you grant permissions
 lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any
 lume spec [--all]              this session's harness as spec EDN
+lume run <spec.edn> ["<goal>"] [--turns N]
+                               check a spec, start a session from it, baseline, drive
 lume log [-n N]                raw events
 ```
 

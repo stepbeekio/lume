@@ -154,7 +154,10 @@ If there is no session, don't start one unprompted; ask the human for the goal.
   (`on gate-fail`), and when a stalled measurement asks the human (`on plateau K`).
   You may hand back more often than the human's cadence, never less.
 - `lume spec` prints the session's harness (goal, gate, allow, budget, cadence,
-  items) as one page of EDN; `lume check <spec.edn>` validates a spec file.
+  items) as one page of EDN; `lume check <spec.edn>` validates a spec file, and
+  `lume run <spec.edn>` starts a session from one, baselines it and drives
+  (`--turns 0` doesn't drive). A spec with `:allow` or a cadence above
+  every-spawn is the human's to run.
 - After a worker: review its diff, commit it with a message saying what and why, then
   `lume note \"committed <id>: <change id> <what>\"`.
 - `lume item close <id> done \"<why>\"` runs the gate and is refused if it fails;

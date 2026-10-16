@@ -696,19 +696,26 @@
 
 (def ^:private check-usage "usage: lume check <spec.edn>")
 
-(defn check [[path & extra]]
-  (when (or (str/blank? path) (seq extra)) (fail! check-usage))
+(defn- checked-spec
+  "The spec in the file at path, or a failure listing every problem with it."
+  [path]
   (let [[s unreadable] (spec/read-spec path)
         ps (if unreadable [unreadable] (spec/problems s))
         shown (take 20 ps)]
-    (if (seq ps)
+    (when (seq ps)
       (fail! (str/join "\n" (concat [(str path ": " (count ps) (if (= 1 (count ps)) " problem" " problems"))]
                                    (map #(str "  " (clip-to 200 (spec/problem-text %))) shown)
                                    (when (> (count ps) (count shown))
-                                     [(str "  +" (- (count ps) (count shown)) " more")]))))
-      (let [items (:items s)]
-        (str path ": ok · " (count items) (if (= 1 (count items)) " item" " items")
-             (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured")))))))
+                                     [(str "  +" (- (count ps) (count shown)) " more")])))))
+    s))
+
+(defn- items-text [items]
+  (str (count items) (if (= 1 (count items)) " item" " items")
+       (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured"))))
+
+(defn check [[path & extra]]
+  (when (or (str/blank? path) (seq extra)) (fail! check-usage))
+  (str path ": ok · " (items-text (:items (checked-spec path)))))
 
 (def ^:private spec-usage "usage: lume spec [--all]")
 
@@ -720,6 +727,47 @@
     (str (spec/pretty (spec/from-state state :all all))
          (when (and (not all) (pos? closed))
            (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all")))))
+
+;; Run: a spec starts a session, as the events its commands would log, then
+;; baselines each measurement and drives. The harness is the same whoever runs
+;; it; --turns 0 stops after the baselines, for a human to drive by hand. A
+;; spec's policy is the human's as on the command line: its allow, and a
+;; cadence above the default ceiling. A fresh session has no limits, so a
+;; budget only adds them, which anyone may.
+
+(def ^:private run-usage "usage: lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]")
+
+(defn- spec-policy
+  "The human-only parts of a spec, as text for the confirmation, or nil."
+  [{:keys [allow cadence]}]
+  (let [raises (when cadence
+                 (status/cadence-raises status/default-cadence (merge status/default-cadence cadence)))]
+    (not-empty (str/join "; " (cond-> []
+                                (seq allow) (conj (str "workers may run " (str/join " · " (distinct allow))))
+                                raises (conj (str "the cadence ceiling is raised: " raises)))))))
+
+(defn run-spec [root args]
+  (let [[[path goal & extra] {[turns & ts] "--turns" [agent & as] "--agent"}]
+        (take-flags args #{"--turns" "--agent"} run-usage)
+        n (if turns (parse-long turns) 10)]
+    (when (or (str/blank? path) (and goal (str/blank? goal)) (seq extra) (seq ts) (seq as)
+              (not (and n (<= 0 n))))
+      (fail! run-usage))
+    (let [sp (cond-> (checked-spec path) goal (assoc :goal goal))
+          say #(do (println %) (flush))]
+      (when-let [policy (spec-policy sp)]
+        (human-only! (str "only the human runs a spec that sets policy (" policy "); remove it from the spec,"
+                          " or ask with lume ask \"<question>\"")
+                     (str "Start a session where " policy ".") "yes"))
+      (let [session (store/new-session! root)]
+        (doseq [e (spec/events sp root)]
+          (store/append! session (constantly (assoc e :by (actor)))))
+        (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
+        (doseq [item (->> (vals (:items (status/project (store/read-events session)))) (filter :measure) (sort-by :order))]
+          (say (str "baseline " (measure-row session (run-measure session item)))))
+        (if (zero? n)
+          "--turns 0: not driving; lume drive, or drive by hand from lume status"
+          (drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent))))))))
 
 (defn- terminal? []
   ;; Java 22+ Console.isTerminal; before that, a console meant a terminal.
@@ -769,6 +817,10 @@ lume spawn <id> [--agent claude]            run a worker on an item, in the fore
 lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run
 lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
 lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
+lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]
+                                            check a spec, start a session from it, baseline its measurements,
+                                            then drive (--turns 0: don't). A spec's allow, or a cadence above
+                                            every-spawn, is the human's
 lume log [-n N]                             raw events (default last 20)")
 
 (defn run [args]
@@ -799,6 +851,7 @@ lume log [-n N]                             raw events (default last 20)")
                   (cadence (session) (rest args)))
       "check" (if (#{"-h" "--help"} sub) check-usage (check (rest args)))
       "spec" (if (#{"-h" "--help"} sub) spec-usage (show-spec (session) (rest args)))
+      "run" (if (#{"-h" "--help"} sub) run-usage (run-spec root (rest args)))
       "spawn" (spawn (session) root (rest args))
       "drive" (drive (session) root (rest args))
       "log" (show-log (session) (rest args))

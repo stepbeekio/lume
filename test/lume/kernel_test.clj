@@ -769,6 +769,73 @@
       (is (thrown-with-msg? Exception #"usage" (cli/show-spec (store/current-session *root*) ["--open"])))
       (is (= "usage: lume check <spec.edn>" (cli/run ["check" "--help"]))))))
 
+(defn- run! [& args]
+  (let [ret (atom nil)
+        out (with-out-str (reset! ret (cli/run-spec *root* (vec args))))]
+    [@ret out]))
+
+(deftest run-starts-a-session-from-a-spec-and-drives
+  (let [refused #(try (apply run! %&) nil (catch clojure.lang.ExceptionInfo e (ex-message e)))
+        sp {:goal "make t small" :gate "true" :budget {:spawns 5}
+            :cadence {:batch 1 :gate-fail true :plateau 3}
+            :items [{:intent "shrink t" :measure "cat t" :runs 3 :drop 1} {:intent "write it up"}]}]
+    (spit (str (fs/path *root* "t")) "t=5")
+    (testing "a spec with any problem starts nothing"
+      (is (re-find #": 2 problems\n  \[:goal\] is required" (refused (spec-file {:items [{}]}))))
+      (is (re-find #"no such file" (refused "/no/such/spec.edn")))
+      (is (nil? (store/current-session *root*))))
+    (testing "usage"
+      (doseq [args [[] ["f" "g" "h"] ["f" "--turns" "-1"] ["f" "--turns" "x"] ["f" "--turns"] ["f" ""]]]
+        (is (re-find #"^usage: lume run" (apply refused args)) (pr-str args)))
+      (is (re-find #"^usage: lume run" (cli/run ["run" "--help"]))))
+    (testing "it starts the session, baselines measurements, then drives"
+      (reset! driver-turns [(str (lume-cmd "spawn" "i1" "--agent" "test")) (lume-cmd "item" "close" "i2" "done" "written")])
+      (let [[ret out] (run! (spec-file sp) "--agent" "driver" "--turns" "3")
+            s (store/current-session *root*)
+            events (store/read-events s)
+            types (map :type events)]
+        (is (= "drive stopped: no open items" ret))
+        (is (re-find #"^session \S+ started from \S+ · 2 items · 1 measured\nbaseline m1 i1 t=5 " out))
+        (is (= (map :type (spec/events sp *root*)) (take 7 types)) "the spec's events, in order")
+        (is (every? #(= "human" (:by %)) (take 7 events)))
+        (is (= [:measure/ran :drive/started] (take 2 (drop 7 types))) "the baseline comes before the drive")
+        (is (= sp (edn/read-string (cli/show-spec s ["--all"]))) "the session's harness is the spec")
+        (is (= {:batch 1 :gate-fail true :plateau 3} (:cadence-ceiling (status/project events)))
+            "the human's cadence is the ceiling")
+        (is (= ["d1" "d2"] (keep :drive/id (filter #(= :drive/turn (:type %)) events))))
+        (is (= ["m1" "m2"] (keep :measure/id events)) "the spawn on i1 was measured against the baseline")))
+    (testing "the goal on the command line replaces the spec's; --turns 0 doesn't drive"
+      (let [[ret out] (run! (spec-file sp) "cut t further" "--turns" "0")
+            events (store/read-events (store/current-session *root*))]
+        (is (str/starts-with? ret "--turns 0: not driving"))
+        (is (str/includes? out "baseline m1 i1"))
+        (is (= "cut t further" (:goal (status/project events))))
+        (is (not-any? #(= :drive/started (:type %)) events))))
+    (testing "an agent runs the same harness, policy aside"
+      (binding [cli/*actor* "d7"]
+        (let [[ret] (run! (spec-file sp) "--turns" "0")
+              events (store/read-events (store/current-session *root*))]
+          (is (str/starts-with? ret "--turns 0"))
+          (is (every? #(= "d7" (:by %)) events))
+          (is (= sp (edn/read-string (cli/show-spec (store/current-session *root*) ["--all"]))))
+          (is (= status/default-cadence (status/cadence-ceiling (status/project events)))
+              "an agent's cadence is no ceiling")))
+      (let [before (store/current-session *root*)]
+        (doseq [[extra why] [[{:allow ["jj"]} #"workers may run jj"]
+                             [{:cadence {:batch 3}} #"the cadence ceiling is raised: batch 1 → 3"]]]
+          (binding [cli/*actor* "s4"]
+            (is (re-find (re-pattern (str "^only the human runs a spec that sets policy \\(.*" why))
+                         (refused (spec-file (merge sp extra)) "--turns" "0"))))
+          (testing "and the human must confirm it at a terminal"
+            (binding [cli/*confirm* (constantly false)]
+              (is (re-find #"interactive terminal" (refused (spec-file (merge sp extra)) "--turns" "0"))))))
+        (is (= before (store/current-session *root*)) "a refused run starts no session")))
+    (testing "a human's confirmed policy is logged as theirs"
+      (run! (spec-file (assoc sp :allow ["jj"] :cadence {:batch 3})) "--turns" "0")
+      (let [state (status/project (store/read-events (store/current-session *root*)))]
+        (is (= ["jj"] (:allow state)))
+        (is (= 3 (:batch (status/cadence-ceiling state))))))))
+
 (deftest claude-driver-args
   (is (= ["--model" "opus" "--tools" "Bash,Read"
           "--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(jj:*),Bash(bb test:*),Read"
