@@ -85,20 +85,21 @@
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
-  long the session runs."
+  long the session runs: at most 40 lines with every section full."
   [session-id events now]
   (let [{:keys [goal repo items notes spawns allow]} (project events)
         items (sort-by :order (vals items))
-        {open true closed false} (group-by #(= :open (:state %)) items)]
+        {open true closed false} (group-by #(= :open (:state %)) items)
+        ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
+        pinned (filter :pinned notes)]
     (str/join
      "\n"
      (concat
       [(str "lume status · " session-id (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
       (when (seq allow) (section "allow" [(clip (str/join " · " allow) (- width 8))]))
-      (section "pinned" (capped 8 "lume log"
-                                (map #(clip (str (:note/id %) " " (:text %)) (- width 8))
-                                     (filter :pinned notes))))
+      (section "pinned" (capped 6 "lume log"
+                                (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
                (capped 10 "lume log"
                        (mapcat (fn [{:keys [id intent] :as item}]
@@ -113,7 +114,7 @@
                        (map (fn [{:keys [id state intent why]}]
                               (str id "  " (name state) " — " (clip intent 40) (when why (str " — " (clip why 40)))))
                             (reverse (sort-by :closed-at closed)))))
-      (section "notes" (capped 5 "lume log"
+      (section "notes" (capped (if (seq pinned) 3 5) "lume log"
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
                                     (reverse (remove :pinned notes)))))
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.

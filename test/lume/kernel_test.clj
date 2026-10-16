@@ -158,16 +158,26 @@
     (is (= 9 (count (store/read-events s))))))
 
 (deftest status-stays-bounded
-  (let [s (new-session "goal")]
-    (dotimes [n 200] (cli/item-add s [(str "item " n " " (apply str (repeat 50 "x")))]))
-    (dotimes [n 50] (cli/note s [(str "note " n)]))
-    (dotimes [n 20] (cli/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
-    (let [out (status/render "sess" (store/read-events s) (Instant/now))
-          lines (str/split-lines out)]
-      (is (< (count lines) 40) out)
-      (is (every? #(<= (count %) 110) lines) out)
-      (is (str/includes? out "+190 more"))
-      (is (str/includes? out "+12 more")))))
+  (testing "every section full still fits in 40 lines"
+    (let [s (new-session (apply str "goal " (repeat 200 "g")))]
+      (dotimes [n 20] (cli/allow s [(str "cmd-" n " " (apply str (repeat 20 "a")))]))
+      (dotimes [n 200] (cli/item-add s [(str "item " n " " (apply str (repeat 50 "x"))) "--gate" "true"]))
+      (dotimes [n 20] (cli/item-close s [(str "i" (inc n)) "dropped" (apply str (repeat 60 "w"))]))
+      (dotimes [n 50] (cli/note s [(str "note " n)]))
+      (dotimes [n 20] (cli/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
+      (let [out (status/render "sess" (store/read-events s) (Instant/now))
+            lines (str/split-lines out)]
+        (is (<= (count lines) 40) out)
+        (is (every? #(<= (count %) 110) lines) out)
+        (doseq [section ["goal" "allow" "pinned" "open" "closed" "notes" "recent" "next"]]
+          (is (re-find (re-pattern (str "(?m)^" section " ")) out) section))
+        (is (str/includes? out "+14 more") "20 pinned, 6 shown")
+        (is (str/includes? out "+47 more") "50 notes, 3 shown beside pinned")
+        (is (str/includes? out "+15 more") "20 closed, 5 shown"))))
+  (testing "without pinned notes, notes get the room back"
+    (let [s (new-session "goal")]
+      (dotimes [n 50] (cli/note s [(str "note " n)]))
+      (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "+45 more")))))
 
 (defmethod agents/command :prompt [_ prompt _opts]
   ["printf" "%s" prompt])
