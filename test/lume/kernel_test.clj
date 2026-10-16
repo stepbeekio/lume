@@ -182,11 +182,7 @@
         (is (str/includes? out "+15 more") "20 closed, 5 shown")
         (is (str/includes? out "+176 more items") "180 open with gates, 4 whole items shown")
         (is (re-find #"(?m)^        i24  .*\n            gate true\n        \+176" out)
-            "an item's gate line is never cut off from it")))))
-
-;; Its own deftest: session ids have second resolution, so a second session in
-;; the same root and second would land in the first one's log.
-(deftest notes-get-the-room-back
+            "an item's gate line is never cut off from it"))))
   (testing "without pinned notes, notes get the room back"
     (let [s (new-session "goal")]
       (dotimes [n 50] (cli/note s [(str "note " n)]))
