@@ -2,6 +2,7 @@
   "The lume command line. Output is agent-first: short, structured, bounded."
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.agents :as agents]
             [lume.status :as status]
@@ -108,6 +109,33 @@
                 "When you finish, end with a short summary"
                 "of what you did and anything left undone."]))))
 
+;; Spawns. A worker's stdout is copied to its .out file line by line, and the
+;; adapter folds each line into progress, logged at most every *progress-ms*.
+
+(def ^:dynamic *progress-ms* 15000)
+
+(defn- clip-last [s] (subs s 0 (min 200 (count s))))
+
+(defn- follow!
+  "Copy the worker's stdout to `out` until it closes, logging :spawn/progress
+  events as the adapter's view of it changes. Returns the final progress."
+  [session sid agent proc out]
+  (with-open [r (io/reader (:out proc))
+              w (io/writer (fs/file out))]
+    (loop [prog {} logged {} at 0]
+      (if-let [line (.readLine ^java.io.BufferedReader r)]
+        (let [prog (agents/progress agent prog line)
+              now (System/currentTimeMillis)
+              due (and (not= prog logged) (>= (- now at) *progress-ms*))]
+          (.write w (str line "\n"))
+          (.flush w)
+          (if due
+            (do (store/append! session (constantly (merge {:type :spawn/progress :spawn/id sid}
+                                                          (cond-> prog (:last prog) (update :last clip-last)))))
+                (recur prog prog now))
+            (recur prog logged at)))
+        prog))))
+
 (defn spawn [session root [id & opts]]
   (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude]"))
   (let [agent (keyword (or (flag opts "--agent") "claude"))
@@ -126,14 +154,17 @@
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (let [t0 (System/currentTimeMillis)
-          {:keys [exit]} @(p/process (agents/command agent (worker-prompt events item))
-                                     {:dir root :in "" :out :write :out-file (fs/file out)
-                                      :err :write :err-file (fs/file (str out ".err"))
-                                      :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid}})
+          proc (p/process (agents/command agent (worker-prompt events item))
+                          {:dir root :in ""
+                           :err :write :err-file (fs/file (str out ".err"))
+                           :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid}})
+          {:keys [steps]} (follow! session sid agent proc out)
+          {:keys [exit]} @proc
           summary (agents/summarize agent (slurp out))
-          exited (store/append! session (constantly (merge {:type :spawn/exited :spawn/id sid :exit exit
-                                                           :ms (- (System/currentTimeMillis) t0)}
-                                                          summary)))]
+          exited (store/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit
+                                                                    :ms (- (System/currentTimeMillis) t0)}
+                                                                   summary)
+                                                      steps (assoc :steps steps))))]
       (deliver done true)
       (.removeShutdownHook (Runtime/getRuntime) hook)
       (str sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"

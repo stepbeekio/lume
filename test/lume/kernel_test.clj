@@ -1,6 +1,7 @@
 (ns lume.kernel-test
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
+            [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.agents :as agents]
@@ -53,6 +54,39 @@
     (is (= "done by s1" (:result sp)) "worker sees its own spawn id as LUME_ACTOR")
     (is (= ["s1"] (get-in items ["i1" :spawns])))
     (is (fs/exists? (:out sp)))))
+
+(defmethod agents/command :slow [_ _prompt]
+  ["sh" "-c" "echo started; while [ ! -f go ]; do sleep 0.05; done; echo finished"])
+
+(deftest running-spawns-show-progress
+  (binding [cli/*progress-ms* 0]
+    (let [s (new-session "goal")
+          id (cli/item-add s ["take a while"])
+          run (future (cli/spawn s *root* [id "--agent" "slow"]))
+          progress #(get-in (status/project (store/read-events s)) [:spawns "s1" :progress])]
+      (loop [n 0] (when (and (nil? (progress)) (< n 200)) (Thread/sleep 25) (recur (inc n))))
+      (is (= {:steps 1 :last "started"} (select-keys (progress) [:steps :last])))
+      (is (= "started\n" (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out])))
+          "out is written as the worker goes")
+      (is (re-find #"s1 running · \d+s ago · 1 steps · started \(\d+s ago\)"
+                   (status/render "sess" (store/read-events s) (Instant/now))))
+      (spit (str (fs/path *root* "go")) "")
+      (is (re-find #"^s1 i1 exit 0 in \d+s · finished" @run))
+      (is (= 2 (get-in (status/project (store/read-events s)) [:spawns "s1" :steps]))))))
+
+(deftest claude-stream-json
+  (let [lines [(json/generate-string {:type "system" :subtype "init"})
+               (json/generate-string {:type "assistant" :message {:content [{:type "text" :text "Looking."}]}})
+               (json/generate-string {:type "assistant"
+                                      :message {:content [{:type "tool_use" :name "Bash" :input {:command "bb test"}}]}})
+               (json/generate-string {:type "user" :message {:content [{:type "tool_result" :content "ok"}]}})
+               (json/generate-string {:type "result" :result "all done" :session_id "abc" :total_cost_usd 0.5})]
+        prog (reduce #(agents/progress :claude %1 %2) {} lines)]
+    (is (= {:steps 1 :last "Bash bb test"} prog))
+    (is (= {:result "all done" :agent-session "abc" :cost-usd 0.5}
+           (agents/summarize :claude (str/join "\n" lines))))
+    (testing "output that isn't stream-json falls back to the last line"
+      (is (= {:result "boom"} (agents/summarize :claude "boom"))))))
 
 (deftest gates-decide-done
   (let [s (new-session "goal")

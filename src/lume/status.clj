@@ -25,6 +25,7 @@
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
                             (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e)))
+       :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
        :spawn/exited    (update-in s [:spawns (:spawn/id e)] merge e)
        s))
    {:items {} :notes [] :spawns {}}
@@ -48,13 +49,16 @@
 (defn- clock [t]
   (.format (.atZone (Instant/parse t) (ZoneId/systemDefault)) (DateTimeFormatter/ofPattern "HH:mm")))
 
-(defn- spawn-line [now {:keys [exit interrupted result t] :as sp}]
-  (str (:spawn/id sp) " "
-       (cond interrupted "interrupted"
-             (contains? sp :exit) (str "exit " exit)
-             :else "running")
-       " · " (ago now t)
-       (when result (str " · " (clip result 60)))))
+(defn- spawn-line [now {:keys [exit interrupted result t progress] :as sp}]
+  (let [running (not (or interrupted (contains? sp :exit)))]
+    (str (:spawn/id sp) " "
+         (cond interrupted "interrupted"
+               running "running"
+               :else (str "exit " exit))
+         " · " (ago now t)
+         (when-let [steps (or (:steps sp) (:steps progress))] (str " · " steps " steps"))
+         (cond result (str " · " (clip result 60))
+               (and running (:last progress)) (str " · " (clip (:last progress) 50) " (" (ago now (:t progress)) ")")))))
 
 (defn- gate-line [now {:keys [gate last-gate]}]
   (str "gate " (clip gate 40)
@@ -105,6 +109,7 @@
       (section "notes" (capped 5 "lume log"
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
                                     (reverse notes))))
-      (section "recent" (map event-line (take-last 6 events)))
+      ;; Progress is shown on its spawn; in recent it would crowd out everything else.
+      (section "recent" (map event-line (take-last 6 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                        "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note \"<text>\" · lume log"])))))
