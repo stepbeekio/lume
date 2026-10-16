@@ -4,11 +4,13 @@
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [lume.agents :as agents]
-            [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
+
+;; lume.agents and lume.spec load on first use, via requiring-resolve: most
+;; lume calls (note, item, ask, a driver's spawn request) are short processes
+;; that need neither, and loading code is most of what they cost.
 
 (defn- fail! [& msg]
   (throw (ex-info (str/join " " msg) {:lume/user-error true})))
@@ -220,12 +222,16 @@
 
 (defn- environment
   "Where a row was taken, so a noisy one can be explained: host, 1-minute
-  load average, and the repo's git HEAD and jj change. Read-only."
+  load average, and the repo's git HEAD and jj change. Read-only, and it asks
+  only the tools that can answer: each process costs a row a few ms."
   [root]
-  (let [load (some->> (sh-out root "uptime") (re-find #"load averages?:\s*([\d.]+)") second parse-double)]
+  (let [load (if (fs/exists? "/proc/loadavg")
+               (some-> (re-find #"^[\d.]+" (first (fs/read-all-lines "/proc/loadavg"))) parse-double)
+               (some->> (sh-out root "uptime") (re-find #"load averages?:\s*([\d.]+)") second parse-double))]
     (cond-> {:host (try (.getHostName (java.net.InetAddress/getLocalHost)) (catch Exception _ "?"))}
       load (assoc :load load)
-      :always (merge (when-let [c (sh-out root "git" "rev-parse" "--short" "HEAD")] {:commit c})
+      :always (merge (when (fs/exists? (fs/path root ".git"))
+                       (when-let [c (sh-out root "git" "rev-parse" "--short" "HEAD")] {:commit c}))
                      (when (fs/exists? (fs/path root ".jj"))
                        (when-let [c (sh-out root "jj" "log" "-r" "@" "--ignore-working-copy" "--no-graph"
                                             "-T" "change_id.short(8)")]
@@ -463,7 +469,7 @@
               w (io/writer (fs/file out))]
     (loop [prog {} logged {} at 0]
       (if-let [line (.readLine ^java.io.BufferedReader r)]
-        (let [prog (agents/progress agent prog line)
+        (let [prog ((requiring-resolve 'lume.agents/progress) agent prog line)
               now (System/currentTimeMillis)
               due (and (not= prog logged) (>= (- now at) *progress-ms*))]
           (.write w (str line "\n"))
@@ -495,13 +501,13 @@
     (let [t0 (System/currentTimeMillis)
           ;; A worker may run the session's allowed commands, and its own gate.
           allowed (distinct (cond-> (:allow (status/project events)) (:gate item) (conj (:gate item))))
-          proc (p/process (agents/command agent (worker-prompt events item) {:allow allowed})
+          proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
                           {:dir root :in ""
                            :err :write :err-file (fs/file (str out ".err"))
                            :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid}})
           {:keys [steps]} (follow! session sid agent proc out)
           {:keys [exit]} @proc
-          summary (agents/summarize agent (slurp out))
+          summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))
           exited (store/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit
                                                                     :ms (- (System/currentTimeMillis) t0)}
                                                                    summary)
@@ -573,12 +579,12 @@
   (let [out (fs/path session "drives" (str did ".out"))]
     (fs/create-dirs (fs/parent out))
     (let [t0 (System/currentTimeMillis)
-          {:keys [exit]} @(p/process (agents/command agent (driver-prompt session did) {:allow allow :role :driver})
+          {:keys [exit]} @(p/process ((requiring-resolve 'lume.agents/command) agent (driver-prompt session did) {:allow allow :role :driver})
                                      {:dir root :in ""
                                       :out :write :out-file (fs/file out)
                                       :err :write :err-file (fs/file (str out ".err"))
                                       :extra-env {"LUME_SESSION" session "LUME_ACTOR" did}})]
-      (assoc (agents/summarize agent (slurp (fs/file out)))
+      (assoc ((requiring-resolve 'lume.agents/summarize) agent (slurp (fs/file out)))
              :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
 
 (defn- hand-back-early
@@ -700,7 +706,7 @@
 
 (defn install [[a b]]
   (let [agent (keyword (if (= "--agent" a) b "claude"))
-        {:keys [files manual]} (agents/setup agent)]
+        {:keys [files manual]} ((requiring-resolve 'lume.agents/setup) agent)]
     (str/join "\n"
               (concat
                (for [[path content] files]
@@ -808,12 +814,12 @@
 (defn- checked-spec
   "The spec in the file at path, or a failure listing every problem with it."
   [path]
-  (let [[s unreadable] (spec/read-spec path)
-        ps (if unreadable [unreadable] (spec/problems s))
+  (let [[s unreadable] ((requiring-resolve 'lume.spec/read-spec) path)
+        ps (if unreadable [unreadable] ((requiring-resolve 'lume.spec/problems) s))
         shown (take 20 ps)]
     (when (seq ps)
       (fail! (str/join "\n" (concat [(str path ": " (count ps) (if (= 1 (count ps)) " problem" " problems"))]
-                                   (map #(str "  " (clip-to 200 (spec/problem-text %))) shown)
+                                   (map #(str "  " (clip-to 200 ((requiring-resolve 'lume.spec/problem-text) %))) shown)
                                    (when (> (count ps) (count shown))
                                      [(str "  +" (- (count ps) (count shown)) " more")])))))
     s))
@@ -833,7 +839,7 @@
   (let [all (boolean (some #{"--all"} args))
         state (status/project (store/read-events session))
         closed (count (remove #(= :open (:state %)) (vals (:items state))))]
-    (str (spec/pretty (spec/from-state state :all all))
+    (str ((requiring-resolve 'lume.spec/pretty) ((requiring-resolve 'lume.spec/from-state) state :all all))
          (when (and (not all) (pos? closed))
            (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all")))))
 
@@ -869,7 +875,7 @@
                           " or ask with lume ask \"<question>\"")
                      (str "Start a session where " policy ".") "yes"))
       (let [session (store/new-session! root)]
-        (doseq [e (spec/events sp root)]
+        (doseq [e ((requiring-resolve 'lume.spec/events) sp root)]
           (store/append! session (constantly (assoc e :by (actor)))))
         (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
         (doseq [item (->> (vals (:items (status/project (store/read-events session)))) (filter :measure) (sort-by :order))]
@@ -944,13 +950,16 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                                             its state, refs/lume/*, worktrees; lists them, refused without --yes")
 
 (defn run [args]
-  (let [root (store/repo-root)
+  (let [;; Finding the repo runs git, so only commands that need it do: a
+        ;; worker's lume note has its session from LUME_SESSION.
+        root (delay (store/repo-root))
         [cmd sub & more] args
-        session #(or (store/current-session root) (fail! "no session for this repo; run lume init \"<goal>\""))]
+        session #(or store/*session* (store/current-session @root)
+                     (fail! "no session for this repo; run lume init \"<goal>\""))]
     (case cmd
-      "init" (init root (rest args))
+      "init" (init @root (rest args))
       "install" (install (rest args))
-      "status" (if (#{"-h" "--help"} sub) status-usage (show-status root (rest args)))
+      "status" (if (#{"-h" "--help"} sub) status-usage (show-status @root (rest args)))
       "item" (case sub
                "add" (item-add (session) more)
                "close" (item-close (session) more)
@@ -973,12 +982,12 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                   (cadence (session) (rest args)))
       "check" (if (#{"-h" "--help"} sub) check-usage (check (rest args)))
       "spec" (if (#{"-h" "--help"} sub) spec-usage (show-spec (session) (rest args)))
-      "run" (if (#{"-h" "--help"} sub) run-usage (run-spec root (rest args)))
-      "spawn" (spawn (session) root (rest args))
-      "drive" (drive (session) root (rest args))
-      "log" (if (#{"-h" "--help"} sub) log-usage (show-log root (rest args)))
-      "ls" (if (#{"-h" "--help"} sub) ls-usage (ls root (rest args)))
-      "clean" (if (#{"-h" "--help"} sub) clean-usage (clean root (rest args)))
+      "run" (if (#{"-h" "--help"} sub) run-usage (run-spec @root (rest args)))
+      "spawn" (spawn (session) @root (rest args))
+      "drive" (drive (session) @root (rest args))
+      "log" (if (#{"-h" "--help"} sub) log-usage (show-log @root (rest args)))
+      "ls" (if (#{"-h" "--help"} sub) ls-usage (ls @root (rest args)))
+      "clean" (if (#{"-h" "--help"} sub) clean-usage (clean @root (rest args)))
       (nil "help" "-h" "--help") usage
       (fail! "unknown command:" cmd "\n\n" usage))))
 

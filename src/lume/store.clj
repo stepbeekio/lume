@@ -7,6 +7,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str])
   (:import (java.nio.channels FileChannel)
            (java.nio.file OpenOption StandardOpenOption)
@@ -35,7 +36,10 @@
 (defn read-events [session]
   (let [f (log-file session)]
     (if (fs/exists? f)
-      (->> (fs/read-all-lines f) (remove str/blank?) (mapv edn/read-string))
+      (with-open [r (java.io.PushbackReader. (io/reader f))]
+        (loop [events (transient [])]
+          (let [e (edn/read {:eof r} r)]
+            (if (identical? r e) (persistent! events) (recur (conj! events e))))))
       [])))
 
 (defn- with-lock [session f]
