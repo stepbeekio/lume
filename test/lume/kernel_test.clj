@@ -135,7 +135,39 @@
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now))
                        "gate false · g2 fail exit 1"))))
 
-(defmethod agents/command :allowed [_ _prompt {:keys [allow]}]
+(deftest item-show-prints-what-status-clips
+  (let [s (new-session "goal")
+        intent (str "a long intent " (str/join " " (repeat 40 "word")) " END")
+        id (cli/item-add s [intent "--gate" "false"])
+        other (cli/item-add s ["unrelated"])]
+    (cli/note s ["about i1: it matters"])
+    (cli/note s ["about i11 and i10, not this one"])
+    (cli/spawn s *root* [id "--agent" "test"])
+    (cli/spawn s *root* [other "--agent" "test"])
+    (let [out (cli/item-show s [id])
+          lines (str/split-lines out)]
+      (is (= "i1 open" (first lines)))
+      (is (str/includes? out (str "intent  " intent)) "the intent is not clipped")
+      (is (str/includes? out "gate    false"))
+      (is (str/includes? out "note/added n1 about i1"))
+      (is (not (str/includes? out "n2")) "i11 and i10 don't mention i1")
+      (is (str/includes? out "spawn/started s1"))
+      (is (str/includes? out "spawn/exited s1 exit 3 done by s1"))
+      (is (str/includes? out "gate/ran g1 exit 1 false"))
+      (is (not (str/includes? out "s2")) "other items' spawns are left out"))
+    (testing "a closed item shows its disposition"
+      (cli/item-close s [other "dropped" "not needed"])
+      (is (str/starts-with? (cli/item-show s [other]) "i2 dropped — not needed")))
+    (testing "events are capped to the last 20"
+      (dotimes [n 25] (cli/note s [(str "i2 note " n)]))
+      (let [lines (str/split-lines (cli/item-show s [other]))]
+        (is (= 24 (count lines)))
+        (is (re-find #"^\+\d+ earlier events" (nth lines 3)))
+        (is (str/includes? (last lines) "i2 note 24"))))
+    (testing "unknown items are refused"
+      (is (thrown-with-msg? Exception #"no such item" (cli/item-show s ["i9"]))))))
+
+(defmethod agents/command :allowed[_ _prompt {:keys [allow]}]
   ["echo" (str/join "|" allow)])
 
 (deftest workers-may-run-allowed-commands-and-their-gate

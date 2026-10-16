@@ -318,6 +318,43 @@
                     (recur (inc n))))))))
       (finally (.removeShutdownHook (Runtime/getRuntime) hook)))))
 
+;; Item show: what status clips. The intent and gate in full, then the item's
+;; events: its own, its spawns' (bar progress), and notes and asks naming it.
+
+(defn- clip-to [n s]
+  (let [s (str/replace (str s) #"\s+" " ")]
+    (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
+
+(defn- item-event? [id spawn-ids]
+  (let [named (re-pattern (str "(?<![A-Za-z0-9])" id "(?![0-9])"))]
+    (fn [{:keys [type] :as e}]
+      (or (= id (:item/id e))
+          (and (spawn-ids (:spawn/id e)) (not= :spawn/progress type))
+          (and (#{:note/added :ask/opened :ask/answered} type)
+               (some #(and % (re-find named %)) [(:text e) (:question e) (:answer e)]))))))
+
+(defn- item-event-line [e]
+  (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
+       (clip-to 240 (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
+                                        [:spawn/id :gate/id :note/id :ask/id :disposition :exit
+                                         :gate :text :question :answer :why :result :tail])))
+       (when (:by e) (str " [" (:by e) "]"))))
+
+(defn item-show [session [id]]
+  (when (str/blank? id) (fail! "usage: lume item show <id>"))
+  (let [events (store/read-events session)
+        item (or (get-in (status/project events) [:items id]) (fail! "no such item:" id))
+        related (filter (item-event? id (set (:spawns item))) events)
+        shown (take-last 20 related)]
+    (str/join "\n"
+              (concat
+               [(str id " " (name (:state item)) (when (:why item) (str " — " (clip-to 200 (:why item)))))
+                (str "intent  " (clip-to 2000 (:intent item)))
+                (str "gate    " (or (:gate item) "none"))]
+               (when (> (count related) (count shown))
+                 [(str "+" (- (count related) (count shown)) " earlier events — lume log")])
+               (map item-event-line shown)))))
+
 (defn show-log [session [flag n]]
   (let [events (store/read-events session)
         n (if (= "-n" flag) (parse-long n) 20)]
@@ -332,6 +369,7 @@ lume status                                 one screen: goal, items, notes, rece
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
+lume item show <id>                         one item in full: intent, gate, disposition and its events
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
 lume ask \"<question>\"                       put a question to the human; open asks top status
@@ -352,7 +390,8 @@ lume log [-n N]                             raw events (default last 20)")
                "add" (item-add (session) more)
                "close" (item-close (session) more)
                "gate" (item-gate (session) more)
-               (fail! "usage: lume item add|gate|close ..."))
+               "show" (item-show (session) more)
+               (fail! "usage: lume item add|gate|close|show ..."))
       "note" (note (session) (rest args))
       "ask" (ask (session) (rest args))
       "answer" (answer (session) (rest args))

@@ -48,6 +48,7 @@ Pushing is up to you. Drivers commit, but they can't push.
 lume status                    one screen: goal, asks, pinned notes, items, recent events
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"
+lume item show <id>            one item in full: intent, gate, disposition, its events
 lume spawn <id>                run one worker on an item
 lume drive [--turns N]         driver turns until an ask, no open items, or N turns
 lume note [--pin] "<text>"     steering; pinned notes stay in status and every prompt
