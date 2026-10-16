@@ -2,7 +2,7 @@
 
 A durable substrate for disposable agent harnesses. Lume keeps a long agent task's state in an event log instead of in an agent's context: work items, gates, notes, and questions for you. Agents drive it through a CLI, and a fresh agent picks up from `lume status`. See [pitch.md](pitch.md) for the why.
 
-Nothing is written inside your repo. All state lives under `~/.lume`.
+Nothing is written inside your repo. All state lives under `~/.lume`, and `lume clean` removes it: it lists what it would delete (the repo's state, any `refs/lume/*` and worktrees under that state), and deletes it only with `--yes`. A test runs a harness against a git+jj repo, cleans, and checks the repo is byte-identical to a copy taken before. `lume clean --session <id>` removes one session. Workers and drivers can't run it.
 
 ## Install
 
@@ -132,6 +132,8 @@ lume run <spec.edn> ["<goal>"] [--turns N]
 lume ls [--all]                this repo's sessions, newest first, one line each (10 unless --all)
 lume log [-n N] [--session <id>]
                                raw events, of the current session or a past one
+lume clean [--session <id>] [--yes]
+                               remove every trace of lume for this repo (or one session)
 ```
 
 ## Develop

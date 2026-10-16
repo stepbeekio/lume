@@ -139,7 +139,8 @@ Run `lume status` first. It is one screen:
 
 `lume item show <id>` prints an item's full intent, gate and history when status clips it.
 `lume ls` lists the repo's sessions, newest first; `lume status <session>` and
-`lume log --session <session>` read a past one without touching it.
+`lume log --session <session>` read a past one without touching it. `lume clean`
+deletes sessions and is the human's; never run it.
 If there is no session, don't start one unprompted; ask the human for the goal.
 
 ## Work

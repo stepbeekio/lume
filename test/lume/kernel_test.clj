@@ -957,3 +957,75 @@
       (is (= "{\"env\": {\"LUME_ACTOR\": \"claude\"}}" (slurp settings))))
     (is (thrown-with-msg? Exception #"knows no agent" (cli/install ["--agent" "nope"])))
     (is (empty? (fs/list-dir *root*)) "nothing is written in the repo")))
+
+(defn- tree
+  "Every path under dir with its bytes (:dir for a directory), to compare two
+  trees byte for byte."
+  [dir]
+  (into (sorted-map)
+        (for [f (rest (file-seq (fs/file dir)))]
+          [(str (fs/relativize dir f)) (if (fs/directory? f) :dir (vec (fs/read-all-bytes f)))])))
+
+(defn- differing
+  "The paths whose bytes differ between two trees, or that only one has."
+  [a b]
+  (sort (filter #(not= (get a %) (get b %)) (distinct (concat (keys a) (keys b))))))
+
+(deftest clean-leaves-the-repo-as-it-was
+  (let [env {"GIT_AUTHOR_NAME" "t" "GIT_AUTHOR_EMAIL" "t@t" "GIT_COMMITTER_NAME" "t" "GIT_COMMITTER_EMAIL" "t@t"
+             "JJ_USER" "t" "JJ_EMAIL" "t@t" "JJ_CONFIG" (str (fs/path store/*home* "jj.toml"))}
+        sh #(apply p/shell {:dir *root* :out :string :err :string :extra-env env} %&)
+        control (str (fs/path store/*home* "control"))
+        dir (store/repo-dir *root*)]
+    (spit (str (fs/path *root* "README")) "a repo\n")
+    (sh "git" "init" "-q")
+    (sh "git" "add" "README")
+    (sh "git" "commit" "-q" "-m" "first")
+    (sh "jj" "git" "init" "--colocate")
+    (fs/copy-tree *root* control)
+    (testing "a harness run: init, items, a measurement, a spawned worker"
+      (let [s (new-session "goal")
+            id (cli/item-add s ["do the thing" "--gate" "true"])]
+        (cli/item-measure s [id "echo build_s=1"])
+        (cli/measure s [id])
+        (is (str/includes? (cli/spawn s *root* [id "--agent" "test"]) "done"))))
+    ;; Lume makes neither yet; clean must remove them when it does.
+    (sh "git" "update-ref" "refs/lume/spawns/s1" "HEAD")
+    (sh "git" "worktree" "add" "-q" "--detach" (str (fs/path dir "worktrees" "s1")))
+    (is (seq (differing (tree control) (tree *root*))))
+    (testing "workers and drivers may not clean"
+      (binding [cli/*actor* "s1"]
+        (is (thrown-with-msg? Exception #"don't delete the log" (cli/clean *root* ["--yes"])))))
+    (testing "without --yes it only lists what it would remove"
+      (let [e (is (thrown? Exception (cli/clean *root* [])))]
+        (is (str/starts-with? (ex-message e) "refused without --yes"))
+        (is (str/includes? (ex-message e) "  ref refs/lume/spawns/s1"))
+        (is (str/includes? (ex-message e) (str "  dir " dir))))
+      (is (fs/exists? dir)))
+    (testing "--yes removes it all and says what"
+      (let [out (cli/clean *root* ["--yes"])]
+        (is (= [(str "removed worktree " (fs/path dir "worktrees" "s1"))
+                "removed ref refs/lume/spawns/s1"
+                (str "removed dir " (fs/path *root* ".git" "refs" "lume"))
+                (str "removed dir " dir)]
+               (str/split-lines out))))
+      (is (not (fs/exists? dir)))
+      (is (empty? (differing (tree control) (tree *root*))) "the repo is byte-identical to the control"))
+    (is (str/starts-with? (cli/clean *root* []) "nothing to clean"))))
+
+(deftest clean-one-session
+  (let [old (new-session "old")
+        cur (new-session "current")
+        dir (store/repo-dir *root*)]
+    (is (thrown-with-msg? Exception #"no session nope" (cli/clean *root* ["--session" "nope" "--yes"])))
+    (is (= (str "removed dir " old) (cli/clean *root* ["--session" (store/session-id old) "--yes"])))
+    (is (= cur (store/current-session *root*)) "the current session is untouched")
+    (testing "the last session takes the repo's state with it"
+      (is (= (str "removed dir " dir) (cli/clean *root* ["--session" (store/session-id cur) "--yes"])))
+      (is (not (fs/exists? dir))))
+    (testing "cleaning the current session, with others left, unsets current"
+      (let [_ (new-session "a")
+            b (new-session "b")]
+        (is (= [(str "removed dir " b) (str "removed file " (fs/path dir "current"))]
+               (str/split-lines (cli/clean *root* ["--session" (store/session-id b) "--yes"]))))
+        (is (nil? (store/current-session *root*)))))))
