@@ -25,6 +25,44 @@
   (let [{:keys [runs drop]} (spec m)]
     (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop)))))
 
+;; Cadence: when drive hands control back. A driver may request up to :batch
+;; spawns a turn (every-spawn is 1), run in order; :gate-fail ends a batch at a
+;; failed gate; :plateau K asks the human after K rows without a new best. The
+;; human's latest cadence is the ceiling for everyone else's.
+(def default-cadence {:batch 1})
+
+(defn cadence [state] (or (:cadence state) default-cadence))
+
+(defn cadence-ceiling [state] (or (:cadence-ceiling state) default-cadence))
+
+(defn cadence-text
+  "The rules as lume cadence takes them, e.g. batch 3 on gate-fail on plateau 4."
+  [{:keys [batch gate-fail plateau]}]
+  (str/join " " (cond-> [(if (= 1 batch) "every-spawn" (str "batch " batch))]
+                  gate-fail (conj "on gate-fail")
+                  plateau (conj (str "on plateau " plateau)))))
+
+(defn cadence-raises
+  "How cadence c hands back less often than the ceiling allows, as text, or nil."
+  [ceiling c]
+  (not-empty
+   (str/join ", " (remove nil? [(when (> (:batch c) (:batch ceiling))
+                                  (str "batch " (:batch ceiling) " → " (:batch c)))
+                                (when (and (:gate-fail ceiling) (not (:gate-fail c)))
+                                  "drops on gate-fail")
+                                (when (and (:plateau ceiling) (> (or (:plateau c) Long/MAX_VALUE) (:plateau ceiling)))
+                                  (str "plateau " (:plateau ceiling) " → " (or (:plateau c) "none")))]))))
+
+;; A plateau is counted per item and measurement spec: rows since the last one
+;; that set a new best. Lower is better; a number not seen before is a new best.
+(defn- plateau [{:keys [best stale best-id]} {:keys [exit values] mid :measure/id}]
+  (let [values (when (zero? exit) values)
+        better (and (seq values)
+                    (or (nil? best) (some (fn [[k v]] (or (nil? (get best k)) (< v (get best k)))) values)))]
+    (if better
+      {:best (merge-with min (or best {}) values) :stale 0 :best-id mid}
+      {:best best :stale (inc (or stale 0)) :best-id best-id})))
+
 (defn amount [k v]
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
     (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
@@ -50,13 +88,17 @@
        ;; of the same spec (command, runs and drop) that passed with numbers.
        :measure/ran     (update-in s [:items (:item/id e)]
                                    (fn [item]
-                                     (let [base (get-in item [:good-measures (spec e)])]
-                                       (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
+                                     (let [base (get-in item [:good-measures (spec e)])
+                                           p (plateau (get-in item [:plateaus (spec e)]) e)]
+                                       (cond-> (-> item
+                                                   (assoc :last-measure (cond-> e base (assoc :base base)) :plateau p)
+                                                   (assoc-in [:plateaus (spec e)] p))
                                          (and (zero? (:exit e)) (seq (:values e))) (assoc-in [:good-measures (spec e)] e)))))
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
-       :ask/opened      (update s :asks assoc (:ask/id e) {:id (:ask/id e) :question (:question e) :state :open})
+       :ask/opened      (update s :asks assoc (:ask/id e) (cond-> {:id (:ask/id e) :question (:question e) :state :open}
+                                                            (:item/id e) (assoc :item (:item/id e))))
        ;; An answer is steering, like a note, so it joins the notes.
        :ask/answered    (-> s
                             (assoc-in [:asks (:ask/id e) :state] :answered)
@@ -65,6 +107,9 @@
                                                        :text (str (:ask/id e) " → " (:answer e)))))
        :note/unpinned  (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
        :session/budgeted (update s :budget merge (select-keys e [:usd :spawns :minutes]))
+       :session/cadence (let [c (select-keys e [:batch :gate-fail :plateau])]
+                          (cond-> (assoc s :cadence c)
+                            (= "human" (:by e)) (assoc :cadence-ceiling c)))
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
                             (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e))
@@ -207,6 +252,10 @@
 
 (defn- render* [session-id events now]
   (let [{:keys [goal repo items notes spawns allow asks default-gate budget spent] :as state} (project events)
+        cadence-line (when (:cadence state)
+                       (str "cadence " (cadence-text (cadence state))
+                            (when (not= (cadence state) (cadence-ceiling state))
+                              (str " (ceiling " (cadence-text (cadence-ceiling state)) ")"))))
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
         ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
@@ -222,8 +271,10 @@
                                    (filter #(= :open (:state %)))
                                    (sort-by #(parse-long (subs (:id %) 1)))
                                    (map #(paint :yellow (clip (str (:id %) " " (:question %)) (- width 8)))))))
-      (when (or (seq allow) default-gate)
-        (section "allow" [(clip (str/join " · " (cond->> allow default-gate (cons (str "default gate " default-gate))))
+      (when (or (seq allow) default-gate cadence-line)
+        (section "allow" [(clip (str/join " · " (cond->> allow
+                                                  default-gate (cons (str "default gate " default-gate))
+                                                  cadence-line (cons cadence-line)))
                                 (- width 8))]))
       (when (or (seq budget) (some pos? (vals spent)))
         (section "budget" [(let [over (over-budget state)

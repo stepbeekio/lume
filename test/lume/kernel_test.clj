@@ -596,6 +596,83 @@
       (cli/budget s ["--usd" "100" "--minutes" "1"])
       (is (re-find #"^budget reached: 1\.\d of 1 minutes" (drive! s (lume-cmd "note" "never")))))))
 
+(defn- spawn-cmds [& ids]
+  (str/join "; " (map #(lume-cmd "spawn" % "--agent" "test") ids)))
+
+(deftest cadence-decides-when-drive-hands-back
+  (let [render #(status/render "sess" (store/read-events %) (Instant/now))
+        started #(map :item/id (filter (fn [e] (= :spawn/started (:type e))) (store/read-events %)))
+        handed-back #(first (filter (fn [e] (= :drive/handed-back (:type e))) (store/read-events %)))
+        session (fn [cadence & gates]
+                  (let [s (new-session "goal")]
+                    (when cadence (cli/cadence s [cadence]))
+                    (doseq [g gates] (cli/item-add s ["work" "--gate" g]))
+                    s))]
+    (testing "rules are data: no rules prints them, bad rules are usage errors"
+      (let [s (session nil)
+            cad #(status/cadence (status/project (store/read-events s)))]
+        (is (= "cadence every-spawn · ceiling every-spawn" (cli/cadence s [])))
+        (is (not (re-find #"(?m)^allow" (render s))) "an unset cadence isn't shown")
+        (doseq [args [["batch"] ["batch" "0"] ["on"] ["on" "plateau"] ["on" "fail"] ["sometimes"]]]
+          (is (thrown-with-msg? Exception #"usage: lume cadence" (cli/cadence s args)) (pr-str args)))
+        (is (= "cadence batch 3 on gate-fail on plateau 4 · ceiling batch 3 on gate-fail on plateau 4"
+               (cli/cadence s ["batch 3" "on" "gate-fail" "on plateau 4"])))
+        (is (= {:batch 3 :gate-fail true :plateau 4} (cad)))
+        (testing "a driver may hand back more often, within the human's ceiling, never less"
+          (binding [cli/*actor* "d1"]
+            (cli/cadence s ["batch 2 on gate-fail on plateau 2"])
+            (doseq [rules ["batch 4 on gate-fail on plateau 4" "batch 2 on plateau 2" "batch 2 on gate-fail"
+                           "batch 2 on gate-fail on plateau 5"]]
+              (is (thrown-with-msg? Exception #"^only the human hands back less often \(" (cli/cadence s [rules])) rules)))
+          (is (= {:batch 2 :gate-fail true :plateau 2} (cad)))
+          (is (re-find #"(?m)^allow   cadence batch 2 on gate-fail on plateau 2 \(ceiling batch 3 on gate-fail on plateau 4\)$"
+                       (render s))))
+        (testing "the human raises at a terminal, and their cadence is the new ceiling"
+          (binding [cli/*confirm* (constantly false)]
+            (is (thrown-with-msg? Exception #"interactive terminal" (cli/cadence s ["batch 5"]))))
+          (cli/cadence s ["every-spawn"])
+          (binding [cli/*actor* "d1"]
+            (is (thrown-with-msg? Exception #"batch 1 → 2" (cli/cadence s ["batch 2"]))))
+          (is (re-find #"(?m)^allow   cadence every-spawn$" (render s))))))
+    (testing "every-spawn: a turn may request one spawn"
+      (let [s (session nil "false" "false")]
+        (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2"))))
+        (is (= ["i1"] (started s)))))
+    (testing "batch N: up to N requests a turn, run in order, failed gates and all"
+      (let [s (session "batch 3" "false" "false" "false" "false")]
+        (binding [cli/*actor* "d9"]
+          (is (re-find #"\(1 of 3 this turn\)" (cli/spawn s *root* ["i1"]))))
+        (is (= "d2 logged no events" (drive! s (spawn-cmds "i3" "i2" "i1" "i4"))))
+        (is (= ["i3" "i2" "i1"] (started s)))
+        (is (nil? (handed-back s)))))
+    (testing "on gate-fail: a failed gate ends the batch and hands back"
+      (let [s (session "batch 3 on gate-fail" "true" "false" "true")]
+        (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2" "i3"))))
+        (is (= ["i1" "i2"] (started s)) "a passing gate carries on")
+        (is (= {:drive/id "d1" :why "on gate-fail: i2 gate g2 failed" :skipped ["i3"]}
+               (select-keys (handed-back s) [:drive/id :why :skipped])))))
+    (testing "on plateau K: K rows without a new best ask the human, and drive stops"
+      (let [s (session "batch 5 on plateau 2" "false")]
+        (spit (str (fs/path *root* "t")) "t=5")
+        (cli/item-measure s ["i1" "cat t"])
+        (is (re-find #"^ask a1 is open: i1 plateaued: 2 measurement rows without a new best \(best m1, lower is better\)"
+                     (drive! s (spawn-cmds "i1" "i1" "i1" "i1") (lume-cmd "note" "never"))))
+        (is (= ["i1" "i1" "i1"] (started s)))
+        (is (= ["i1"] (:skipped (handed-back s))))
+        (is (= "an ask is open" (:why (handed-back s))))
+        (is (= 1 (count @driver-calls)))
+        (testing "one ask at a time per item, and a new best resets the count"
+          (cli/measure s ["i1"])
+          (is (not (str/includes? (cli/measure s ["i1"]) "ask")) "m5 is 4 rows on, but a1 is open")
+          (cli/answer s ["a1" "keep going"])
+          (cli/measure s ["i1"])
+          (is (str/includes? (cli/measure s ["i1"]) "\nask a2 i1 plateaued: 6 measurement rows"))
+          (cli/answer s ["a2" "keep going"])
+          (spit (str (fs/path *root* "t")) "t=4")
+          (is (re-find #"^m8 i1 t=4\(-1\)" (cli/measure s ["i1"])))
+          (is (= {:stale 0 :best-id "m8"}
+                 (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id]))))))))
+
 (deftest claude-driver-args
   (is (= ["--model" "opus" "--tools" "Bash,Read"
           "--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(jj:*),Bash(bb test:*),Read"

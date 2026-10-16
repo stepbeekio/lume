@@ -49,13 +49,15 @@
 (defn append!
   "Append the event built by (f events) and return it. f runs under the session
   lock and sees the log as it is at the moment of writing, so ids derived from
-  it can't collide between concurrent writers."
+  it can't collide between concurrent writers. If f returns nil, nothing is
+  written and nil is returned."
   [session f]
   (with-lock session
     (fn []
-      (let [event (merge {:t (str (Instant/now))} (f (read-events session)))]
-        (spit (log-file session) (str (pr-str event) "\n") :append true)
-        event))))
+      (when-let [e (f (read-events session))]
+        (let [event (merge {:t (str (Instant/now))} e)]
+          (spit (log-file session) (str (pr-str event) "\n") :append true)
+          event)))))
 
 ;; Sessions
 

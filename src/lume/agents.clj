@@ -149,6 +149,10 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 - `lume spawn <id>` runs a worker on an item; `lume drive` runs driver turns, each
   making one decision, until an ask is open, a budget limit is reached, or nothing
   is left. `lume budget` shows spend; you may lower a limit, never raise one.
+- `lume cadence` says when drive hands back: how many spawns a driver turn may
+  request (`batch N`, run in order), whether a failed gate ends the batch
+  (`on gate-fail`), and when a stalled measurement asks the human (`on plateau K`).
+  You may hand back more often than the human's cadence, never less.
 - After a worker: review its diff, commit it with a message saying what and why, then
   `lume note \"committed <id>: <change id> <what>\"`.
 - `lume item close <id> done \"<why>\"` runs the gate and is refused if it fails;

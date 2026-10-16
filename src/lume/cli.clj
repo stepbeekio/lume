@@ -226,31 +226,53 @@
                                             "-T" "change_id.short(8)")]
                          {:change c}))))))
 
+(defn- plateau-ask!
+  "Under cadence on plateau K, the row that makes K (2K, …) rows without a new
+  best on its item hands back to the human: an ask is opened and returned,
+  unless one about the item is already open."
+  [session {id :item/id mid :measure/id}]
+  (store/append! session
+                 (fn [events]
+                   (let [s (status/project events)
+                         k (:plateau (status/cadence s))
+                         {:keys [stale best-id]} (get-in s [:items id :plateau])]
+                     (when (and k (pos? stale) (zero? (mod stale k))
+                                (= mid (get-in s [:items id :last-measure :measure/id]))
+                                (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
+                       {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
+                        :question (str id " plateaued: " stale " measurement rows without a new best"
+                                       (when best-id (str " (best " best-id ", lower is better)"))
+                                       "; keep going, change approach, or stop?")
+                        :by (actor)})))))
+
 (defn- run-measure
   "Run the item's measurement --runs times, drop the first --drop, and log one
-  :measure/ran row, which is returned. A failed run ends the measurement; the
-  row has the runs kept so far and the failing run's exit."
+  :measure/ran row, which is returned (with :ask if it opened a plateau ask).
+  A failed run ends the measurement; the row has the runs kept so far and the
+  failing run's exit."
   [session {:keys [id measure runs drop] :or {runs 1 drop 0}}]
-  (let [env (environment (:repo (status/project (store/read-events session))))]
-    (run-in-repo session "measures" measure
-                 (fn [events ran]
-                   (let [mid (next-id "m" :measure/ran events)
-                         kept (nthrest ran drop)
-                         failed (when-not (zero? (:exit (peek ran))) (count ran))]
-                     [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :measure measure :env env}
-                                         (when (seq kept) (summarize-runs kept)))
-                            (> runs 1) (assoc :runs runs)
-                            (pos? drop) (assoc :drop drop)
-                            (and failed (> runs 1)) (assoc :failed-run failed))]))
-                 :n runs)))
+  (let [env (environment (:repo (status/project (store/read-events session))))
+        ran (run-in-repo session "measures" measure
+                         (fn [events ran]
+                           (let [mid (next-id "m" :measure/ran events)
+                                 kept (nthrest ran drop)
+                                 failed (when-not (zero? (:exit (peek ran))) (count ran))]
+                             [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :measure measure :env env}
+                                                 (when (seq kept) (summarize-runs kept)))
+                                    (> runs 1) (assoc :runs runs)
+                                    (pos? drop) (assoc :drop drop)
+                                    (and failed (> runs 1)) (assoc :failed-run failed))]))
+                         :n runs)]
+    (if-let [ask (plateau-ask! session ran)] (assoc ran :ask ask) ran)))
 
 (defn- measure-row
   "The ledger row, not the output: the numbers and wall time against the
   previous row, and where the output is when the command failed."
-  [session {:keys [exit out] mid :measure/id id :item/id :as ran}]
+  [session {:keys [exit out ask] mid :measure/id id :item/id :as ran}]
   (let [row (get-in (status/project (store/read-events session)) [:items id :last-measure])]
     (str mid " " id " " (status/measure-text (if (= mid (:measure/id row)) row ran))
-         (when-not (zero? exit) (str "\n" out)))))
+         (when-not (zero? exit) (str "\n" out))
+         (when ask (str "\nask " (:ask/id ask) " " (:question ask))))))
 
 (defn- gate-summary [{:keys [exit tail out] gid :gate/id}]
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
@@ -331,6 +353,34 @@
         (store/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
     (let [s (state)]
       (str "budget " (status/budget-text s) (when-let [over (status/over-budget s)] (str "\n" over))))))
+
+;; Cadence: when drive hands control back, as data. Anyone may hand back more
+;; often than the human's latest cadence; handing back less often is the human's.
+(def ^:private cadence-usage "usage: lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]")
+
+(defn- parse-cadence [words]
+  (let [n #(let [n (some-> % parse-long)] (if (and n (pos? n)) n (fail! cadence-usage)))]
+    (loop [[a b c :as words] words, rules status/default-cadence]
+      (cond (empty? words) rules
+            (= "every-spawn" a) (recur (rest words) (assoc rules :batch 1))
+            (= "batch" a) (recur (drop 2 words) (assoc rules :batch (n b)))
+            (= ["on" "gate-fail"] [a b]) (recur (drop 2 words) (assoc rules :gate-fail true))
+            (= ["on" "plateau"] [a b]) (recur (drop 3 words) (assoc rules :plateau (n c)))
+            :else (fail! cadence-usage)))))
+
+(defn cadence [session args]
+  (let [words (remove str/blank? (mapcat #(str/split % #"\s+") args))
+        state #(status/project (store/read-events session))]
+    (when (seq words)
+      (let [c (parse-cadence words)]
+        (when-let [raises (status/cadence-raises (status/cadence-ceiling (state)) c)]
+          (human-only! (str "only the human hands back less often (" raises "); hand back more often,"
+                            " or ask with lume ask \"<question>\"")
+                       (str "Raise the cadence ceiling: " raises ".") "yes"))
+        (store/append! session (constantly (assoc c :type :session/cadence :by (actor))))))
+    (let [s (state)]
+      (str "cadence " (status/cadence-text (status/cadence s))
+           " · ceiling " (status/cadence-text (status/cadence-ceiling s))))))
 
 (defn- within-budget! [events]
   (when-let [over (status/over-budget (status/project events))]
@@ -445,15 +495,26 @@
                               (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
+;; The cadence's batch is how many requests a turn may make.
 (defn spawn [session root [id & opts]]
   (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude]"))
   (if (driver?)
-    (do (store/append! session (fn [events]
-                                 (open-item events id)
-                                 (within-budget! events)
-                                 (cond-> {:type :spawn/requested :item/id id :by (actor)}
-                                   (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
-        (str id " spawn requested; it runs when your turn ends, so finish the turn now"))
+    (let [requested (fn [events] (count (filter #(and (= :spawn/requested (:type %)) (= (actor) (:by %))) events)))]
+      (store/append! session (fn [events]
+                               (open-item events id)
+                               (within-budget! events)
+                               (let [c (status/cadence (status/project events))]
+                                 (when (>= (requested events) (:batch c))
+                                   (fail! "cadence" (status/cadence-text c) "allows" (:batch c) "spawn request(s) a turn,"
+                                          "and this turn has made them; finish the turn now")))
+                               (cond-> {:type :spawn/requested :item/id id :by (actor)}
+                                 (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
+      (let [events (store/read-events session)
+            n (requested events)
+            batch (:batch (status/cadence (status/project events)))]
+        (if (< n batch)
+          (str id " spawn requested (" n " of " batch " this turn); requests run in order when your turn ends")
+          (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
     (run-spawn session root id opts)))
 
 ;; Drive: a loop of fresh driver agents, each making one decision from status.
@@ -471,6 +532,8 @@
              "Otherwise pick one: add, gate or close items; `lume spawn <id>` to put a worker on an"
              "open item (it runs after you exit); `lume note` a lesson; or `lume ask \"<question>\"`"
              "when only the human can decide (the loop stops until they answer)."
+             "The cadence says how many spawns a turn may request (every-spawn: one; batch N: N, run"
+             "in order). Set your own within the human's ceiling, e.g. `lume cadence batch 3 on gate-fail`."
              ""
              "Rules: never push. Don't edit files; workers do that. Add items with --gate \"bb test\"."
              "End with one line: what you decided and why."
@@ -490,6 +553,35 @@
                                       :extra-env {"LUME_SESSION" session "LUME_ACTOR" did}})]
       (assoc (agents/summarize agent (slurp (fs/file out)))
              :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
+
+(defn- hand-back-early
+  "Why a batch stops before its next spawn, from the events since the last
+  one started: an ask is open (a plateau's, say), the budget is reached, or
+  under on gate-fail, the spawn's gate failed. nil to carry on."
+  [events since id]
+  (let [state (status/project events)
+        gate (->> (drop since events) (filter #(and (= :gate/ran (:type %)) (= id (:item/id %)))) last)]
+    (cond (some #(= :open (:state %)) (vals (:asks state))) "an ask is open"
+          (status/over-budget state) "the budget is reached"
+          (and (:gate-fail (status/cadence state)) gate (not (zero? (:exit gate))))
+          (str "on gate-fail: " id " gate " (:gate/id gate) " failed"))))
+
+(defn- run-requests
+  "Run a turn's spawn requests in order until the cadence hands back early; a
+  cut batch logs :drive/handed-back with the items it skipped."
+  [session root did say requests]
+  (loop [[{id :item/id a :agent} & more] requests]
+    (when id
+      (let [since (count (store/read-events session))]
+        (say (try (run-spawn session root id ["--agent" (name (or a :claude))])
+                  (catch clojure.lang.ExceptionInfo e (ex-message e))))
+        (let [why (when (seq more) (hand-back-early (store/read-events session) since id))]
+          (if why
+            (let [skipped (mapv :item/id more)]
+              (store/append! session (constantly {:type :drive/handed-back :drive/id did :why why
+                                                  :skipped skipped :by (actor)}))
+              (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
+            (recur more)))))))
 
 (defn drive
   "Run up to --turns driver turns, each followed by the spawns it requested,
@@ -530,9 +622,7 @@
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
               (if (empty? logged)
                 (stop! (str did " logged no events"))
-                (do (doseq [{id :item/id a :agent} (filter #(= :spawn/requested (:type %)) logged)]
-                      (say (try (run-spawn session root id ["--agent" (name (or a :claude))])
-                                (catch clojure.lang.ExceptionInfo e (ex-message e)))))
+                (do (run-requests session root did say (filter #(= :spawn/requested (:type %)) logged))
                     (recur (inc n))))))))
       (finally (.removeShutdownHook (Runtime/getRuntime) hook)))))
 
@@ -639,6 +729,11 @@ lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let wor
 lume budget [--usd N] [--spawns N] [--minutes N]
                                             limit the session's agent spend (spawns and drive turns); with no
                                             flags, print spent/limit. Lowering is anyone's; raising, the human's
+lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
+                                            when drive hands back: N spawn requests a turn, run in order;
+                                            a failed gate ends the batch; K rows without a new best (lower
+                                            is better) ask the human. No rules: print it. Above the human's
+                                            latest cadence is the human's
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
 lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run
 lume log [-n N]                             raw events (default last 20)")
@@ -666,6 +761,9 @@ lume log [-n N]                             raw events (default last 20)")
       "budget" (if (#{"-h" "--help"} sub)
                  "usage: lume budget [--usd N] [--spawns N] [--minutes N]"
                  (budget (session) (rest args)))
+      "cadence" (if (#{"-h" "--help"} sub)
+                  cadence-usage
+                  (cadence (session) (rest args)))
       "spawn" (spawn (session) root (rest args))
       "drive" (drive (session) root (rest args))
       "log" (show-log (session) (rest args))

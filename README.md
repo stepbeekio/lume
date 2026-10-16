@@ -57,6 +57,14 @@ lume budget --usd 20 --spawns 30 --minutes 120
 
 Spend is the whole session's: dollars and minutes of every spawn and drive turn (cost from the agent's own result line), and how many spawns started. Status shows it on one line, e.g. `budget  $10.88/$20.00 · 22/30 spawns · 30.4/120 min`. Once a limit is reached, `lume spawn` refuses to start a worker and `lume drive` stops with the reason, as it does for an open ask. Anyone may add or lower a limit; raising one is yours alone, like `lume allow`. `lume budget` with no flags prints spend against the limits.
 
+When control comes back to the driver is set with a cadence:
+
+```
+lume cadence batch 3 on gate-fail on plateau 4
+```
+
+`every-spawn` (the default) lets a driver turn request one spawn. `batch N` lets it request up to N, which run in order after the turn, saving driver turns. `on gate-fail` ends a batch at the first failed gate and hands back, logging the requests it skipped. `on plateau K` opens an ask once an item has K measurement rows in a row without a new best (lower is better), so the drive stops for you. Status shows the cadence on the allow line. Your latest cadence is the ceiling: a driver may set its own to hand back as often or more often (e.g. `batch 2` under your `batch 3`), never less; going above it is yours alone, like raising a budget.
+
 Follow along in another terminal:
 
 ```
@@ -72,7 +80,7 @@ lume answer a1 "yes, drop the first run"
 lume drive
 ```
 
-`lume answer`, `lume allow`, `init --allow` and raising a budget are yours alone. Agents run as your user, so they could fake any environment variable or file lume reads. These commands therefore need an interactive terminal and a typed confirmation: retype the ask id to answer, or `yes` to change permissions. Spawns and drives have no terminal, so lume refuses them and says why.
+`lume answer`, `lume allow`, `init --allow`, raising a budget and loosening the cadence are yours alone. Agents run as your user, so they could fake any environment variable or file lume reads. These commands therefore need an interactive terminal and a typed confirmation: retype the ask id to answer, or `yes` to change permissions. Spawns and drives have no terminal, so lume refuses them and says why.
 
 Pushing is up to you. Drivers commit, but they can't push.
 
@@ -93,6 +101,8 @@ lume spawn <id>                run one worker on an item
 lume drive [--turns N]         driver turns until an ask, a budget limit, no open items, or N turns
 lume budget [--usd N] [--spawns N] [--minutes N]
                                limit agent spend; agents may lower it, only you raise it
+lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
+                               when drive hands back; agents may tighten it, only you loosen it
 lume note [--pin] "<text>"     steering; pinned notes stay in status and every prompt
 lume ask "<question>"          agents ask; only you answer
 lume answer <id> "<text>"
