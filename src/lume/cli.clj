@@ -110,35 +110,57 @@
   (str id " gate " gate))
 
 ;; A measurement runs after every spawn on the item, and on demand with lume measure.
-(defn item-measure [session [id cmd]]
-  (when (str/blank? cmd) (fail! "usage: lume item measure <id> \"<cmd>\""))
-  (store/append! session (fn [events]
-                           (open-item events id)
-                           {:type :item/measuring :item/id id :measure cmd :by (actor)}))
-  (str id " measure " cmd))
+;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
+(defn item-measure [session args]
+  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K]"
+        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop"}] (take-flags args #{"--runs" "--drop"} usage)
+        runs (if runs (parse-long runs) 1)
+        drop (if drop (parse-long drop) 0)]
+    (when (or (str/blank? cmd) (seq extra) (seq rs) (seq ds)) (fail! usage))
+    (when-not (and runs drop (pos? runs) (<= 0 drop) (< drop runs))
+      (fail! "--runs must be a positive whole number and --drop less than it;" usage))
+    (store/append! session (fn [events]
+                             (open-item events id)
+                             (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
+                               (> runs 1) (assoc :runs runs)
+                               (pos? drop) (assoc :drop drop))))
+    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop}))))
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
 ;; is numbers, one ledger row per run.
 
 (defn- run-in-repo
-  "Run cmd in the repo, output to a file in the session's `kind` dir, and log
-  the event that (event-for events output) returns as [id event], with :exit,
-  :ms, :tail and :out added. The id is allocated under the log lock."
-  [session kind cmd event-for]
+  "Run cmd in the repo up to n times (1 by default), stopping at the first
+  failure, with all output in one file in the session's `kind` dir. Log the
+  event that (event-for events runs) returns as [id event], where runs are
+  {:exit :ms :output} in order; the last run's :exit and :ms, the output's
+  :tail and :out are added unless the event has its own. The id is allocated
+  under the log lock."
+  [session kind cmd event-for & {:keys [n] :or {n 1}}]
   (let [root (:repo (status/project (store/read-events session)))
         dir (fs/create-dirs (fs/path session kind))
         tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
-        t0 (System/currentTimeMillis)
-        {:keys [exit]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :write :out-file tmp
-                                                     :err :out :extra-env {"LUME_SESSION" session}})
-        ms (- (System/currentTimeMillis) t0)
-        output (slurp tmp)
+        run1 (fn [i]
+               (let [t0 (System/currentTimeMillis)
+                     {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
+                                                                      :extra-env {"LUME_SESSION" session}})
+                     ms (- (System/currentTimeMillis) t0)
+                     output out]
+                 (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (status/secs ms) "\n"))
+                                output)
+                       :append true)
+                 {:exit exit :ms ms :output output}))
+        runs (reduce (fn [runs i]
+                       (let [r (conj runs (run1 i))]
+                         (if (zero? (:exit (peek r))) r (reduced r))))
+                     [] (range n))
+        {:keys [exit ms output]} (peek runs)
         tail (last (remove str/blank? (str/split-lines output)))
         ran (store/append! session (fn [events]
-                                     (let [[id e] (event-for events output)]
-                                       (cond-> (assoc e :exit exit :ms ms :out (str (fs/path dir (str id ".out")))
-                                                      :by (actor))
+                                     (let [[id e] (event-for events runs)]
+                                       (cond-> (merge {:exit exit :ms ms} e
+                                                      {:out (str (fs/path dir (str id ".out"))) :by (actor)})
                                          tail (assoc :tail tail)))))]
     (fs/move tmp (:out ran))
     ran))
@@ -162,15 +184,65 @@
       (when-let [n (last (re-seq #"-?\d+(?:\.\d+)?" output))]
         {"value" (num n)}))))
 
+(defn- median [xs]
+  (let [xs (vec (sort xs)) n (count xs) mid (quot n 2)]
+    (if (odd? n)
+      (xs mid)
+      ;; Decimal, so the mean of 0.1 and 0.2 is 0.15; whole when it can be.
+      (let [m (/ (+ (bigdec (xs (dec mid))) (bigdec (xs mid))) 2M)]
+        (if (== m (bigint m)) (long m) (double m))))))
+
+(defn summarize-runs
+  "One row from the kept runs: each number's median, its [min max] across
+  runs when there are several, and the median wall time."
+  [kept]
+  (let [per-run (keep (comp measure-values :output) kept)
+        values (into {} (for [k (distinct (mapcat keys per-run))
+                              :let [vs (keep #(get % k) per-run)]]
+                          [k (median vs)]))
+        spread (into {} (for [k (keys values)
+                              :let [vs (keep #(get % k) per-run)]
+                              :when (> (count vs) 1)]
+                          [k [(apply min vs) (apply max vs)]]))]
+    (cond-> {:ms (long (median (map :ms kept)))}
+      (seq values) (assoc :values values)
+      (seq spread) (assoc :spread spread))))
+
+(defn- sh-out [root & cmd]
+  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
+         (when (zero? exit) (not-empty (str/trim out))))
+       (catch Exception _ nil)))
+
+(defn- environment
+  "Where a row was taken, so a noisy one can be explained: host, 1-minute
+  load average, and the repo's git HEAD and jj change. Read-only."
+  [root]
+  (let [load (some->> (sh-out root "uptime") (re-find #"load averages?:\s*([\d.]+)") second parse-double)]
+    (cond-> {:host (try (.getHostName (java.net.InetAddress/getLocalHost)) (catch Exception _ "?"))}
+      load (assoc :load load)
+      :always (merge (when-let [c (sh-out root "git" "rev-parse" "--short" "HEAD")] {:commit c})
+                     (when (fs/exists? (fs/path root ".jj"))
+                       (when-let [c (sh-out root "jj" "log" "-r" "@" "--ignore-working-copy" "--no-graph"
+                                            "-T" "change_id.short(8)")]
+                         {:change c}))))))
+
 (defn- run-measure
-  "Run the item's measurement and log a :measure/ran row, which is returned."
-  [session {:keys [id measure]}]
-  (run-in-repo session "measures" measure
-               (fn [events output]
-                 (let [mid (next-id "m" :measure/ran events)
-                       values (measure-values output)]
-                   [mid (cond-> {:type :measure/ran :measure/id mid :item/id id :measure measure}
-                          values (assoc :values values))]))))
+  "Run the item's measurement --runs times, drop the first --drop, and log one
+  :measure/ran row, which is returned. A failed run ends the measurement; the
+  row has the runs kept so far and the failing run's exit."
+  [session {:keys [id measure runs drop] :or {runs 1 drop 0}}]
+  (let [env (environment (:repo (status/project (store/read-events session))))]
+    (run-in-repo session "measures" measure
+                 (fn [events ran]
+                   (let [mid (next-id "m" :measure/ran events)
+                         kept (nthrest ran drop)
+                         failed (when-not (zero? (:exit (peek ran))) (count ran))]
+                     [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :measure measure :env env}
+                                         (when (seq kept) (summarize-runs kept)))
+                            (> runs 1) (assoc :runs runs)
+                            (pos? drop) (assoc :drop drop)
+                            (and failed (> runs 1)) (assoc :failed-run failed))]))
+                 :n runs)))
 
 (defn- measure-row
   "The ledger row, not the output: the numbers and wall time against the
@@ -481,8 +553,10 @@
 
 (defn- item-event-line [e]
   (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip-to 240 (if (= :measure/ran (:type e))
-                      (str (:measure/id e) " " (status/measure-text e))
+       (clip-to 240 (case (:type e)
+                      :measure/ran (str (:measure/id e) " " (status/measure-text e)
+                                        (when (:env e) (str " · " (status/env-text (:env e)))))
+                      :item/measuring (status/spec-text e)
                       (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
                                           [:spawn/id :gate/id :note/id :ask/id :disposition :exit
                                            :gate :measure :text :question :answer :why :result :tail]))))
@@ -499,7 +573,7 @@
                [(str id " " (name (:state item)) (when (:why item) (str " — " (clip-to 200 (:why item)))))
                 (str "intent  " (clip-to 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
-               (when (:measure item) [(str "measure " (:measure item))])
+               (when (:measure item) [(str "measure " (status/spec-text item))])
                (when (> (count related) (count shown))
                  [(str "+" (- (count related) (count shown)) " earlier events — lume log")])
                (map item-event-line shown)))))
@@ -550,8 +624,10 @@ lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
 lume status [--color]                       one screen: goal, items, notes, recent events (colour on a tty)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
-lume item measure <id> \"<cmd>\"              measure an item after each spawn: output's name=number pairs
-                                            (or else its last number) and wall time become a ledger row
+lume item measure <id> \"<cmd>\" [--runs N] [--drop K]
+                                            measure an item after each spawn: output's name=number pairs
+                                            (or else its last number) and wall time become a ledger row;
+                                            N runs, first K dropped, give medians and min..max
 lume measure <id>                           run the item's measurement now and print its row (a baseline)
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume item show <id>                         one item in full: intent, gate, disposition and its events

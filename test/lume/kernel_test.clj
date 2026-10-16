@@ -223,6 +223,70 @@
       (cli/item-close s [id "dropped" "x"])
       (is (str/starts-with? (cli/measure s [id]) "m9 i1 ")))))
 
+(deftest measurements-repeat
+  (testing "a row of runs is each number's median and its spread"
+    (is (= {:ms 20 :values {"a" 2 "b" 0.15} :spread {"a" [1 3] "b" [0.1 0.2]}}
+           (cli/summarize-runs [{:ms 10 :output "a=1 b=0.1"} {:ms 30 :output "a=3 b=0.2"}
+                                {:ms 20 :output "a=2"}]))))
+  (let [s (new-session "goal")
+        id (cli/item-add s ["faster" "--gate" "true"])
+        f (str (fs/create-temp-file))
+        n (str (fs/create-temp-file))
+        ;; Each run reads and bumps a counter, so runs differ: the first is a slow warm-up.
+        script! #(spit f (str "i=$(cat " n "); echo $((i+1)) > " n "; " %))
+        rows #(mapv (fn [_] (cli/measure s [id])) (range %))]
+    (script! "if [ $i = 0 ]; then echo t=100; else echo t=$((10 + i % 3)) k=7; fi")
+    (spit n "0")
+    (doseq [args [["--runs" "0"] ["--runs" "2" "--drop" "2"] ["--runs" "x"] ["--drop" "-1"] ["--runs" "2" "--runs" "3"]]]
+      (is (thrown-with-msg? Exception #"usage" (cli/item-measure s (into [id "sh f"] args))) (pr-str args)))
+    (is (= "i1 measure sh x ×5 drop 1" (cli/item-measure s [id "sh x" "--runs" "5" "--drop" "1"])))
+    (cli/item-measure s [id (str "sh " f) "--runs" "5" "--drop" "1"])
+    (testing "runs N times, drops the first K, and the warm-up never counts"
+      (is (re-matches #"m1 i1 k=7 t=11\[10\.\.12\] · \d+\.\ds · 4 of 5 runs" (first (rows 1))))
+      (is (= "5\n" (slurp n)))
+      (let [out (slurp (:out (last (store/read-events s))))]
+        (is (= 5 (count (re-seq #"(?m)^--- run \d/5 · exit 0 · " out))) out)
+        (is (str/includes? out "t=100"))))
+    (testing "the same spec compares with its last passing row"
+      (is (re-matches #"m2 i1 k=7 t=10\.5\(-0\.5\)\[10\.\.12\] · \d+\.\ds · 4 of 5 runs · vs m1" (first (rows 1)))))
+    (testing "changing runs or drop is a new spec, so a new baseline"
+      (cli/item-measure s [id (str "sh " f) "--runs" "3"])
+      (is (re-matches #"m3 i1 k=7 t=11\[10\.\.12\] · \d+\.\ds · 3 runs" (first (rows 1))))
+      (cli/item-measure s [id (str "sh " f)])
+      (is (re-matches #"m4 i1 k=7 t=1[012] · \d+\.\ds" (first (rows 1))) "one run: no spread, no runs")
+      (cli/item-measure s [id (str "sh " f) "--runs" "3"])
+      (is (str/ends-with? (first (rows 1)) " · 3 runs · vs m3")))
+    (testing "a failing run ends the measurement"
+      (spit n "0")
+      (script! "echo t=$i; [ $i -lt 1 ]")
+      (cli/item-measure s [id (str "sh " f) "--runs" "4"])
+      (let [out (first (rows 1))]
+        (is (re-find #"^m6 i1 t=0\.5\[0\.\.1\] · \d+\.\ds · fail exit 1 in run 2 of 4\n.*m6\.out$" out) out))
+      (is (= "2\n" (slurp n))))
+    (testing "status shows the spec and stays within width; item show has the environment"
+      (script! "echo t=1")
+      (cli/item-measure s [id (str "sh " f " " (apply str (repeat 20 "x"))) "--runs" "10" "--drop" "1"])
+      (rows 1)
+      (let [line (some #(when (str/includes? % "measure ") %)
+                       (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
+        (is (re-find #"measure sh .*… ×10 drop 1 · m7 t=1 · " line) line)
+        (is (<= (count line) 110) line))
+      (let [shown (cli/item-show s [id])
+            {:keys [env]} (last (store/read-events s))]
+        (is (string? (:host env)))
+        (is (number? (:load env)))
+        (is (re-find #"(?m)^measure sh .* ×10 drop 1$" shown) shown)
+        (is (re-find #"item/measuring sh .* ×10 drop 1 \[human\]" shown) shown)
+        (is (re-find #"measure/ran m7 t=1 · \d+\.\ds · 9 of 10 runs · on \S+ load [\d.]+ \[human\]" shown) shown)))
+    (testing "in a repo, the row records the commit it measured"
+      (p/shell {:dir *root* :out :string :err :string} "git" "init" "-q")
+      (p/shell {:dir *root* :out :string :err :string}
+               "git" "-c" "user.name=t" "-c" "user.email=t@t" "commit" "-q" "--allow-empty" "-m" "x")
+      (let [head (str/trim (:out (p/shell {:dir *root* :out :string} "git" "rev-parse" "--short" "HEAD")))]
+        (rows 1)
+        (is (= head (:commit (:env (last (store/read-events s))))))
+        (is (str/includes? (cli/item-show s [id]) (str " at " head " [human]")))))))
+
 (deftest item-show-prints-what-status-clips
   (let [s (new-session "goal")
         intent (str "a long intent " (str/join " " (repeat 40 "word")) " END")

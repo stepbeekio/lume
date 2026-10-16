@@ -14,6 +14,17 @@
     cost-usd (update-in [:spent :usd] + cost-usd)
     ms (update-in [:spent :minutes] + (/ ms 60000.0))))
 
+;; A measurement spec is its command and how it repeats; rows compare only
+;; with rows of the same spec. One run, none dropped, is the default.
+(defn- spec [{:keys [measure runs drop]}]
+  {:measure measure :runs (or runs 1) :drop (or drop 0)})
+
+(defn spec-text
+  "The command, then how it repeats, e.g. bb bench ×10 drop 1."
+  [{:keys [measure] :as m}]
+  (let [{:keys [runs drop]} (spec m)]
+    (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop)))))
+
 (defn amount [k v]
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
     (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
@@ -33,14 +44,15 @@
                                   (:gate e) (assoc :gate (:gate e))))
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
-       :item/measuring  (assoc-in s [:items (:item/id e) :measure] (:measure e))
+       :item/measuring  (update-in s [:items (:item/id e)]
+                                   #(merge (dissoc % :runs :drop) (select-keys e [:measure :runs :drop])))
        ;; Each row carries the row it's compared with: the latest earlier one
-       ;; of the same command that passed with numbers.
+       ;; of the same spec (command, runs and drop) that passed with numbers.
        :measure/ran     (update-in s [:items (:item/id e)]
-                                   (fn [{:keys [good-measure] :as item}]
-                                     (let [row (cond-> e (= (:measure good-measure) (:measure e)) (assoc :base good-measure))]
-                                       (cond-> (assoc item :last-measure row)
-                                         (and (zero? (:exit e)) (seq (:values e))) (assoc :good-measure e)))))
+                                   (fn [item]
+                                     (let [base (get-in item [:good-measures (spec e)])]
+                                       (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
+                                         (and (zero? (:exit e)) (seq (:values e))) (assoc-in [:good-measures (spec e)] e)))))
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -140,21 +152,32 @@
   "A ledger row's numbers: name=value pairs, each with its change against the
   row's :base when it has one, then wall time, then a failure, then which row
   it was compared with (unless :vs is false)."
-  [{:keys [values ms exit base]} & {:keys [vs] :or {vs true}}]
+  [{:keys [values spread ms exit base runs drop failed-run] :or {drop 0}} & {:keys [vs] :or {vs true}}]
   (str (if (seq values)
-         (str/join " " (map (fn [[k v]] (str k "=" v (change v (get (:values base) k)))) (sort values)))
+         (str/join " " (map (fn [[k v]]
+                              (str k "=" v (change v (get (:values base) k))
+                                   (when-let [[lo hi] (get spread k)] (when (not= lo hi) (str "[" lo ".." hi "]")))))
+                            (sort values)))
          "no numbers")
        " · " (secs ms)
-       (when-not (zero? exit) (str " · fail exit " exit))
+       (when (and runs (not failed-run)) (str " · " (if (pos? drop) (str (- runs drop) " of " runs) runs) " runs"))
+       (when-not (zero? exit) (str " · fail exit " exit (when failed-run (str " in run " failed-run " of " runs))))
        (when (and vs base) (str " · vs " (:measure/id base)))))
 
+(defn env-text
+  "Where a row was taken, e.g. on asahi load 0.21 at a3d907a/msslzuos."
+  [{:keys [host load commit change]}]
+  (str "on " host (when load (str " load " load))
+       (when (or commit change) (str " at " (str/join "/" (remove nil? [commit change]))))))
+
 ;; The latest row only; lume item show has the rest.
-(defn- measure-line [now {:keys [measure last-measure]}]
-  (str "measure " (clip measure 18)
-       (when-let [{:keys [t exit base] mid :measure/id :as m} last-measure]
-         (str " · " mid (when base (str " vs " (:measure/id base))) " "
-              (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
-              (clip (measure-text (assoc m :exit 0) :vs false) 36) " · " (ago now t)))))
+(defn- measure-line [now {:keys [measure runs drop last-measure]}]
+  (let [repeats (spec-text {:runs runs :drop drop})]
+    (str "measure " (clip measure (- 18 (count repeats))) repeats
+         (when-let [{:keys [t exit base] mid :measure/id :as m} last-measure]
+           (str " · " mid (when base (str " vs " (:measure/id base))) " "
+                (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
+                (clip (measure-text (-> m (assoc :exit 0) (dissoc :runs)) :vs false) 36) " · " (ago now t))))))
 
 (defn- section [label lines]
   (when (seq lines)
