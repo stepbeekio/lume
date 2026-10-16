@@ -613,6 +613,17 @@
   (str/join " " (concat ["bb" "-cp" (str (fs/absolutize "src")) "-m" "lume.cli"]
                         (map #(str "'" % "'") args))))
 
+;; A worker whose agent settings set LUME_ACTOR=claude, as Claude Code's do (i46).
+(defmethod agents/command :clobbered [_ _prompt _opts]
+  ["sh" "-c" (str "LUME_ACTOR=claude " (lume-cmd "note" "from the worker"))])
+
+(deftest spawn-actor-survives-agent-settings
+  (let [s (new-session "goal")
+        id (cli/item-add s ["do the thing"])]
+    (cli/spawn s *root* [id "--agent" "clobbered"])
+    (is (= "s1" (:by (last (filter #(= :note/added (:type %)) (store/read-events s)))))
+        "a worker's lume calls are logged as its spawn id even when its settings set LUME_ACTOR")))
+
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])
@@ -623,8 +634,10 @@
   (testing "a driver's spawn is a request, run after its turn"
     (let [s (new-session "goal")]
       (cli/item-add s ["do it" "--gate" "true"])
+      ;; LUME_ACTOR=claude is what Claude Code's settings.json env does to the
+      ;; driver's commands (i46): the drive's id must still win.
       (is (= "no open items"
-             (drive! s (str (lume-cmd "spawn" "i1" "--agent" "test") "; echo \"me $LUME_ACTOR\""))))
+             (drive! s (str "LUME_ACTOR=claude " (lume-cmd "spawn" "i1" "--agent" "test") "; echo \"me $LUME_ACTOR\""))))
       (let [events (store/read-events s)
             {:keys [items spawns]} (status/project events)]
         (is (= [:drive/started :drive/turn :spawn/requested :drive/exited :spawn/started]

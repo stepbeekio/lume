@@ -18,9 +18,14 @@
 (defn- next-id [prefix type events]
   (str prefix (inc (count (filter #(= type (:type %)) events)))))
 
+;; Spawns and drives get their id in LUME_SPAWNED_AS as well as LUME_ACTOR,
+;; because an agent's own settings can override LUME_ACTOR in what it runs:
+;; Claude Code's settings.json env sets LUME_ACTOR=claude for interactive
+;; sessions, and wins over the env lume passes (i46).
 (def ^:dynamic *actor*
-  "Who is acting: a spawn id inside a worker, else \"human\". Tests bind it."
-  (or (System/getenv "LUME_ACTOR") "human"))
+  "Who is acting: a spawn or drive id inside an agent lume started, else
+  LUME_ACTOR, else \"human\". Tests bind it."
+  (or (System/getenv "LUME_SPAWNED_AS") (System/getenv "LUME_ACTOR") "human"))
 
 (defn- actor [] *actor*)
 
@@ -506,7 +511,7 @@
           proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
                           {:dir root :in ""
                            :err :write :err-file (fs/file (str out ".err"))
-                           :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid}})
+                           :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid "LUME_SPAWNED_AS" sid}})
           {:keys [steps]} (follow! session sid agent proc out)
           {:keys [exit]} @proc
           summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))
@@ -585,7 +590,7 @@
                                      {:dir root :in ""
                                       :out :write :out-file (fs/file out)
                                       :err :write :err-file (fs/file (str out ".err"))
-                                      :extra-env {"LUME_SESSION" session "LUME_ACTOR" did}})]
+                                      :extra-env {"LUME_SESSION" session "LUME_ACTOR" did "LUME_SPAWNED_AS" did}})]
       (assoc ((requiring-resolve 'lume.agents/summarize) agent (slurp (fs/file out)))
              :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
 
