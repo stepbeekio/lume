@@ -816,6 +816,14 @@
             (is (= ["cut cold build time" "just measured"] (map :intent (:items (edn/read-string out)))))
             (is (str/ends-with? out ";; 1 closed item left out — lume spec --all")))
           (is (= sp (edn/read-string (cli/show-spec s ["--all"])))))))
+    (testing "a cadence comes back as written: the default :batch 1 isn't added"
+      (doseq [c [{} {:gate-fail true} {:plateau 2} {:batch 1 :plateau 2} {:batch 2 :gate-fail true}]]
+        (let [sp {:goal "cadence only" :cadence c}
+              s (session-from-spec sp)
+              state (status/project (store/read-events s))]
+          (is (= sp (edn/read-string (cli/show-spec s []))) (pr-str c))
+          (is (= (merge {:batch 1} c) (status/cadence state) (status/cadence-ceiling state))
+              "the default fills in on read"))))
     (testing "session -> spec -> session: a hand-built session's harness is reusable"
       (cli/init *root* ["by hand" "--gate" "bb test" "--allow" "jj"])
       (let [s (store/current-session *root*)]

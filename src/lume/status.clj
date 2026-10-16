@@ -38,11 +38,13 @@
 ;; spawns a turn (every-spawn is 1), run in order; :gate-fail ends a batch at a
 ;; failed gate; :plateau K asks the human after K rows without a new best. The
 ;; human's latest cadence is the ceiling for everyone else's.
+;; A cadence event holds only the rules given (a spec may leave out :batch), so
+;; the default fills in on read.
 (def default-cadence {:batch 1})
 
-(defn cadence [state] (or (:cadence state) default-cadence))
+(defn cadence [state] (merge default-cadence (:cadence state)))
 
-(defn cadence-ceiling [state] (or (:cadence-ceiling state) default-cadence))
+(defn cadence-ceiling [state] (merge default-cadence (:cadence-ceiling state)))
 
 (defn cadence-text
   "The rules as lume cadence takes them, e.g. batch 3 on gate-fail on plateau 4."

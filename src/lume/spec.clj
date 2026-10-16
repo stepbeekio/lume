@@ -153,7 +153,7 @@
    (when gate [{:type :session/gated :gate gate}])
    (for [c (distinct allow)] {:type :session/allowed :command c})
    (when (seq budget) [(assoc (select-keys budget [:usd :spawns :minutes]) :type :session/budgeted)])
-   (when cadence [(merge {:type :session/cadence :batch 1} (select-keys cadence [:batch :gate-fail :plateau]))])
+   (when cadence [(assoc (select-keys cadence [:batch :gate-fail :plateau]) :type :session/cadence)])
    (apply concat
           (map-indexed
            (fn [i {:keys [intent measure runs drop higher] :as item}]
