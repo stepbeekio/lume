@@ -168,6 +168,48 @@
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now))
                        "gate false · g2 fail exit 1"))))
 
+(deftest measurements-are-ledger-rows
+  (testing "named numbers, else the last number"
+    (is (= {"build_s" 9.5 "hits" 40 "tests" 21} (cli/measure-values "build_s=12 hits: 40\ntests=21\nbuild_s=9.5")))
+    (is (= {"value" 0} (cli/measure-values "Ran 21 tests containing 197 assertions. 0 failures")))
+    (is (nil? (cli/measure-values "nothing here"))))
+  (let [s (new-session "goal")
+        id (cli/item-add s ["faster" "--gate" "false"])]
+    (is (thrown-with-msg? Exception #"no measurement" (cli/measure s [id])))
+    (is (thrown-with-msg? Exception #"usage" (cli/item-measure s [id])))
+    (cli/item-measure s [id "pwd; echo build_s=12.5 hits=3"])
+    (testing "lume measure prints the row, not the output, and runs in the repo"
+      (is (re-matches #"m1 i1 build_s=12\.5 hits=3 · \d+\.\ds" (cli/measure s [id])))
+      (let [{:keys [measure last-measure]} (get-in (status/project (store/read-events s)) [:items id])]
+        (is (= "pwd; echo build_s=12.5 hits=3" measure))
+        (is (= {"build_s" 12.5 "hits" 3} (:values last-measure)))
+        (is (str/includes? (slurp (:out last-measure)) (str (fs/file-name *root*))))))
+    (testing "a spawn measures what its worker left, before the gate"
+      (let [out (cli/spawn s *root* [id "--agent" "test"])]
+        (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds\ni1 not done: gate g1" out) out)))
+    (testing "a failing measurement is still a row, with where its output is"
+      (cli/item-measure s [id "echo oops; exit 2"])
+      (let [out (cli/measure s [id])]
+        (is (str/starts-with? out "m3 i1 no numbers · "))
+        (is (re-find #"fail exit 2\n.*measures/m3\.out$" out))))
+    (testing "status shows the latest row on the item; item show has them all"
+      (let [st (status/render "sess" (store/read-events s) (Instant/now))]
+        (is (re-find #"(?m)^            gate false .*\n            measure echo oops; exit 2 · m3 exit 2 · no numbers · " st) st))
+      (let [shown (cli/item-show s [id])]
+        (is (str/includes? shown "measure echo oops; exit 2"))
+        (is (re-find #"measure/ran m1 build_s=12\.5 hits=3 · " shown))
+        (is (re-find #"measure/ran m3 no numbers · \d+\.\ds · fail exit 2" shown))))
+    (testing "a long command with many numbers stays within width"
+      (cli/item-measure s [id (str (apply str (repeat 30 "echo x; ")) (str/join " " (map #(str "echo n" % "=" %) (range 30))) "; exit 127")])
+      (cli/measure s [id])
+      (let [line (some #(when (str/includes? % "measure ") %)
+                       (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
+        (is (re-find #"m4 exit 127 · n0=0 n1=1 n10=10 .*…" line) line)
+        (is (<= (count line) 110) line)))
+    (testing "a closed item can still be measured"
+      (cli/item-close s [id "dropped" "x"])
+      (is (str/starts-with? (cli/measure s [id]) "m5 i1 ")))))
+
 (deftest item-show-prints-what-status-clips
   (let [s (new-session "goal")
         intent (str "a long intent " (str/join " " (repeat 40 "word")) " END")

@@ -22,6 +22,8 @@
                                   (:gate e) (assoc :gate (:gate e))))
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
+       :item/measuring  (assoc-in s [:items (:item/id e) :measure] (:measure e))
+       :measure/ran     (assoc-in s [:items (:item/id e) :last-measure] e)
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -89,6 +91,24 @@
          (str " · " gid " " (if (zero? exit) (paint :green "pass") (paint :red (str "fail exit " exit))) " · " (ago now t)
               (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
 
+(defn secs [ms]
+  (format "%.1fs" (/ ms 1000.0)))
+
+(defn measure-text
+  "A ledger row's numbers: name=value pairs, then wall time, then a failure."
+  [{:keys [values ms exit]}]
+  (str (if (seq values) (str/join " " (map (fn [[k v]] (str k "=" v)) (sort values))) "no numbers")
+       " · " (secs ms)
+       (when-not (zero? exit) (str " · fail exit " exit))))
+
+;; The latest row only; lume item show has the rest.
+(defn- measure-line [now {:keys [measure last-measure]}]
+  (str "measure " (clip measure 24)
+       (when-let [{:keys [t exit] mid :measure/id :as m} last-measure]
+         (str " · " mid " "
+              (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
+              (clip (measure-text (assoc m :exit 0)) 36) " · " (ago now t)))))
+
 (defn- section [label lines]
   (when (seq lines)
     (cons (str (paint :dim label) (subs "        " (count label)) (first lines))
@@ -113,7 +133,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :note/id :ask/id :disposition :exit :intent :gate :command :text :question :answer :goal :why])) 70)))
+       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
 
 (defn- render* [session-id events now]
   (let [{:keys [goal repo items notes spawns allow asks default-gate]} (project events)
@@ -143,6 +163,8 @@
                                  (concat [(str id "  " (clip intent 80))]
                                          (when (:gate item)
                                            [(str "    " (gate-line now item))])
+                                         (when (:measure item)
+                                           [(str "    " (measure-line now item))])
                                          (when-let [sp (get spawns (peek (:spawns item)))]
                                            [(str "    " (spawn-line now sp))])))
                                open)))

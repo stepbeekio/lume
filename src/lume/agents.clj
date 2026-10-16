@@ -133,7 +133,8 @@ Run `lume status` first. It is one screen:
 - goal: what the session is for
 - asks: questions waiting for the human; don't redo work they block
 - pinned notes: standing lessons; follow them
-- open items: the backlog, each with the gate that decides done
+- open items: the backlog, each with the gate that decides done, and its latest
+  measurement row if it has one (`lume measure <id>` runs it again)
 - recent notes and events: what the last session did
 
 `lume item show <id>` prints an item's full intent, gate and history when status clips it.

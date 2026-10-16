@@ -86,26 +86,75 @@
                            {:type :item/gated :item/id id :gate gate :by (actor)}))
   (str id " gate " gate))
 
-;; Gates: a shell command, run in the repo, whose exit code decides done.
+;; A measurement runs after every spawn on the item, and on demand with lume measure.
+(defn item-measure [session [id cmd]]
+  (when (str/blank? cmd) (fail! "usage: lume item measure <id> \"<cmd>\""))
+  (store/append! session (fn [events]
+                           (open-item events id)
+                           {:type :item/measuring :item/id id :measure cmd :by (actor)}))
+  (str id " measure " cmd))
+
+;; Gates and measurements: shell commands run in the repo, their output kept
+;; under the session. A gate's exit code decides done; a measurement's output
+;; is numbers, one ledger row per run.
+
+(defn- run-in-repo
+  "Run cmd in the repo, output to a file in the session's `kind` dir, and log
+  the event that (event-for events output) returns as [id event], with :exit,
+  :ms, :tail and :out added. The id is allocated under the log lock."
+  [session kind cmd event-for]
+  (let [root (:repo (status/project (store/read-events session)))
+        dir (fs/create-dirs (fs/path session kind))
+        tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
+        t0 (System/currentTimeMillis)
+        {:keys [exit]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :write :out-file tmp
+                                                     :err :out :extra-env {"LUME_SESSION" session}})
+        ms (- (System/currentTimeMillis) t0)
+        output (slurp tmp)
+        tail (last (remove str/blank? (str/split-lines output)))
+        ran (store/append! session (fn [events]
+                                     (let [[id e] (event-for events output)]
+                                       (cond-> (assoc e :exit exit :ms ms :out (str (fs/path dir (str id ".out")))
+                                                      :by (actor))
+                                         tail (assoc :tail tail)))))]
+    (fs/move tmp (:out ran))
+    ran))
 
 (defn- run-gate
   "Run the item's gate and log a :gate/ran event, which is returned."
   [session {:keys [id gate]}]
-  (let [root (:repo (status/project (store/read-events session)))
-        dir (fs/create-dirs (fs/path session "gates"))
-        tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
-        t0 (System/currentTimeMillis)
-        {:keys [exit]} @(p/process ["sh" "-c" gate] {:dir root :in "" :out :write :out-file tmp
-                                                      :err :out :extra-env {"LUME_SESSION" session}})
-        tail (last (remove str/blank? (str/split-lines (slurp tmp))))
-        ran (store/append! session (fn [events]
-                                     (let [gid (next-id "g" :gate/ran events)]
-                                       (cond-> {:type :gate/ran :gate/id gid :item/id id :gate gate
-                                                :exit exit :ms (- (System/currentTimeMillis) t0)
-                                                :out (str (fs/path dir (str gid ".out"))) :by (actor)}
-                                         tail (assoc :tail tail)))))]
-    (fs/move tmp (:out ran))
-    ran))
+  (run-in-repo session "gates" gate
+               (fn [events _]
+                 (let [gid (next-id "g" :gate/ran events)]
+                   [gid {:type :gate/ran :gate/id gid :item/id id :gate gate}]))))
+
+(defn measure-values
+  "The numbers in a measurement's output: each name=number or name: number
+  (the last one wins), or with none of those, the last number, as value."
+  [output]
+  (let [num #(or (parse-long %) (parse-double %))
+        named (re-seq #"([A-Za-z_][\w.-]*)\s*[=:]\s*(-?\d+(?:\.\d+)?)(?![\w.])" output)]
+    (if (seq named)
+      (reduce (fn [m [_ k v]] (assoc m k (num v))) {} named)
+      (when-let [n (last (re-seq #"-?\d+(?:\.\d+)?" output))]
+        {"value" (num n)}))))
+
+(defn- run-measure
+  "Run the item's measurement and log a :measure/ran row, which is returned."
+  [session {:keys [id measure]}]
+  (run-in-repo session "measures" measure
+               (fn [events output]
+                 (let [mid (next-id "m" :measure/ran events)
+                       values (measure-values output)]
+                   [mid (cond-> {:type :measure/ran :measure/id mid :item/id id :measure measure}
+                          values (assoc :values values))]))))
+
+(defn- measure-row
+  "The ledger row, not the output: the numbers and wall time, and where the
+  output is when the command failed."
+  [{:keys [exit out] mid :measure/id id :item/id :as ran}]
+  (str mid " " id " " (status/measure-text ran)
+       (when-not (zero? exit) (str "\n" out))))
 
 (defn- gate-summary [{:keys [exit tail out] gid :gate/id}]
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
@@ -124,6 +173,12 @@
                                       :why why :by (actor)}
                                ran (assoc :gate/id (:gate/id ran)))))
     (str id " " disposition (when ran (str " · " (gate-summary ran))))))
+
+(defn measure [session [id]]
+  (when (str/blank? id) (fail! "usage: lume measure <id>"))
+  (let [item (or (get-in (status/project (store/read-events session)) [:items id]) (fail! "no such item:" id))]
+    (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
+    (measure-row (run-measure session item))))
 
 ;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
 (defn note [session [a b]]
@@ -255,7 +310,11 @@
       (str sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
            (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))
            "\n" out
-           ;; The worker may have closed the item itself; otherwise its gate decides.
+           ;; Measure what the worker left, then: the worker may have closed the
+           ;; item itself; otherwise its gate decides.
+           (let [item (get-in (status/project (store/read-events session)) [:items id])]
+             (when (:measure item)
+               (str "\n" (measure-row (run-measure session item)))))
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (and (:gate item) (= :open (:state item)))
                (str "\n" (try (item-close session [id "done" (str "gate passed after " sid)])
@@ -362,9 +421,11 @@
 
 (defn- item-event-line [e]
   (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip-to 240 (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
-                                        [:spawn/id :gate/id :note/id :ask/id :disposition :exit
-                                         :gate :text :question :answer :why :result :tail])))
+       (clip-to 240 (if (= :measure/ran (:type e))
+                      (str (:measure/id e) " " (status/measure-text e))
+                      (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
+                                          [:spawn/id :gate/id :note/id :ask/id :disposition :exit
+                                           :gate :measure :text :question :answer :why :result :tail]))))
        (when (:by e) (str " [" (:by e) "]"))))
 
 (defn item-show [session [id]]
@@ -378,6 +439,7 @@
                [(str id " " (name (:state item)) (when (:why item) (str " — " (clip-to 200 (:why item)))))
                 (str "intent  " (clip-to 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
+               (when (:measure item) [(str "measure " (:measure item))])
                (when (> (count related) (count shown))
                  [(str "+" (- (count related) (count shown)) " earlier events — lume log")])
                (map item-event-line shown)))))
@@ -428,6 +490,9 @@ lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
 lume status [--color]                       one screen: goal, items, notes, recent events (colour on a tty)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
+lume item measure <id> \"<cmd>\"              measure an item after each spawn: output's name=number pairs
+                                            (or else its last number) and wall time become a ledger row
+lume measure <id>                           run the item's measurement now and print its row (a baseline)
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume item show <id>                         one item in full: intent, gate, disposition and its events
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
@@ -452,7 +517,9 @@ lume log [-n N]                             raw events (default last 20)")
                "close" (item-close (session) more)
                "gate" (item-gate (session) more)
                "show" (item-show (session) more)
-               (fail! "usage: lume item add|gate|close|show ..."))
+               "measure" (item-measure (session) more)
+               (fail! "usage: lume item add|gate|measure|close|show ..."))
+      "measure" (measure (session) (rest args))
       "note" (note (session) (rest args))
       "ask" (ask (session) (rest args))
       "answer" (answer (session) (rest args))

@@ -36,6 +36,15 @@ lume drive                                            # agents work until they n
 
 `--gate` is the session's default gate: items added without their own `--gate` get it, so none end up ungated by omission. Each `--allow` is a `lume allow`: a command workers may run.
 
+For work with a number to move, give the item a measurement and take a baseline:
+
+```
+lume item measure i1 'make clean; /usr/bin/time -f "build_s=%e" make 2>&1 | tail -1'
+lume measure i1                                       # m1 i1 build_s=41.2 · 41.3s
+```
+
+The command's `name=number` (or `name: number`) pairs become the row; with none, its last number is `value`. Wall time is always recorded. Every spawn on the item measures again before its gate runs, and status shows the latest row; `lume item show` has them all.
+
 `lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 
 Follow along in another terminal:
@@ -64,6 +73,8 @@ lume status [--color]          one screen: goal, asks, pinned notes, items, rece
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"
 lume item show <id>            one item in full: intent, gate, disposition, its events
+lume item measure <id> "<cmd>" measure the item after every spawn on it: one ledger row per run
+lume measure <id>              run the measurement now (a baseline) and print its row
 lume spawn <id>                run one worker on an item
 lume drive [--turns N]         driver turns until an ask, no open items, or N turns
 lume note [--pin] "<text>"     steering; pinned notes stay in status and every prompt
