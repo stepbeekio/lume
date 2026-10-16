@@ -276,6 +276,36 @@
       (dotimes [n 50] (cli/note s [(str "note " n)]))
       (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "+45 more")))))
 
+(deftest status-colour-is-for-humans-only
+  (let [s (new-session "goal")
+        t (str (Instant/now))]
+    (cli/ask s ["which db?"])
+    (cli/item-add s ["passes" "--gate" "true"])
+    (cli/item-add s ["fails" "--gate" "false"])
+    (store/append! s (constantly {:type :gate/ran :gate/id "g1" :item/id "i1" :gate "true" :exit 0 :t t}))
+    (store/append! s (constantly {:type :gate/ran :gate/id "g2" :item/id "i2" :gate "false" :exit 1 :t t}))
+    (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id "i2" :t t}))
+    (let [events (store/read-events s)
+          now (Instant/now)
+          plain (status/render "sess" events now)
+          coloured (status/render "sess" events now {:color true})
+          esc "\u001b["]
+      (is (not (str/includes? plain esc)) "drivers and tests get plain text")
+      (is (= plain (status/strip-color coloured)) "colour changes no visible text, width or line count")
+      (doseq [[what re] {"labels dim" #"(?m)^\e\[2mgoal\e\[0m    goal$"
+                         "open asks yellow" #"\e\[33ma1 which db\?\e\[0m"
+                         "gate pass green" #"g1 \e\[32mpass\e\[0m"
+                         "gate fail red" #"g2 \e\[31mfail exit 1\e\[0m"
+                         "running spawns cyan" #"s1 \e\[36mrunning\e\[0m"}]
+        (is (re-find re coloured) what))
+      (testing "the CLI colours only a terminal without NO_COLOR, or with --color"
+        (is (cli/color? false true nil))
+        (is (not (cli/color? false true "1")))
+        (is (not (cli/color? false false nil)))
+        (is (cli/color? true false "1"))
+        (is (str/includes? (cli/show-status s ["--color"]) esc))
+        (is (thrown-with-msg? Exception #"usage: lume status" (cli/show-status s ["--colour"])))))))
+
 (defmethod agents/command :prompt [_ prompt _opts]
   ["printf" "%s" prompt])
 

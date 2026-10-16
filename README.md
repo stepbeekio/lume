@@ -41,8 +41,10 @@ lume drive                                            # agents work until they n
 Follow along in another terminal:
 
 ```
-watch -n 2 lume status
+watch -n 2 --color lume status --color
 ```
+
+Status is coloured at a terminal (set `NO_COLOR` to turn that off). `watch` isn't a terminal to lume, so pass `--color` to both.
 
 When it stops on a question:
 
@@ -58,7 +60,7 @@ Pushing is up to you. Drivers commit, but they can't push.
 ```
 lume install                   set up agents on this machine (the lume skill); safe to re-run
 lume init "<goal>" [--gate "<cmd>"] [--allow "<cmd>"]...
-lume status                    one screen: goal, asks, pinned notes, items, recent events
+lume status [--color]          one screen: goal, asks, pinned notes, items, recent events
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"
 lume item show <id>            one item in full: intent, gate, disposition, its events

@@ -404,14 +404,28 @@
         n (if (= "-n" flag) (parse-long n) 20)]
     (str/join "\n" (map pr-str (take-last n events)))))
 
-(defn show-status [session _]
-  (status/render (store/session-id session) (store/read-events session) (Instant/now)))
+(defn- terminal? []
+  ;; Java 22+ Console.isTerminal; before that, a console meant a terminal.
+  (when-let [c (System/console)]
+    (try (.isTerminal c) (catch Exception _ true))))
+
+(defn color?
+  "Colour is for a human at a terminal (NO_COLOR opts out), or forced with
+  --color for pipes that render it, like watch --color."
+  [flag? terminal? no-color]
+  (boolean (or flag? (and terminal? (str/blank? no-color)))))
+
+(defn show-status [session args]
+  (when-let [stray (seq (remove #{"--color"} args))]
+    (fail! "usage: lume status [--color]; unexpected:" (str/join " " stray)))
+  (status/render (store/session-id session) (store/read-events session) (Instant/now)
+                 {:color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))}))
 
 (def usage
   "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
 lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
                                             start a session; items added without --gate get its --gate
-lume status                                 one screen: goal, items, notes, recent events
+lume status [--color]                       one screen: goal, items, notes, recent events (colour on a tty)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
@@ -432,7 +446,7 @@ lume log [-n N]                             raw events (default last 20)")
     (case cmd
       "init" (init root (rest args))
       "install" (install (rest args))
-      "status" (show-status (session) nil)
+      "status" (show-status (session) (rest args))
       "item" (case sub
                "add" (item-add (session) more)
                "close" (item-close (session) more)

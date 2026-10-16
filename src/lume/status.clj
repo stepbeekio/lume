@@ -46,6 +46,18 @@
 
 (def ^:private width 100)
 
+;; Colour is for humans at a terminal. It wraps text that is already clipped
+;; and padded, so it never changes visible width or line count.
+(def ^:private ^:dynamic *color* false)
+
+(def ^:private sgr {:dim "2" :yellow "33" :green "32" :red "31" :cyan "36"})
+
+(defn- paint [style s]
+  (if *color* (str "\u001b[" (sgr style) "m" s "\u001b[0m") s))
+
+(defn strip-color [s]
+  (str/replace s #"\u001b\[[0-9;]*m" ""))
+
 (defn- clip [s n]
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
@@ -64,7 +76,7 @@
   (let [running (not (or interrupted (contains? sp :exit)))]
     (str (:spawn/id sp) " "
          (cond interrupted "interrupted"
-               running "running"
+               running (paint :cyan "running")
                :else (str "exit " exit))
          " · " (ago now t)
          (when-let [steps (or (:steps sp) (:steps progress))] (str " · " steps (if (= 1 steps) " step" " steps")))
@@ -74,12 +86,12 @@
 (defn- gate-line [now {:keys [gate last-gate]}]
   (str "gate " (clip gate 40)
        (when-let [{:keys [exit t tail] gid :gate/id} last-gate]
-         (str " · " gid " " (if (zero? exit) "pass" (str "fail exit " exit)) " · " (ago now t)
+         (str " · " gid " " (if (zero? exit) (paint :green "pass") (paint :red (str "fail exit " exit))) " · " (ago now t)
               (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
 
 (defn- section [label lines]
   (when (seq lines)
-    (cons (format "%-8s%s" label (first lines))
+    (cons (str (paint :dim label) (subs "        " (count label)) (first lines))
           (map #(str "        " %) (rest lines)))))
 
 (defn- capped [n more-hint xs]
@@ -103,10 +115,7 @@
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
        (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :note/id :ask/id :disposition :exit :intent :gate :command :text :question :answer :goal :why])) 70)))
 
-(defn render
-  "Status as text. Every section is capped, so it stays one screen however
-  long the session runs: at most 40 lines with every section full."
-  [session-id events now]
+(defn- render* [session-id events now]
   (let [{:keys [goal repo items notes spawns allow asks default-gate]} (project events)
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
@@ -122,7 +131,7 @@
                               (->> (vals asks)
                                    (filter #(= :open (:state %)))
                                    (sort-by #(parse-long (subs (:id %) 1)))
-                                   (map #(clip (str (:id %) " " (:question %)) (- width 8))))))
+                                   (map #(paint :yellow (clip (str (:id %) " " (:question %)) (- width 8)))))))
       (when (or (seq allow) default-gate)
         (section "allow" [(clip (str/join " · " (cond->> allow default-gate (cons (str "default gate " default-gate))))
                                 (- width 8))]))
@@ -150,3 +159,12 @@
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                        "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
                        "lume ask \"<question>\" · lume answer <id> \"<text>\" (human only) · lume allow \"<cmd>\" · lume log"])))))
+
+(defn render
+  "Status as text. Every section is capped, so it stays one screen however
+  long the session runs: at most 40 lines with every section full. Plain
+  unless {:color true}; colour adds escapes only, never visible width."
+  ([session-id events now] (render session-id events now {}))
+  ([session-id events now {:keys [color]}]
+   (binding [*color* (boolean color)]
+     (render* session-id events now))))
