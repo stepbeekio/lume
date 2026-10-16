@@ -7,6 +7,17 @@
   (:import (java.time Duration Instant ZoneId)
            (java.time.format DateTimeFormatter)))
 
+;; Budgets bound what agents spend: dollars and minutes of spawns and drive
+;; turns, and how many spawns started.
+(defn- spend [s {:keys [cost-usd ms]}]
+  (cond-> s
+    cost-usd (update-in [:spent :usd] + cost-usd)
+    ms (update-in [:spent :minutes] + (/ ms 60000.0))))
+
+(defn amount [k v]
+  (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
+    (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
+
 (defn project
   "Fold the log into the current state of the session."
   [events]
@@ -41,14 +52,34 @@
                                                        :question (get-in s [:asks (:ask/id e) :question])
                                                        :text (str (:ask/id e) " → " (:answer e)))))
        :note/unpinned  (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
+       :session/budgeted (update s :budget merge (select-keys e [:usd :spawns :minutes]))
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
-                            (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e)))
+                            (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e))
+                            (update-in [:spent :spawns] inc))
        :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
-       :spawn/exited    (update-in s [:spawns (:spawn/id e)] merge e)
+       :spawn/exited    (-> s (update-in [:spawns (:spawn/id e)] merge e) (spend e))
+       :drive/exited    (spend s e)
        s))
-   {:items {} :notes [] :spawns {} :allow [] :asks {}}
+   {:items {} :notes [] :spawns {} :allow [] :asks {} :spent {:usd 0 :spawns 0 :minutes 0}}
    events))
+
+(defn over-budget
+  "Why no more agent work may start, or nil: the first limit that spending has
+  reached. Spend is the whole session's, spawns and drive turns alike."
+  [{:keys [budget spent]}]
+  (some (fn [[k unit]]
+          (when-let [limit (get budget k)]
+            (when (>= (get spent k) limit)
+              (str "budget reached: " (amount k (get spent k)) " of " (amount k limit) unit
+                   " — only the human raises it, with lume budget --" (name k) " N"))))
+        [[:usd " spent"] [:spawns " spawns"] [:minutes " minutes"]]))
+
+(defn budget-text
+  "Spent against each limit, e.g. $1.20/$10.00 · 7/20 spawns · 12.5 min."
+  [{:keys [budget spent]}]
+  (str/join " · " (for [[k unit] [[:usd ""] [:spawns " spawns"] [:minutes " min"]]]
+                    (str (amount k (get spent k)) (when-let [l (get budget k)] (str "/" (amount k l))) unit))))
 
 ;; Rendering
 
@@ -152,7 +183,7 @@
        (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
 
 (defn- render* [session-id events now]
-  (let [{:keys [goal repo items notes spawns allow asks default-gate]} (project events)
+  (let [{:keys [goal repo items notes spawns allow asks default-gate budget spent] :as state} (project events)
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
         ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
@@ -171,6 +202,11 @@
       (when (or (seq allow) default-gate)
         (section "allow" [(clip (str/join " · " (cond->> allow default-gate (cons (str "default gate " default-gate))))
                                 (- width 8))]))
+      (when (or (seq budget) (some pos? (vals spent)))
+        (section "budget" [(let [over (over-budget state)
+                                 line (clip (str (budget-text state) (when over " · reached: no new spawns or turns"))
+                                            (- width 8))]
+                             (if over (paint :red line) line))]))
       (section "pinned" (capped 6 "lume log"
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
@@ -193,7 +229,7 @@
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
                                     (reverse (remove :pinned notes)))))
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.
-      (section "recent" (map event-line (take-last 4 (remove #(= :spawn/progress (:type %)) events))))
+      (section "recent" (map event-line (take-last 3 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                        "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
                        "lume ask \"<question>\" · lume answer <id> \"<text>\" (human only) · lume allow \"<cmd>\" · lume log"])))))

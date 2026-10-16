@@ -237,6 +237,33 @@
                                         :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
+;; Budgets: the substrate, not the driver, bounds spend. Anyone may lower or add
+;; a limit; raising one is the human's, like permissions.
+(defn budget [session args]
+  (let [usage "usage: lume budget [--usd N] [--spawns N] [--minutes N]"
+        [pos vals] (take-flags args #{"--usd" "--spawns" "--minutes"} usage)
+        limits (into {} (for [[flag [v & more]] vals
+                              :let [k (keyword (subs flag 2))
+                                    n (if (= :spawns k) (parse-long v) (parse-double v))]]
+                          (do (when (or (seq more) (nil? n) (neg? n)) (fail! usage))
+                              [k n])))
+        state #(status/project (store/read-events session))]
+    (when (seq pos) (fail! usage))
+    (when (seq limits)
+      (let [{:keys [budget]} (state)
+            raised (filter (fn [[k n]] (when-let [l (get budget k)] (> n l))) limits)]
+        (when (seq raised)
+          (human-only! "only the human raises a budget; lower it, or ask with lume ask \"<question>\""
+                       (str "Raise the budget: " (str/join " · " (map (fn [[k n]] (str (name k) " " (budget k) " → " n)) raised)) ".")
+                       "yes"))
+        (store/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
+    (let [s (state)]
+      (str "budget " (status/budget-text s) (when-let [over (status/over-budget s)] (str "\n" over))))))
+
+(defn- within-budget! [events]
+  (when-let [over (status/over-budget (status/project events))]
+    (fail! over)))
+
 ;; Questions for the human. Anyone may ask; only the human answers, and the
 ;; answer reaches status and workers alongside the notes.
 (defn ask [session [question]]
@@ -304,6 +331,7 @@
         events (store/read-events session)
         item (open-item events id)
         started (store/append! session (fn [events]
+                                         (within-budget! events)
                                          (let [sid (next-id "s" :spawn/started events)]
                                            {:type :spawn/started :spawn/id sid :item/id id :agent agent
                                             :out (str (fs/path session "spawns" (str sid ".out")))
@@ -350,6 +378,7 @@
   (if (driver?)
     (do (store/append! session (fn [events]
                                  (open-item events id)
+                                 (within-budget! events)
                                  (cond-> {:type :spawn/requested :item/id id :by (actor)}
                                    (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
         (str id " spawn requested; it runs when your turn ends, so finish the turn now"))
@@ -381,12 +410,14 @@
   [session root agent did allow]
   (let [out (fs/path session "drives" (str did ".out"))]
     (fs/create-dirs (fs/parent out))
-    (let [{:keys [exit]} @(p/process (agents/command agent (driver-prompt session did) {:allow allow :role :driver})
+    (let [t0 (System/currentTimeMillis)
+          {:keys [exit]} @(p/process (agents/command agent (driver-prompt session did) {:allow allow :role :driver})
                                      {:dir root :in ""
                                       :out :write :out-file (fs/file out)
                                       :err :write :err-file (fs/file (str out ".err"))
                                       :extra-env {"LUME_SESSION" session "LUME_ACTOR" did}})]
-      (assoc (agents/summarize agent (slurp (fs/file out))) :exit exit :out (str out)))))
+      (assoc (agents/summarize agent (slurp (fs/file out)))
+             :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
 
 (defn drive
   "Run up to --turns driver turns, each followed by the spawns it requested,
@@ -407,18 +438,23 @@
     (.addShutdownHook (Runtime/getRuntime) hook)
     (try
       (loop [n 1]
-        (let [{:keys [items asks allow]} (status/project (store/read-events session))
-              ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)]
+        (let [{:keys [items asks allow] :as state} (status/project (store/read-events session))
+              ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
+              over (status/over-budget state)]
           (cond
             ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
+            over (stop! over)
             (not-any? #(= :open (:state %)) (vals items)) (stop! "no open items")
             (> n turns) (stop! (str turns " turns run"))
             :else
             (let [{did :drive/id} (store/append! session (fn [events]
                                                            {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
                                                             :n n :by (actor)}))
-                  {:keys [exit result out]} (drive-turn session root (keyword agent) did allow)
+                  {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow)
                   logged (rest (drop-while #(not= did (:drive/id %)) (store/read-events session)))]
+              ;; Logged after reading what the turn did, so it never counts as the turn's work.
+              (store/append! session (constantly (merge {:type :drive/exited :drive/id did}
+                                                        turn)))
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
               (if (empty? logged)
                 (stop! (str did " logged no events"))
@@ -524,8 +560,11 @@ lume note --unpin <id>                      let a pinned note age out like the r
 lume ask \"<question>\"                       put a question to the human; open asks top status
 lume answer <id> \"<text>\"                   answer an ask (human at a tty: retype the id); answers join the notes
 lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)
+lume budget [--usd N] [--spawns N] [--minutes N]
+                                            limit the session's agent spend (spawns and drive turns); with no
+                                            flags, print spent/limit. Lowering is anyone's; raising, the human's
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
-lume drive [--turns N] [--agent claude]     driver turns until an ask is open, no items are open, or N (10) run
+lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run
 lume log [-n N]                             raw events (default last 20)")
 
 (defn run [args]
@@ -548,6 +587,9 @@ lume log [-n N]                             raw events (default last 20)")
       "ask" (ask (session) (rest args))
       "answer" (answer (session) (rest args))
       "allow" (allow (session) (rest args))
+      "budget" (if (#{"-h" "--help"} sub)
+                 "usage: lume budget [--usd N] [--spawns N] [--minutes N]"
+                 (budget (session) (rest args)))
       "spawn" (spawn (session) root (rest args))
       "drive" (drive (session) root (rest args))
       "log" (show-log (session) (rest args))

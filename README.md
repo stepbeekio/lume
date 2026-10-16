@@ -47,6 +47,14 @@ The command's `name=number` (or `name: number`) pairs become the row; with none,
 
 `lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 
+Bound what agents spend with a budget:
+
+```
+lume budget --usd 20 --spawns 30 --minutes 120
+```
+
+Spend is the whole session's: dollars and minutes of every spawn and drive turn (cost from the agent's own result line), and how many spawns started. Status shows it on one line, e.g. `budget  $10.88/$20.00 · 22/30 spawns · 30.4/120 min`. Once a limit is reached, `lume spawn` refuses to start a worker and `lume drive` stops with the reason, as it does for an open ask. Anyone may add or lower a limit; raising one is yours alone, like `lume allow`. `lume budget` with no flags prints spend against the limits.
+
 Follow along in another terminal:
 
 ```
@@ -62,7 +70,7 @@ lume answer a1 "yes, drop the first run"
 lume drive
 ```
 
-`lume answer`, `lume allow` and `init --allow` are yours alone. Agents run as your user, so they could fake any environment variable or file lume reads. These commands therefore need an interactive terminal and a typed confirmation: retype the ask id to answer, or `yes` to change permissions. Spawns and drives have no terminal, so lume refuses them and says why.
+`lume answer`, `lume allow`, `init --allow` and raising a budget are yours alone. Agents run as your user, so they could fake any environment variable or file lume reads. These commands therefore need an interactive terminal and a typed confirmation: retype the ask id to answer, or `yes` to change permissions. Spawns and drives have no terminal, so lume refuses them and says why.
 
 Pushing is up to you. Drivers commit, but they can't push.
 
@@ -78,7 +86,9 @@ lume item show <id>            one item in full: intent, gate, disposition, its 
 lume item measure <id> "<cmd>" measure the item after every spawn on it: one ledger row per run
 lume measure <id>              run the measurement now (a baseline) and print its row
 lume spawn <id>                run one worker on an item
-lume drive [--turns N]         driver turns until an ask, no open items, or N turns
+lume drive [--turns N]         driver turns until an ask, a budget limit, no open items, or N turns
+lume budget [--usd N] [--spawns N] [--minutes N]
+                               limit agent spend; agents may lower it, only you raise it
 lume note [--pin] "<text>"     steering; pinned notes stay in status and every prompt
 lume ask "<question>"          agents ask; only you answer
 lume answer <id> "<text>"

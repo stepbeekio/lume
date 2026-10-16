@@ -351,11 +351,12 @@
       (dotimes [n 10] (cli/ask s [(str "question " n " " (apply str (repeat 120 "q")))]))
       (cli/answer s ["a1" (apply str (repeat 120 "z"))])
       (cli/answer s ["a2" "yes"])
+      (cli/budget s ["--usd" "1000" "--spawns" "2000" "--minutes" "60000"])
       (let [out (status/render "sess" (store/read-events s) (Instant/now))
             lines (str/split-lines out)]
         (is (<= (count lines) 40) out)
         (is (every? #(<= (count %) 110) lines) out)
-        (doseq [section ["goal" "asks" "allow" "pinned" "open" "closed" "notes" "recent" "next"]]
+        (doseq [section ["goal" "asks" "allow" "budget" "pinned" "open" "closed" "notes" "recent" "next"]]
           (is (re-find (re-pattern (str "(?m)^" section " ")) out) section))
         (is (str/includes? out "+5 more") "8 open asks, 3 shown")
         (is (str/includes? out "+14 more") "20 pinned, 6 shown")
@@ -456,8 +457,8 @@
              (drive! s (str (lume-cmd "spawn" "i1" "--agent" "test") "; echo \"me $LUME_ACTOR\""))))
       (let [events (store/read-events s)
             {:keys [items spawns]} (status/project events)]
-        (is (= [:drive/started :drive/turn :spawn/requested :spawn/started]
-               (take 4 (drop 2 (map :type events)))))
+        (is (= [:drive/started :drive/turn :spawn/requested :drive/exited :spawn/started]
+               (take 5 (drop 2 (map :type events)))))
         (is (= "d1" (:by (first (filter #(= :spawn/requested (:type %)) events)))))
         (is (= "done by s1" (get-in spawns ["s1" :result])))
         (is (= :done (get-in items ["i1" :state])) "the spawn's gate closed it"))
@@ -474,6 +475,62 @@
           "driver ids keep counting across drives")
       (is (re-find #"^ask a1 is open: which\? " (drive! s (lume-cmd "ask" "which?") (lume-cmd "note" "never"))))
       (is (= 1 (count @driver-calls)) "no turn runs while an ask is open"))))
+
+;; Fake drivers summarize like claude, so a turn can report a cost on a result line.
+(defmethod agents/summarize :driver [_ out] (agents/summarize :claude out))
+
+(defn- result-line [usd]
+  (str "echo '" (json/generate-string {:type "result" :result "ok" :total_cost_usd usd}) "'"))
+
+(deftest budgets-bound-spend
+  (let [s (new-session "goal")
+        spent #(:spent (status/project (store/read-events s)))]
+    (cli/item-add s ["work" "--gate" "false"])
+    (testing "with no flags it prints spent against limits"
+      (is (= "budget $0.00 · 0 spawns · 0 min" (cli/budget s []))))
+    (testing "bad values are usage errors"
+      (doseq [args [["--usd"] ["--usd" "x"] ["--spawns" "1.5"] ["--minutes" "-1"] ["10"] ["--usd" "1" "--usd" "2"]]]
+        (is (thrown-with-msg? Exception #"usage" (cli/budget s args)) (pr-str args))))
+    (testing "agents may set and lower limits, never raise them"
+      (binding [cli/*actor* "d1"]
+        (is (= "budget $0.00/$5.00 · 0/3 spawns · 0 min" (cli/budget s ["--usd" "5" "--spawns" "3"])))
+        (cli/budget s ["--spawns" "2"])
+        (is (thrown-with-msg? Exception #"only the human raises" (cli/budget s ["--spawns" "4"])))
+        (is (thrown-with-msg? Exception #"only the human raises" (cli/budget s ["--usd" "1" "--spawns" "9"]))
+            "a raise refuses the whole command, lowering included"))
+      (is (= {:usd 5.0 :spawns 2} (:budget (status/project (store/read-events s))))))
+    (testing "the human raises at a terminal, with a typed confirmation"
+      (binding [cli/*confirm* (constantly false)]
+        (is (thrown-with-msg? Exception #"interactive terminal" (cli/budget s ["--spawns" "4"]))))
+      (cli/budget s ["--spawns" "4"])
+      (is (= 4 (:spawns (:budget (status/project (store/read-events s)))))))
+    (testing "spawns and drive turns are spent: count, dollars and minutes"
+      (cli/spawn s *root* ["i1" "--agent" "test"])
+      (store/append! s (constantly {:type :spawn/exited :spawn/id "s9" :cost-usd 1.25 :ms 90000}))
+      (is (= "d2 logged no events" (drive! s (str (lume-cmd "note" "a") "; " (result-line 0.5)))))
+      (let [{:keys [ms cost-usd]} (first (filter #(= :drive/exited (:type %)) (store/read-events s)))]
+        (is (= 0.5 cost-usd) "a drive turn's cost comes from its result line")
+        (is (nat-int? ms)))
+      (is (= 1 (:spawns (spent))))
+      (is (= 1.75 (:usd (spent)))))
+    (testing "status shows spent/limit on one line"
+      (is (re-find #"(?m)^budget  \$1\.75/\$5\.00 · 1/4 spawns · 1\.\d min$"
+                   (status/render "sess" (store/read-events s) (Instant/now)))))
+    (testing "past a limit, spawns are refused and drive stops with the reason"
+      (cli/budget s ["--spawns" "1"])
+      (cli/item-add s ["more" "--gate" "true"])
+      (is (thrown-with-msg? Exception #"^budget reached: 1 of 1 spawns — only the human raises it, with lume budget --spawns N$"
+                            (cli/spawn s *root* ["i2" "--agent" "test"])))
+      (binding [cli/*actor* "d9"]
+        (is (thrown-with-msg? Exception #"budget reached" (cli/spawn s *root* ["i2"])) "a driver's request too"))
+      (is (re-find #"^budget reached: 1 of 1 spawns" (drive! s (lume-cmd "note" "never"))))
+      (is (empty? @driver-calls) "no turn starts past a limit")
+      (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "reached: no new spawns or turns")))
+    (testing "dollars and minutes are limits too"
+      (cli/budget s ["--spawns" "100" "--usd" "1.75"])
+      (is (re-find #"^budget reached: \$1\.75 of \$1\.75 spent" (drive! s (lume-cmd "note" "never"))))
+      (cli/budget s ["--usd" "100" "--minutes" "1"])
+      (is (re-find #"^budget reached: 1\.\d of 1 minutes" (drive! s (lume-cmd "note" "never")))))))
 
 (deftest claude-driver-args
   (is (= ["--model" "opus" "--tools" "Bash,Read"
