@@ -24,14 +24,21 @@
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
-       :note/unpinned   (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
+       :ask/opened      (update s :asks assoc (:ask/id e) {:id (:ask/id e) :question (:question e) :state :open})
+       ;; An answer is steering, like a note, so it joins the notes.
+       :ask/answered    (-> s
+                            (assoc-in [:asks (:ask/id e) :state] :answered)
+                            (update :notes conj (assoc (select-keys e [:ask/id :answer :t :by])
+                                                       :question (get-in s [:asks (:ask/id e) :question])
+                                                       :text (str (:ask/id e) " → " (:answer e)))))
+       :note/unpinned  (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
                             (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e)))
        :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
        :spawn/exited    (update-in s [:spawns (:spawn/id e)] merge e)
        s))
-   {:items {} :notes [] :spawns {} :allow []}
+   {:items {} :notes [] :spawns {} :allow [] :asks {}}
    events))
 
 ;; Rendering
@@ -93,13 +100,13 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :note/id :disposition :exit :intent :gate :command :text :goal])) 70)))
+       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :note/id :ask/id :disposition :exit :intent :gate :command :text :question :answer :goal])) 70)))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
   long the session runs: at most 40 lines with every section full."
   [session-id events now]
-  (let [{:keys [goal repo items notes spawns allow]} (project events)
+  (let [{:keys [goal repo items notes spawns allow asks]} (project events)
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
         ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
@@ -109,6 +116,12 @@
      (concat
       [(str "lume status · " session-id (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
+      ;; Questions waiting on the human come first: they're what blocks.
+      (section "asks" (capped 3 "lume log"
+                              (->> (vals asks)
+                                   (filter #(= :open (:state %)))
+                                   (sort-by #(parse-long (subs (:id %) 1)))
+                                   (map #(clip (str (:id %) " " (:question %)) (- width 8))))))
       (when (seq allow) (section "allow" [(clip (str/join " · " allow) (- width 8))]))
       (section "pinned" (capped 6 "lume log"
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
@@ -122,7 +135,7 @@
                                            [(str "    " (spawn-line now sp))])))
                                open)))
       (section "closed"
-               (capped 5 "lume log"
+               (capped 4 "lume log"
                        (map (fn [{:keys [id state intent why]}]
                               (str id "  " (name state) " — " (clip intent 40) (when why (str " — " (clip why 40)))))
                             (reverse (sort-by :closed-at closed)))))
@@ -130,7 +143,7 @@
                                (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
                                     (reverse (remove :pinned notes)))))
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.
-      (section "recent" (map event-line (take-last 6 (remove #(= :spawn/progress (:type %)) events))))
+      (section "recent" (map event-line (take-last 4 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                        "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
-                       "lume allow \"<cmd>\" (workers may run it, and their item's gate) · lume note --unpin <id> · lume log"])))))
+                       "lume ask \"<question>\" · lume answer <id> \"<text>\" (human only) · lume allow \"<cmd>\" · lume log"])))))

@@ -171,15 +171,19 @@
       (dotimes [n 20] (cli/item-close s [(str "i" (inc n)) "dropped" (apply str (repeat 60 "w"))]))
       (dotimes [n 50] (cli/note s [(str "note " n)]))
       (dotimes [n 20] (cli/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
+      (dotimes [n 10] (cli/ask s [(str "question " n " " (apply str (repeat 120 "q")))]))
+      (cli/answer s ["a1" (apply str (repeat 120 "z"))])
+      (cli/answer s ["a2" "yes"])
       (let [out (status/render "sess" (store/read-events s) (Instant/now))
             lines (str/split-lines out)]
         (is (<= (count lines) 40) out)
         (is (every? #(<= (count %) 110) lines) out)
-        (doseq [section ["goal" "allow" "pinned" "open" "closed" "notes" "recent" "next"]]
+        (doseq [section ["goal" "asks" "allow" "pinned" "open" "closed" "notes" "recent" "next"]]
           (is (re-find (re-pattern (str "(?m)^" section " ")) out) section))
+        (is (str/includes? out "+5 more") "8 open asks, 3 shown")
         (is (str/includes? out "+14 more") "20 pinned, 6 shown")
-        (is (str/includes? out "+47 more") "50 notes, 3 shown beside pinned")
-        (is (str/includes? out "+15 more") "20 closed, 5 shown")
+        (is (str/includes? out "+49 more") "50 notes and 2 answers, 3 shown beside pinned")
+        (is (str/includes? out "+16 more") "20 closed, 4 shown")
         (is (str/includes? out "+176 more items") "180 open with gates, 4 whole items shown")
         (is (re-find #"(?m)^        i24  .*\n            gate true\n        \+176" out)
             "an item's gate line is never cut off from it"))))
@@ -190,6 +194,32 @@
 
 (defmethod agents/command :prompt [_ prompt _opts]
   ["printf" "%s" prompt])
+
+(deftest asks-wait-for-the-human
+  (let [s (new-session "goal")
+        id (cli/item-add s ["use the answer"])]
+    (binding [cli/*actor* "s1"]
+      (is (= "a1" (cli/ask s ["ship on fridays?"]))))
+    (is (= "a2" (cli/ask s ["which db?"])))
+    (let [out (status/render "sess" (store/read-events s) (Instant/now))]
+      (is (re-find #"(?m)^goal    goal\nasks    a1 ship on fridays\?\n        a2 which db\?$" out)
+          "open asks come right after the goal"))
+    (testing "only the human answers"
+      (doseq [who ["s1" "d1"]]
+        (binding [cli/*actor* who]
+          (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "sure"]))))))
+    (testing "answers move from asks to notes"
+      (is (= "a1 answered" (cli/answer s ["a1" "never"])))
+      (is (thrown-with-msg? Exception #"a1 is already answered" (cli/answer s ["a1" "ok fine"])))
+      (is (thrown-with-msg? Exception #"no such ask: a9" (cli/answer s ["a9" "x"])))
+      (let [out (status/render "sess" (store/read-events s) (Instant/now))]
+        (is (re-find #"(?m)^asks    a2 which db\?\nopen " out) "a1 has left asks")
+        (is (re-find #"(?m)^notes   \[\d\d:\d\d human\] a1 → never$" out))))
+    (testing "workers see answered asks with the notes"
+      (cli/spawn s *root* [id "--agent" "prompt"])
+      (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
+        (is (str/includes? prompt "- a1 ship on fridays? → never\n"))
+        (is (not (str/includes? prompt "which db")))))))
 
 (deftest pinned-notes-outlive-the-window
   (let [s (new-session "goal")

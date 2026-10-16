@@ -128,9 +128,29 @@
                                         :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
+;; Questions for the human. Anyone may ask; only the human answers, and the
+;; answer reaches status and workers alongside the notes.
+(defn ask [session [question]]
+  (when (str/blank? question) (fail! "usage: lume ask \"<question>\""))
+  (:ask/id (store/append! session (fn [events]
+                                    {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
+                                     :question question :by (actor)}))))
+
+(defn answer [session [id text]]
+  (when (or (str/blank? id) (str/blank? text)) (fail! "usage: lume answer <id> \"<text>\""))
+  (when-not (= "human" (actor))
+    (fail! "only the human answers asks; record what you think with lume note"))
+  (store/append! session (fn [events]
+                           (case (get-in (status/project events) [:asks id :state])
+                             nil (fail! "no such ask:" id)
+                             :answered (fail! id "is already answered")
+                             :open {:type :ask/answered :ask/id id :answer text :by (actor)})))
+  (str id " answered"))
+
 (defn- worker-prompt [events item]
   (let [{:keys [goal notes]} (status/project events)
-        bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (:text %)) ns))))]
+        line #(if (:ask/id %) (str (:ask/id %) " " (:question %) " → " (:answer %)) (:text %))
+        bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (line %)) ns))))]
     (str/join "\n"
               (concat
                ["You are a worker in a lume session."
@@ -228,6 +248,8 @@ lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
+lume ask \"<question>\"                       put a question to the human; open asks top status
+lume answer <id> \"<text>\"                   answer an ask (human only); answers join the notes
 lume allow [--revoke] \"<cmd>\"               let workers run commands starting with <cmd> (their gate is always allowed)
 lume spawn <id> [--agent claude]            run a worker on an item, in the foreground
 lume log [-n N]                             raw events (default last 20)")
@@ -245,6 +267,8 @@ lume log [-n N]                             raw events (default last 20)")
                "gate" (item-gate (session) more)
                (fail! "usage: lume item add|gate|close ..."))
       "note" (note (session) (rest args))
+      "ask" (ask (session) (rest args))
+      "answer" (answer (session) (rest args))
       "allow" (allow (session) (rest args))
       "spawn" (spawn (session) root (rest args))
       "log" (show-log (session) (rest args))
