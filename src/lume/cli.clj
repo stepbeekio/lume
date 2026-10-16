@@ -355,6 +355,23 @@
                  [(str "+" (- (count related) (count shown)) " earlier events — lume log")])
                (map item-event-line shown)))))
 
+;; Install: set up the agent side of this machine. Safe to re-run; writes only
+;; what differs and nothing inside any repo.
+
+(defn install [[a b]]
+  (let [agent (keyword (if (= "--agent" a) b "claude"))
+        {:keys [files manual]} (agents/setup agent)]
+    (str/join "\n"
+              (concat
+               (for [[path content] files]
+                 (let [old (when (fs/exists? path) (slurp path))]
+                   (if (= old content)
+                     (str "unchanged " path)
+                     (do (fs/create-dirs (fs/parent path))
+                         (spit path content)
+                         (str (if old "updated   " "wrote     ") path)))))
+               manual))))
+
 (defn show-log [session [flag n]]
   (let [events (store/read-events session)
         n (if (= "-n" flag) (parse-long n) 20)]
@@ -364,7 +381,8 @@
   (status/render (store/session-id session) (store/read-events session) (Instant/now)))
 
 (def usage
-  "lume init \"<goal>\"                         start a session for this repo
+  "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
+lume init \"<goal>\"                         start a session for this repo
 lume status                                 one screen: goal, items, notes, recent events
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
@@ -385,6 +403,7 @@ lume log [-n N]                             raw events (default last 20)")
         session #(or (store/current-session root) (fail! "no session for this repo; run lume init \"<goal>\""))]
     (case cmd
       "init" (init root (rest args))
+      "install" (install (rest args))
       "status" (show-status (session) nil)
       "item" (case sub
                "add" (item-add (session) more)

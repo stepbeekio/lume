@@ -17,7 +17,9 @@
     (let [home (str (fs/create-temp-dir {:prefix "lume-home"}))
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
-        (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root] (t))
+        (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
+                  agents/*claude-home* (str (fs/path home "claude"))]
+          (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
@@ -354,3 +356,32 @@
       (let [out (status/render "sess" (store/read-events s) (Instant/now))]
         (is (not (re-find #"(?m)^pinned" out)))
         (is (str/includes? out "+9 more") "14 notes, 5 shown")))))
+
+(deftest install-writes-the-skill-and-prints-the-settings-line
+  (let [claude agents/*claude-home*
+        skill (str (fs/path claude "skills" "lume" "SKILL.md"))
+        settings (str (fs/path claude "settings.json"))]
+    (is (str/starts-with? claude store/*home*) "tests never touch the real ~/.claude")
+    (let [out (cli/install [])]
+      (is (str/includes? out (str "wrote     " skill)))
+      (is (str/includes? out "\"LUME_ACTOR\": \"claude\""))
+      (is (not (fs/exists? settings)) "settings are printed, never applied"))
+    (testing "the skill teaches the lume loop and the human's boundaries"
+      (let [text (slurp skill)]
+        (is (str/starts-with? text "---\nname: lume\ndescription: "))
+        (doseq [s ["lume status" "lume item add \"<what and why>\" --gate" "lume spawn" "lume drive"
+                   "lume note" "lume ask" "lume allow" "lume answer" "Never push"]]
+          (is (str/includes? text s) s))))
+    (testing "re-running changes nothing"
+      (is (str/includes? (cli/install []) (str "unchanged " skill))))
+    (testing "an edited skill is restored"
+      (spit skill "old")
+      (is (str/includes? (cli/install []) (str "updated   " skill))))
+    (testing "a settings file that already sets the actor is reported, not edited"
+      (spit settings "{\"env\": {\"LUME_ACTOR\": \"claude\"}}")
+      (let [out (cli/install ["--agent" "claude"])]
+        (is (str/includes? out "LUME_ACTOR=claude is set"))
+        (is (not (str/includes? out "todo"))))
+      (is (= "{\"env\": {\"LUME_ACTOR\": \"claude\"}}" (slurp settings))))
+    (is (thrown-with-msg? Exception #"knows no agent" (cli/install ["--agent" "nope"])))
+    (is (empty? (fs/list-dir *root*)) "nothing is written in the repo")))

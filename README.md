@@ -14,6 +14,16 @@ bbin install io.github.stepbeekio/lume
 
 Re-run it to upgrade. To work on lume itself, run `bbin install .` from a checkout instead.
 
+Then set up the agent side of the machine:
+
+```
+lume install
+```
+
+It writes a Claude skill, `~/.claude/skills/lume/SKILL.md` (or under `$CLAUDE_CONFIG_DIR`), that teaches any Claude session to work in a repo through lume: start from `lume status`, add gated items, spawn and drive, review and commit, ask you rather than allow, answer or push. It prints each file it wrote, updated or left unchanged, so it's safe to re-run after an upgrade.
+
+It also prints one line for you to add yourself, because it never edits your settings: `"LUME_ACTOR": "claude"` in the `env` of `~/.claude/settings.json`. That makes interactive Claude sessions act as `claude` rather than as you, so lume refuses them `lume allow` and `lume answer`.
+
 ## Use
 
 In any repo:
@@ -45,6 +55,7 @@ Pushing is up to you. Drivers commit, but they can't push.
 ## Commands
 
 ```
+lume install                   set up agents on this machine (the lume skill); safe to re-run
 lume status                    one screen: goal, asks, pinned notes, items, recent events
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"

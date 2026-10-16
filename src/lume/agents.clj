@@ -4,7 +4,8 @@
   An adapter turns a prompt into a command line, the command's output lines
   into progress while it runs, and its whole output into a short summary for
   the log."
-  (:require [cheshire.core :as json]
+  (:require [babashka.fs :as fs]
+            [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
@@ -22,6 +23,16 @@
   "Fold one line of stdout into a running spawn's progress, a small map like
   {:steps 3 :last \"short text\"} that is logged as it changes."
   (fn [agent _progress _line] agent))
+
+(defmulti setup
+  "What `lume install` does for `agent` on this machine: {:files [[path content]]
+  :manual [\"line\"]}. Files are written by install (only when they differ);
+  manual lines are printed, never applied, because they change the user's own
+  agent settings."
+  (fn [agent] agent))
+
+(defmethod setup :default [agent]
+  (throw (ex-info (str "lume install knows no agent " (name agent)) {:lume/user-error true})))
 
 (defmethod summarize :default [_ out]
   {:result (last (remove str/blank? (str/split-lines (str out))))})
@@ -98,3 +109,71 @@
                           (assoc :last (tool-call (last tools))))
           (not (str/blank? text)) (assoc prog :last text)
           :else prog)))
+
+;; Install: a user-level skill that teaches any Claude session to work through lume.
+;; Tests bind *claude-home* to a temp dir; nothing else should touch the real one.
+
+(def ^:dynamic *claude-home*
+  (or (System/getenv "CLAUDE_CONFIG_DIR") (str (fs/path (fs/home) ".claude"))))
+
+(def claude-skill
+  "---
+name: lume
+description: Work in a repo through lume, the durable log for long agent tasks. Use when a repo has a lume session (`lume status` prints one), or when asked to plan, drive, or hand off work with lume.
+---
+
+# Working through lume
+
+Lume keeps a long task's state in an event log, not in your context. `lume status`
+is the handoff: there is no handoff file, and the next session starts from it too.
+
+## Start
+
+Run `lume status` first. It is one screen:
+- goal: what the session is for
+- asks: questions waiting for the human; don't redo work they block
+- pinned notes: standing lessons; follow them
+- open items: the backlog, each with the gate that decides done
+- recent notes and events: what the last session did
+
+`lume item show <id>` prints an item's full intent, gate and history when status clips it.
+If there is no session, don't start one unprompted; ask the human for the goal.
+
+## Work
+
+- Add work as an item, intent first, then its gate:
+  `lume item add \"<what and why>\" --gate \"<cmd>\"`.
+  The gate is a command whose exit 0 means done (e.g. the repo's tests). An ungated
+  item can't close itself when its worker exits.
+- `lume spawn <id>` runs a worker on an item; `lume drive` runs driver turns, each
+  making one decision, until an ask is open or nothing is left.
+- After a worker: review its diff, commit it with a message saying what and why, then
+  `lume note \"committed <id>: <change id> <what>\"`.
+- `lume item close <id> done \"<why>\"` runs the gate and is refused if it fails;
+  `dropped` needs only a reason.
+- Record what you learn with `lume note \"<text>\"`; `lume note --pin` for anything the
+  next session must not forget. When status lacked something you needed, add an item.
+
+## The human
+
+- When only the human can decide, `lume ask \"<question>\"` and stop that line of work.
+- Never run `lume allow` or `lume answer`: permissions and answers are the human's,
+  and lume refuses them from agents anyway.
+- Never push. Commit locally; pushing is up to the human.
+- Lume writes nothing in the repo; its state lives under ~/.lume. Don't read or edit
+  it directly; use the commands.
+")
+
+(defn- claude-actor-set? [settings]
+  (try (= "claude" (get-in (json/parse-string (slurp settings)) ["env" "LUME_ACTOR"]))
+       (catch Exception _ false)))
+
+;; LUME_ACTOR=claude marks interactive sessions as agents, not the human (i25). It goes
+;; in the user's own settings, which lume reads but never edits.
+(defmethod setup :claude [_]
+  (let [settings (str (fs/path *claude-home* "settings.json"))]
+    {:files [[(str (fs/path *claude-home* "skills" "lume" "SKILL.md")) claude-skill]]
+     :manual (if (claude-actor-set? settings)
+               [(str "ok        LUME_ACTOR=claude is set in " settings)]
+               [(str "todo      add to the \"env\" object in " settings ", so interactive Claude sessions act as 'claude', not the human:")
+                "          \"LUME_ACTOR\": \"claude\""])}))
