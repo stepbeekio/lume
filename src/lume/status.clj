@@ -250,7 +250,7 @@
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
        (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
 
-(defn- render* [session-id events now]
+(defn- render* [session-id events now past]
   (let [{:keys [goal repo items notes spawns allow asks default-gate budget spent] :as state} (project events)
         cadence-line (when (:cadence state)
                        (str "cadence " (cadence-text (cadence state))
@@ -263,7 +263,7 @@
     (str/join
      "\n"
      (concat
-      [(str "lume status · " session-id (when repo (str " · " repo)))]
+      [(str "lume status · " session-id (when past " (not current)") (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
       ;; Questions waiting on the human come first: they're what blocks.
       (section "asks" (capped 3 "lume log"
@@ -311,8 +311,35 @@
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
   long the session runs: at most 40 lines with every section full. Plain
-  unless {:color true}; colour adds escapes only, never visible width."
+  unless {:color true}; colour adds escapes only, never visible width.
+  {:past true} marks a session that isn't the repo's current one."
   ([session-id events now] (render session-id events now {}))
-  ([session-id events now {:keys [color]}]
+  ([session-id events now {:keys [color past]}]
    (binding [*color* (boolean color)]
-     (render* session-id events now))))
+     (render* session-id events now past))))
+
+;; lume ls: a session as one line. The outcome is what the session is doing or
+;; how it ended, most pressing first.
+(defn- outcome [events {:keys [items spawns asks]}]
+  (let [drive (last (filter #(#{:drive/started :drive/stopped} (:type %)) events))
+        running (->> (vals spawns) (remove #(or (:interrupted %) (contains? % :exit))) (sort-by :t) last)
+        ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)]
+    (cond (= :drive/started (:type drive)) "driving"
+          running (str "running " (:spawn/id running))
+          ask (str "ask " (:id ask) " open")
+          (and (seq items) (not-any? #(= :open (:state %)) (vals items))) "all closed"
+          drive (str "stopped: " (:why drive))
+          (empty? items) "no items"
+          :else "idle")))
+
+(defn session-line
+  "One session for lume ls: id (* if current), goal, items, last event, outcome."
+  [session-id events now current?]
+  (let [{:keys [goal items] :as state} (project events)
+        open (count (filter #(= :open (:state %)) (vals items)))]
+    (str (if current? "* " "  ")
+         (clip (str session-id " " (clip (or goal "(no goal)") 40)
+                    " · " open " open " (- (count items) open) " closed"
+                    (when-let [t (:t (last events))] (str " · " (ago now t)))
+                    " · " (outcome events state))
+               (- width 2)))))

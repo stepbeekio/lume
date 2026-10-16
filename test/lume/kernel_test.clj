@@ -93,6 +93,63 @@
     (is (= (last ss) (store/current-session *root*)))
     (is (every? #(= 1 (count (store/read-events %))) ss))))
 
+(deftest ls-lists-sessions-and-status-reads-past-ones
+  (is (str/includes? (cli/ls *root* []) "no sessions"))
+  (let [old (new-session "first goal")
+        _ (cli/item-add old ["only" "--gate" "true"])
+        _ (cli/item-close old ["i1" "done" "ok"])
+        new (new-session "second goal")
+        _ (cli/item-add new ["open one"])
+        _ (cli/ask new ["which db?"])
+        [old-id new-id] (map store/session-id [old new])
+        old-events (store/read-events old)
+        [l1 l2 :as lines] (str/split-lines (cli/ls *root* []))]
+    (testing "newest first, one line each, current marked"
+      (is (= 2 (count lines)))
+      (is (str/starts-with? l1 (str "* " new-id " second goal · 1 open 0 closed · ")))
+      (is (str/ends-with? l1 "· ask a1 open"))
+      (is (str/starts-with? l2 (str "  " old-id " first goal · 0 open 1 closed · ")))
+      (is (str/ends-with? l2 "· all closed")))
+    (testing "status and log read a past session by id"
+      (let [st (cli/show-status *root* [old-id])]
+        (is (str/starts-with? st (str "lume status · " old-id " (not current)")))
+        (is (str/includes? st "first goal")))
+      (is (not (str/includes? (cli/show-status *root* []) "(not current)")))
+      (is (not (str/includes? (cli/show-status *root* [new-id]) "(not current)")))
+      (is (= (pr-str (last old-events)) (cli/show-log *root* ["--session" old-id "-n" "1"])))
+      (is (= (last (store/read-events new)) (edn/read-string (cli/show-log *root* ["-n" "1"])))))
+    (testing "reading writes nothing, and the current session stays current"
+      (is (= old-events (store/read-events old)))
+      (is (= new-id (store/session-id (store/current-session *root*)))))
+    (testing "unknown ids and stray args are refused"
+      (is (thrown-with-msg? Exception #"no session nope" (cli/show-status *root* ["nope"])))
+      (is (thrown-with-msg? Exception #"no session nope" (cli/show-log *root* ["--session" "nope"])))
+      (is (thrown-with-msg? Exception #"usage: lume status" (cli/show-status *root* [old-id new-id])))
+      (is (thrown-with-msg? Exception #"usage: lume log" (cli/show-log *root* ["x"])))
+      (is (thrown-with-msg? Exception #"usage: lume ls" (cli/ls *root* ["x"]))))
+    (testing "bounded with a +N hint; --all shows every one"
+      (dotimes [_ 10] (new-session "more"))
+      (let [lines (str/split-lines (cli/ls *root* []))]
+        (is (= 11 (count lines)))
+        (is (= "+2 more — lume ls --all" (last lines))))
+      (is (= 12 (count (str/split-lines (cli/ls *root* ["--all"]))))))
+    (testing "a suffix sorts as a number, so -10 is newer than -9"
+      (let [dir (fs/path (store/repo-dir *root*) "sessions")]
+        (doseq [id ["29990101-000000" "29990101-000000-9" "29990101-000000-10"]]
+          (fs/create-dirs (fs/path dir id)))
+        (is (= ["29990101-000000-10" "29990101-000000-9" "29990101-000000"]
+               (map store/session-id (take 3 (store/sessions *root*))))))))
+  (testing "the outcome is what the session is doing, else how it ended"
+    (let [t (str (Instant/now))
+          line #(status/session-line "x" (map (fn [e] (assoc e :t t)) %) (Instant/now) false)
+          base [{:type :session/started :goal "g"} {:type :item/added :item/id "i1" :intent "a"}]]
+      (is (str/ends-with? (line base) "· idle"))
+      (is (str/ends-with? (line (take 1 base)) "· no items"))
+      (is (str/ends-with? (line (conj base {:type :spawn/started :spawn/id "s1" :item/id "i1"})) "· running s1"))
+      (is (str/ends-with? (line (conj base {:type :drive/started})) "· driving"))
+      (is (str/ends-with? (line (conj base {:type :drive/started} {:type :drive/stopped :why "3 turns run"}))
+                          "· stopped: 3 turns run")))))
+
 (deftest spawn-logs-start-and-exit
   (let [s (new-session "goal")
         id (cli/item-add s ["do the thing"])
@@ -463,8 +520,8 @@
         (is (not (cli/color? false true "1")))
         (is (not (cli/color? false false nil)))
         (is (cli/color? true false "1"))
-        (is (str/includes? (cli/show-status s ["--color"]) esc))
-        (is (thrown-with-msg? Exception #"usage: lume status" (cli/show-status s ["--colour"])))))))
+        (is (str/includes? (cli/show-status *root* ["--color"]) esc))
+        (is (thrown-with-msg? Exception #"usage: lume status" (cli/show-status *root* ["--colour"])))))))
 
 (defmethod agents/command :prompt [_ prompt _opts]
   ["printf" "%s" prompt])

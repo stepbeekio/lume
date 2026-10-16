@@ -105,7 +105,9 @@ Pushing is up to you. Drivers commit, but they can't push.
 ```
 lume install                   set up agents on this machine (the lume skill); safe to re-run
 lume init "<goal>" [--gate "<cmd>"] [--allow "<cmd>"]...
-lume status [--color]          one screen: goal, asks, pinned notes, items, recent events
+lume status [<session>] [--color]
+                               one screen: goal, asks, pinned notes, items, recent events
+                               (a past session's, by id from lume ls)
 lume item add "<intent>" --gate "<cmd>"
 lume item close <id> done|dropped "<why>"
 lume item show <id>            one item in full: intent, gate, disposition, its events
@@ -127,7 +129,9 @@ lume check <spec.edn>          validate a harness spec: every problem, exit 1 on
 lume spec [--all]              this session's harness as spec EDN
 lume run <spec.edn> ["<goal>"] [--turns N]
                                check a spec, start a session from it, baseline, drive
-lume log [-n N]                raw events
+lume ls [--all]                this repo's sessions, newest first, one line each (10 unless --all)
+lume log [-n N] [--session <id>]
+                               raw events, of the current session or a past one
 ```
 
 ## Develop

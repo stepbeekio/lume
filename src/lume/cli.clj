@@ -686,10 +686,40 @@
                          (str (if old "updated   " "wrote     ") path)))))
                manual))))
 
-(defn show-log [session [flag n]]
-  (let [events (store/read-events session)
-        n (if (= "-n" flag) (parse-long n) 20)]
-    (str/join "\n" (map pr-str (take-last n events)))))
+;; Past sessions: lume run makes several per repo. ls lists them; status and
+;; log read any of them by id, and write nothing to it.
+
+(defn- session-by-id
+  "The session to read: the one named by id, else the current one."
+  [root id]
+  (or (if id (store/find-session root id) (store/current-session root))
+      (fail! (if id
+               (str "no session " id " for this repo; lume ls lists them")
+               "no session for this repo; run lume init \"<goal>\""))))
+
+(def ^:private ls-usage "usage: lume ls [--all]")
+
+(defn ls [root args]
+  (when (seq (remove #{"--all"} args)) (fail! ls-usage))
+  (let [all (some #{"--all"} args)
+        sessions (store/sessions root)
+        current (some-> (store/current-session root) store/session-id)
+        now (Instant/now)
+        shown (if all sessions (take 10 sessions))]
+    (if (empty? sessions)
+      "no sessions for this repo; run lume init \"<goal>\" or lume run <spec.edn>"
+      (str/join "\n" (concat (for [s shown]
+                               (status/session-line (store/session-id s) (store/read-events s) now (= (store/session-id s) current)))
+                             (when (> (count sessions) (count shown))
+                               [(str "+" (- (count sessions) (count shown)) " more — lume ls --all")]))))))
+
+(def ^:private log-usage "usage: lume log [-n N] [--session <id>]")
+
+(defn show-log [root args]
+  (let [[pos {[n & ns] "-n" [id & ids] "--session"}] (take-flags args #{"-n" "--session"} log-usage)
+        n (if n (parse-long n) 20)]
+    (when (or (seq pos) (seq ns) (seq ids) (not (and n (<= 0 n)))) (fail! log-usage))
+    (str/join "\n" (map pr-str (take-last n (store/read-events (session-by-id root id)))))))
 
 ;; Specs: a harness as one page of EDN. check validates a file; spec prints the
 ;; current session's harness, folded from the log, so it can be saved and reused.
@@ -780,17 +810,22 @@
   [flag? terminal? no-color]
   (boolean (or flag? (and terminal? (str/blank? no-color)))))
 
-(defn show-status [session args]
-  (when-let [stray (seq (remove #{"--color"} args))]
-    (fail! "usage: lume status [--color]; unexpected:" (str/join " " stray)))
-  (status/render (store/session-id session) (store/read-events session) (Instant/now)
-                 {:color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))}))
+(def ^:private status-usage "usage: lume status [<session>] [--color]")
+
+(defn show-status [root args]
+  (let [[[id & stray] _] (take-flags (remove #{"--color"} args) #{} status-usage)
+        _ (when (seq stray) (fail! status-usage))
+        session (session-by-id root id)]
+    (status/render (store/session-id session) (store/read-events session) (Instant/now)
+                   {:color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))
+                    :past (not= (store/session-id session) (some-> (store/current-session root) store/session-id))})))
 
 (def usage
   "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
 lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
                                             start a session; items added without --gate get its --gate
-lume status [--color]                       one screen: goal, items, notes, recent events (colour on a tty)
+lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);
+                                            a past session's by id (lume ls)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item measure <id> \"<cmd>\" [--runs N] [--drop K]
@@ -821,7 +856,9 @@ lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]
                                             check a spec, start a session from it, baseline its measurements,
                                             then drive (--turns 0: don't). A spec's allow, or a cadence above
                                             every-spawn, is the human's
-lume log [-n N]                             raw events (default last 20)")
+lume ls [--all]                             this repo's sessions, newest first (* current): goal, open/closed
+                                            items, last event, outcome; 10 unless --all
+lume log [-n N] [--session <id>]            raw events (default last 20), of a past session by id")
 
 (defn run [args]
   (let [root (store/repo-root)
@@ -830,7 +867,7 @@ lume log [-n N]                             raw events (default last 20)")
     (case cmd
       "init" (init root (rest args))
       "install" (install (rest args))
-      "status" (show-status (session) (rest args))
+      "status" (if (#{"-h" "--help"} sub) status-usage (show-status root (rest args)))
       "item" (case sub
                "add" (item-add (session) more)
                "close" (item-close (session) more)
@@ -854,7 +891,8 @@ lume log [-n N]                             raw events (default last 20)")
       "run" (if (#{"-h" "--help"} sub) run-usage (run-spec root (rest args)))
       "spawn" (spawn (session) root (rest args))
       "drive" (drive (session) root (rest args))
-      "log" (show-log (session) (rest args))
+      "log" (if (#{"-h" "--help"} sub) log-usage (show-log root (rest args)))
+      "ls" (if (#{"-h" "--help"} sub) ls-usage (ls root (rest args)))
       (nil "help" "-h" "--help") usage
       (fail! "unknown command:" cmd "\n\n" usage))))
 

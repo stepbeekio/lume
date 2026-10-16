@@ -89,3 +89,23 @@
           (str (fs/path (repo-dir root) "sessions" (str/trim (slurp (str current)))))))))
 
 (defn session-id [session] (fs/file-name session))
+
+(defn- id-order
+  "Ids sort by their stamp, then by suffix as a number, so -10 follows -9."
+  [id]
+  (let [[date time n] (str/split id #"-")]
+    [(str date "-" time) (or (some-> n parse-long) 1)]))
+
+(defn sessions
+  "The repo's sessions, newest first."
+  [root]
+  (let [dir (fs/path (repo-dir root) "sessions")]
+    (if (fs/exists? dir)
+      (->> (fs/list-dir dir) (filter fs/directory?) (map str)
+           (sort-by (comp id-order session-id) #(compare %2 %1)))
+      [])))
+
+(defn find-session
+  "The repo's session with this id, or nil."
+  [root id]
+  (first (filter #(= id (session-id %)) (sessions root))))
