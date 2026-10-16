@@ -100,7 +100,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:item/id :spawn/id :gate/id :note/id :ask/id :disposition :exit :intent :gate :command :text :question :answer :goal])) 70)))
+       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :note/id :ask/id :disposition :exit :intent :gate :command :text :question :answer :goal :why])) 70)))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however

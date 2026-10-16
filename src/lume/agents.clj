@@ -10,7 +10,8 @@
 
 (defmulti command
   "argv that runs `agent` on `prompt`, in the current directory. `opts` has
-  :allow, shell command prefixes the worker may run (e.g. \"bb test\")."
+  :allow, shell command prefixes the agent may run (e.g. \"bb test\"), and
+  :role, :worker (edits files) or :driver (runs lume and jj, reads, never edits)."
   (fn [agent _prompt _opts] agent))
 
 (defmulti summarize
@@ -54,9 +55,20 @@
     ["--permission-mode" "acceptEdits"
      "--allowedTools" (str/join "," (map bash-rule (into ["lume" "bin/lume"] allow)))]))
 
+(defn claude-driver-args
+  "A driver gets Bash and Read only, may run lume, jj and the allowed commands,
+  and may never push. `env` (LUME_CLAUDE_ARGS) is kept, e.g. for --model."
+  [env allow]
+  (into (if env (user-args env) [])
+        ["--tools" "Bash,Read"
+         "--allowedTools" (str/join "," (concat (map bash-rule (into ["lume" "bin/lume" "jj"] allow)) ["Read"]))
+         "--disallowedTools" (str/join "," (map bash-rule ["jj git push" "git push"]))]))
+
 ;; stream-json writes one event per line as it happens, so a running spawn can be followed.
-(defmethod command :claude [_ prompt {:keys [allow]}]
-  (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"] (claude-args (System/getenv "LUME_CLAUDE_ARGS") allow)))
+(defmethod command :claude [_ prompt {:keys [allow role]}]
+  (let [env (System/getenv "LUME_CLAUDE_ARGS")]
+    (into ["claude" "-p" prompt "--output-format" "stream-json" "--verbose"]
+          (if (= :driver role) (claude-driver-args env allow) (claude-args env allow)))))
 
 (defn- parse [line]
   (try (json/parse-string line) (catch Exception _ nil)))

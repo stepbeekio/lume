@@ -21,7 +21,7 @@
 
 (defn- actor [] *actor*)
 
-(defn- worker? [] (boolean (re-matches #"s\d+" (actor))))
+(defn- driver? [] (boolean (re-matches #"d\d+" (actor))))
 
 (defn- open-item [events id]
   (let [item (get-in (status/project events) [:items id])]
@@ -117,13 +117,14 @@
                                            pin (assoc :pinned true))))]
           (str (if pin "pinned " "noted ") (:note/id e)))))))
 
-;; Only the driver grants permissions: a worker that needs a command asks with a note or item.
+;; Only the human grants permissions: workers and agent drivers would grant themselves
+;; whatever they need, so they ask with lume ask instead.
 (defn allow [session [a b]]
   (let [revoke (= "--revoke" a)
         command (if revoke b a)]
     (when (str/blank? command) (fail! "usage: lume allow [--revoke] \"<cmd>\""))
-    (when (worker?)
-      (fail! "workers can't change permissions; ask the driver with lume note or lume item add"))
+    (when-not (= "human" (actor))
+      (fail! "only the human changes permissions; ask with lume ask \"<question>\""))
     (store/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
                                         :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
@@ -190,8 +191,7 @@
             (recur prog logged at)))
         prog))))
 
-(defn spawn [session root [id & opts]]
-  (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude]"))
+(defn- run-spawn [session root id opts]
   (let [agent (keyword (or (flag opts "--agent") "claude"))
         events (store/read-events session)
         item (open-item events id)
@@ -232,6 +232,90 @@
                (str "\n" (try (item-close session [id "done" (str "gate passed after " sid)])
                               (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
 
+;; A driver's spawn is only a request: its turn ends first, then drive runs it.
+(defn spawn [session root [id & opts]]
+  (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude]"))
+  (if (driver?)
+    (do (store/append! session (fn [events]
+                                 (open-item events id)
+                                 (cond-> {:type :spawn/requested :item/id id :by (actor)}
+                                   (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
+        (str id " spawn requested; it runs when your turn ends, so finish the turn now"))
+    (run-spawn session root id opts)))
+
+;; Drive: a loop of fresh driver agents, each making one decision from status.
+
+(defn- driver-prompt [session did]
+  (str/join "\n"
+            [(str "You are the driver of a lume session, turn " did ". Make ONE decision, carry it out with")
+             "lume commands, and exit. A fresh driver takes the next turn from `lume status`, so"
+             "anything the next one must know goes in the log (`lume note`, `lume note --pin`)."
+             ""
+             "First run `jj st`. Changes in the working copy are a finished worker's: review them"
+             "(`jj diff`) before anything else. If they're good, `jj commit -m \"<what and why>\"` and"
+             "record it with `lume note \"committed <item>: <change id> <what>\"`; if not, say what's"
+             "wrong with `lume note` or `lume item add`. A turn that logs nothing stops the drive."
+             "Otherwise pick one: add, gate or close items; `lume spawn <id>` to put a worker on an"
+             "open item (it runs after you exit); `lume note` a lesson; or `lume ask \"<question>\"`"
+             "when only the human can decide (the loop stops until they answer)."
+             ""
+             "Rules: never push. Don't edit files; workers do that. Add items with --gate \"bb test\"."
+             "End with one line: what you decided and why."
+             ""
+             (status/render (store/session-id session) (store/read-events session) (Instant/now))]))
+
+(defn- drive-turn
+  "Run one driver agent until it exits, and return its summary."
+  [session root agent did allow]
+  (let [out (fs/path session "drives" (str did ".out"))]
+    (fs/create-dirs (fs/parent out))
+    (let [{:keys [exit]} @(p/process (agents/command agent (driver-prompt session did) {:allow allow :role :driver})
+                                     {:dir root :in ""
+                                      :out :write :out-file (fs/file out)
+                                      :err :write :err-file (fs/file (str out ".err"))
+                                      :extra-env {"LUME_SESSION" session "LUME_ACTOR" did}})]
+      (assoc (agents/summarize agent (slurp (fs/file out))) :exit exit :out (str out)))))
+
+(defn drive
+  "Run up to --turns driver turns, each followed by the spawns it requested,
+  printing a line per turn and spawn. Returns why it stopped."
+  [session root opts]
+  (let [turns (parse-long (or (flag opts "--turns") "10"))
+        agent (or (flag opts "--agent") "claude")
+        _ (when-not (and turns (pos? turns)) (fail! "usage: lume drive [--turns N] [--agent claude]"))
+        say #(do (println %) (flush))
+        done (promise)
+        stop! (fn [why]
+                (deliver done true)
+                (store/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
+                (str "drive stopped: " why))
+        hook (Thread. #(when-not (realized? done)
+                         (store/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
+    (store/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)}))
+    (.addShutdownHook (Runtime/getRuntime) hook)
+    (try
+      (loop [n 1]
+        (let [{:keys [items asks allow]} (status/project (store/read-events session))
+              ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)]
+          (cond
+            ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
+            (not-any? #(= :open (:state %)) (vals items)) (stop! "no open items")
+            (> n turns) (stop! (str turns " turns run"))
+            :else
+            (let [{did :drive/id} (store/append! session (fn [events]
+                                                           {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
+                                                            :n n :by (actor)}))
+                  {:keys [exit result out]} (drive-turn session root (keyword agent) did allow)
+                  logged (rest (drop-while #(not= did (:drive/id %)) (store/read-events session)))]
+              (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
+              (if (empty? logged)
+                (stop! (str did " logged no events"))
+                (do (doseq [{id :item/id a :agent} (filter #(= :spawn/requested (:type %)) logged)]
+                      (say (try (run-spawn session root id ["--agent" (name (or a :claude))])
+                                (catch clojure.lang.ExceptionInfo e (ex-message e)))))
+                    (recur (inc n))))))))
+      (finally (.removeShutdownHook (Runtime/getRuntime) hook)))))
+
 (defn show-log [session [flag n]]
   (let [events (store/read-events session)
         n (if (= "-n" flag) (parse-long n) 20)]
@@ -251,7 +335,8 @@ lume note --unpin <id>                      let a pinned note age out like the r
 lume ask \"<question>\"                       put a question to the human; open asks top status
 lume answer <id> \"<text>\"                   answer an ask (human only); answers join the notes
 lume allow [--revoke] \"<cmd>\"               let workers run commands starting with <cmd> (their gate is always allowed)
-lume spawn <id> [--agent claude]            run a worker on an item, in the foreground
+lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
+lume drive [--turns N] [--agent claude]     driver turns until an ask is open, no items are open, or N (10) run
 lume log [-n N]                             raw events (default last 20)")
 
 (defn run [args]
@@ -271,6 +356,7 @@ lume log [-n N]                             raw events (default last 20)")
       "answer" (answer (session) (rest args))
       "allow" (allow (session) (rest args))
       "spawn" (spawn (session) root (rest args))
+      "drive" (drive (session) root (rest args))
       "log" (show-log (session) (rest args))
       (nil "help" "-h" "--help") usage
       (fail! "unknown command:" cmd "\n\n" usage))))

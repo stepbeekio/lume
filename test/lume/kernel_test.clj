@@ -138,12 +138,13 @@
     (cli/allow s ["jj"])
     (is (str/includes? (cli/spawn s *root* [id "--agent" "allowed"]) "· jj|bb test|true\n"))
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "allow   jj · bb test"))
-    (testing "revoking removes a command; workers can't change permissions"
+    (testing "revoking removes a command; only the human changes permissions"
       (cli/allow s ["--revoke" "jj"])
       (is (= ["bb test"] (:allow (status/project (store/read-events s)))))
-      (binding [cli/*actor* "s1"]
-        (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["rm"])))
-        (is (thrown-with-msg? Exception #"workers can't change permissions" (cli/allow s ["--revoke" "bb test"])))))))
+      (doseq [who ["s1" "d1"]]
+        (binding [cli/*actor* who]
+          (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["rm"])))
+          (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["--revoke" "bb test"]))))))))
 
 (deftest claude-args-from-env
   (is (= ["--allowedTools" "Bash(bb test)" "--allowedTools" "Bash(jj st:*)"]
@@ -220,6 +221,59 @@
       (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
         (is (str/includes? prompt "- a1 ship on fridays? → never\n"))
         (is (not (str/includes? prompt "which db")))))))
+
+;; A fake driver: each turn runs the next shell script, which can call lume.
+(def ^:private driver-turns (atom []))
+(def ^:private driver-calls (atom []))
+
+(defmethod agents/command :driver [_ prompt opts]
+  (swap! driver-calls conj (assoc opts :prompt prompt))
+  (let [script (or (first @driver-turns) "true")]
+    (swap! driver-turns #(vec (rest %)))
+    ["sh" "-c" script]))
+
+(defn- lume-cmd [& args]
+  (str/join " " (concat ["bb" "-cp" (str (fs/absolutize "src")) "-m" "lume.cli"]
+                        (map #(str "'" % "'") args))))
+
+(defn- drive! [s & turns]
+  (reset! driver-turns (vec turns))
+  (reset! driver-calls [])
+  (with-out-str (is (string? (cli/drive s *root* ["--agent" "driver" "--turns" "3"]))))
+  (last (keep :why (store/read-events s))))
+
+(deftest drive-runs-driver-turns
+  (testing "a driver's spawn is a request, run after its turn"
+    (let [s (new-session "goal")]
+      (cli/item-add s ["do it" "--gate" "true"])
+      (is (= "no open items"
+             (drive! s (str (lume-cmd "spawn" "i1" "--agent" "test") "; echo \"me $LUME_ACTOR\""))))
+      (let [events (store/read-events s)
+            {:keys [items spawns]} (status/project events)]
+        (is (= [:drive/started :drive/turn :spawn/requested :spawn/started]
+               (take 4 (drop 2 (map :type events)))))
+        (is (= "d1" (:by (first (filter #(= :spawn/requested (:type %)) events)))))
+        (is (= "done by s1" (get-in spawns ["s1" :result])))
+        (is (= :done (get-in items ["i1" :state])) "the spawn's gate closed it"))
+      (let [{:keys [prompt role]} (first @driver-calls)]
+        (is (= :driver role))
+        (is (str/includes? prompt "turn d1"))
+        (is (str/includes? prompt "open    i1  do it") "the prompt carries status"))))
+  (testing "it stops when a turn logs nothing, when turns run out, and when an ask is open"
+    (let [s (new-session "goal")]
+      (cli/item-add s ["never done"])
+      (is (= "d1 logged no events" (drive! s "true")))
+      (is (= "3 turns run" (drive! s (lume-cmd "note" "a") (lume-cmd "note" "b") (lume-cmd "note" "c"))))
+      (is (= ["d2" "d3" "d4"] (map :by (:notes (status/project (store/read-events s)))))
+          "driver ids keep counting across drives")
+      (is (re-find #"^ask a1 is open: which\? " (drive! s (lume-cmd "ask" "which?") (lume-cmd "note" "never"))))
+      (is (= 1 (count @driver-calls)) "no turn runs while an ask is open"))))
+
+(deftest claude-driver-args
+  (is (= ["--model" "opus" "--tools" "Bash,Read"
+          "--allowedTools" "Bash(lume:*),Bash(bin/lume:*),Bash(jj:*),Bash(bb test:*),Read"
+          "--disallowedTools" "Bash(jj git push:*),Bash(git push:*)"]
+         (agents/claude-driver-args "[\"--model\" \"opus\"]" ["bb test"]))))
 
 (deftest pinned-notes-outlive-the-window
   (let [s (new-session "goal")
