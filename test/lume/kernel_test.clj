@@ -41,7 +41,15 @@
     (testing "closing twice is refused"
       (is (thrown-with-msg? Exception #"already done" (cli/item-close s ["i1" "dropped" "x"]))))
     (testing "unknown items are refused"
-      (is (thrown-with-msg? Exception #"no such item" (cli/item-close s ["i9" "done" "x"]))))))
+      (is (thrown-with-msg? Exception #"no such item" (cli/item-close s ["i9" "done" "x"]))))
+    (testing "flags may come before the intent"
+      (let [id (cli/item-add s ["--gate" "bb test" "gated first"])
+            item (get-in (status/project (store/read-events s)) [:items id])]
+        (is (= ["gated first" "bb test"] [(:intent item) (:gate item)]))))
+    (testing "an intent that looks like a flag, or a stray argument, is refused"
+      (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["--gat" "bb test" "x"])))
+      (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["--gate" "bb test"])))
+      (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["one" "two"]))))))
 
 (deftest sessions-in-the-same-second-are-distinct
   (let [ss (repeatedly 3 #(new-session "goal"))]

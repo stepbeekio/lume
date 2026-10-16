@@ -41,14 +41,16 @@
 (defn- flag [opts name]
   (second (drop-while #(not= name %) opts)))
 
-(defn item-add [session [intent & opts]]
-  (when (str/blank? intent) (fail! "usage: lume item add \"<intent>\" [--gate \"<cmd>\"]"))
-  (let [gate (flag opts "--gate")
-        e (store/append! session (fn [events]
-                                   (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
-                                            :intent intent :by (actor)}
-                                     gate (assoc :gate gate))))]
-    (:item/id e)))
+(defn item-add [session args]
+  (let [[before [_ gate & after]] (split-with #(not= "--gate" %) args)
+        [intent & extra] (concat before after)]
+    (when (or (str/blank? intent) (str/starts-with? intent "--") (seq extra))
+      (fail! "usage: lume item add \"<intent>\" [--gate \"<cmd>\"]"))
+    (let [e (store/append! session (fn [events]
+                                     (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
+                                              :intent intent :by (actor)}
+                                       gate (assoc :gate gate))))]
+      (:item/id e))))
 
 (defn item-gate [session [id gate]]
   (when (str/blank? gate) (fail! "usage: lume item gate <id> \"<cmd>\""))
