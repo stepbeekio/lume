@@ -150,11 +150,12 @@
                           values (assoc :values values))]))))
 
 (defn- measure-row
-  "The ledger row, not the output: the numbers and wall time, and where the
-  output is when the command failed."
-  [{:keys [exit out] mid :measure/id id :item/id :as ran}]
-  (str mid " " id " " (status/measure-text ran)
-       (when-not (zero? exit) (str "\n" out))))
+  "The ledger row, not the output: the numbers and wall time against the
+  previous row, and where the output is when the command failed."
+  [session {:keys [exit out] mid :measure/id id :item/id :as ran}]
+  (let [row (get-in (status/project (store/read-events session)) [:items id :last-measure])]
+    (str mid " " id " " (status/measure-text (if (= mid (:measure/id row)) row ran))
+         (when-not (zero? exit) (str "\n" out)))))
 
 (defn- gate-summary [{:keys [exit tail out] gid :gate/id}]
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
@@ -178,7 +179,7 @@
   (when (str/blank? id) (fail! "usage: lume measure <id>"))
   (let [item (or (get-in (status/project (store/read-events session)) [:items id]) (fail! "no such item:" id))]
     (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
-    (measure-row (run-measure session item))))
+    (measure-row session (run-measure session item))))
 
 ;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
 (defn note [session [a b]]
@@ -314,7 +315,7 @@
            ;; item itself; otherwise its gate decides.
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (:measure item)
-               (str "\n" (measure-row (run-measure session item)))))
+               (str "\n" (measure-row session (run-measure session item)))))
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (and (:gate item) (= :open (:state item)))
                (str "\n" (try (item-close session [id "done" (str "gate passed after " sid)])

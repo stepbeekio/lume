@@ -186,7 +186,7 @@
         (is (str/includes? (slurp (:out last-measure)) (str (fs/file-name *root*))))))
     (testing "a spawn measures what its worker left, before the gate"
       (let [out (cli/spawn s *root* [id "--agent" "test"])]
-        (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds\ni1 not done: gate g1" out) out)))
+        (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds · vs m1\ni1 not done: gate g1" out) out)))
     (testing "a failing measurement is still a row, with where its output is"
       (cli/item-measure s [id "echo oops; exit 2"])
       (let [out (cli/measure s [id])]
@@ -206,9 +206,21 @@
                        (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
         (is (re-find #"m4 exit 127 · n0=0 n1=1 n10=10 .*…" line) line)
         (is (<= (count line) 110) line)))
+    (testing "a row shows its change against the latest passing row of the same command"
+      (let [f (str (fs/create-temp-file))
+            run! #(do (spit f %) (cli/measure s [id]))]
+        (cli/item-measure s [id (str "sh " f)])
+        (is (re-matches #"m5 i1 build_s=12\.5 hits=3 · \d+\.\ds" (run! "echo build_s=12.5 hits=3")) "a new command has no baseline")
+        (is (re-matches #"m6 i1 build_s=9\.6\(-2\.9\) hits=3 new=1 · \d+\.\ds · vs m5" (run! "echo build_s=9.6 hits=3 new=1")))
+        (is (re-find #"^m7 i1 build_s=10\(\+0\.4\) hits=3 · \d+\.\ds · fail exit 1 · vs m6\n" (run! "echo build_s=10 hits=3; exit 1"))
+            "a failed row is compared, but is not a baseline")
+        (is (re-matches #"m8 i1 build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · vs m6" (run! "echo build_s=9.5 hits=3")))
+        (let [line (some #(when (str/includes? % "measure ") %)
+                         (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
+          (is (re-find #"m8 vs m6 build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · " line) line))))
     (testing "a closed item can still be measured"
       (cli/item-close s [id "dropped" "x"])
-      (is (str/starts-with? (cli/measure s [id]) "m5 i1 ")))))
+      (is (str/starts-with? (cli/measure s [id]) "m9 i1 ")))))
 
 (deftest item-show-prints-what-status-clips
   (let [s (new-session "goal")

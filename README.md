@@ -43,7 +43,7 @@ lume item measure i1 'make clean; /usr/bin/time -f "build_s=%e" make 2>&1 | tail
 lume measure i1                                       # m1 i1 build_s=41.2 · 41.3s
 ```
 
-The command's `name=number` (or `name: number`) pairs become the row; with none, its last number is `value`. Wall time is always recorded. Every spawn on the item measures again before its gate runs, and status shows the latest row; `lume item show` has them all.
+The command's `name=number` (or `name: number`) pairs become the row; with none, its last number is `value`. Wall time is always recorded. Every spawn on the item measures again before its gate runs, and status shows the latest row; `lume item show` has them all. A row shows each number's change against the latest earlier passing row of the same command, e.g. `m2 i1 build_s=38.9(-2.3) · 39.0s · vs m1`, so the baseline is the row before; changing the command starts a new baseline.
 
 `lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 

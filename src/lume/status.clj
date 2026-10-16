@@ -23,7 +23,13 @@
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
        :item/measuring  (assoc-in s [:items (:item/id e) :measure] (:measure e))
-       :measure/ran     (assoc-in s [:items (:item/id e) :last-measure] e)
+       ;; Each row carries the row it's compared with: the latest earlier one
+       ;; of the same command that passed with numbers.
+       :measure/ran     (update-in s [:items (:item/id e)]
+                                   (fn [{:keys [good-measure] :as item}]
+                                     (let [row (cond-> e (= (:measure good-measure) (:measure e)) (assoc :base good-measure))]
+                                       (cond-> (assoc item :last-measure row)
+                                         (and (zero? (:exit e)) (seq (:values e))) (assoc :good-measure e)))))
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -94,20 +100,30 @@
 (defn secs [ms]
   (format "%.1fs" (/ ms 1000.0)))
 
+(defn- change [v b]
+  (when (and (number? v) (number? b) (not= v b))
+    (let [d (-> (bigdec (- v b)) (.round (java.math.MathContext. 4)) .stripTrailingZeros .toPlainString)]
+      (str "(" (when-not (str/starts-with? d "-") "+") d ")"))))
+
 (defn measure-text
-  "A ledger row's numbers: name=value pairs, then wall time, then a failure."
-  [{:keys [values ms exit]}]
-  (str (if (seq values) (str/join " " (map (fn [[k v]] (str k "=" v)) (sort values))) "no numbers")
+  "A ledger row's numbers: name=value pairs, each with its change against the
+  row's :base when it has one, then wall time, then a failure, then which row
+  it was compared with (unless :vs is false)."
+  [{:keys [values ms exit base]} & {:keys [vs] :or {vs true}}]
+  (str (if (seq values)
+         (str/join " " (map (fn [[k v]] (str k "=" v (change v (get (:values base) k)))) (sort values)))
+         "no numbers")
        " · " (secs ms)
-       (when-not (zero? exit) (str " · fail exit " exit))))
+       (when-not (zero? exit) (str " · fail exit " exit))
+       (when (and vs base) (str " · vs " (:measure/id base)))))
 
 ;; The latest row only; lume item show has the rest.
 (defn- measure-line [now {:keys [measure last-measure]}]
-  (str "measure " (clip measure 24)
-       (when-let [{:keys [t exit] mid :measure/id :as m} last-measure]
-         (str " · " mid " "
+  (str "measure " (clip measure 18)
+       (when-let [{:keys [t exit base] mid :measure/id :as m} last-measure]
+         (str " · " mid (when base (str " vs " (:measure/id base))) " "
               (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
-              (clip (measure-text (assoc m :exit 0)) 36) " · " (ago now t)))))
+              (clip (measure-text (assoc m :exit 0) :vs false) 36) " · " (ago now t)))))
 
 (defn- section [label lines]
   (when (seq lines)
