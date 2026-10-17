@@ -749,6 +749,60 @@
       (finally (fs/delete-tree fresh)))
     (is (= events (store/read-events s)) "replay writes nothing")))
 
+(defn- nrepl-eval
+  "Evaluate code in ns over nREPL at port: the value, or the error's message."
+  [port ns code]
+  (require 'bencode.core)
+  (let [write (resolve 'bencode.core/write-bencode)
+        read (resolve 'bencode.core/read-bencode)
+        text #(if (bytes? %) (String. ^bytes %) %)]
+    (with-open [sock (java.net.Socket. "127.0.0.1" (int port))]
+      (let [out (.getOutputStream sock)
+            in (java.io.PushbackInputStream. (.getInputStream sock))]
+        (write out {"op" "eval" "code" code "ns" (str ns) "id" "1"})
+        (.flush out)
+        (loop [acc {}]
+          (let [msg (update-vals (read in) text)
+                acc (merge-with str acc (select-keys msg ["value" "err" "ex"]))]
+            (if (some #(= "done" (text %)) (get msg "status"))
+              (or (get acc "value") (get acc "err") (get acc "ex"))
+              (recur acc))))))))
+
+(deftest repl-serves-a-session-and-writes-nothing
+  (let [s (new-session "prototype here")
+        _ (cli/item-add s ["first" "--gate" "true"])
+        _ (cli/note s ["a note"])
+        events (store/read-events s)
+        files #(set (map str (fs/list-dir s)))
+        before (files)
+        ;; A namespace of its own: tests run in parallel, and user is shared.
+        ns (symbol (str "lume.repl-test-" (System/nanoTime)))
+        {:keys [server port text]} (cli/start-repl s {:ns ns})
+        ev (partial nrepl-eval port ns)]
+    (try
+      (testing "it says where it listens and how to connect"
+        (is (pos? port))
+        (is (str/starts-with? text (str "lume repl · " (store/session-id s) " · " (count events) " events · nREPL on 127.0.0.1:" port)))
+        (is (str/includes? text (str "clj-nrepl-eval -p " port))))
+      (testing "events, state, render and the lume namespaces are in scope"
+        (is (= (str (count events)) (ev "(count events)")))
+        (is (= "\"prototype here\"" (ev "(:goal state)")))
+        (is (= "true" (ev "(str/includes? (render) \"i1  first\")")))
+        (is (= "true" (ev "(str/starts-with? (render 1) \"lume replay\")")))
+        (is (= "true" (ev "(= state (status/project (store/read-events session)))")))
+        (is (= "true" (ev "(fn? spec/problems)"))))
+      (testing "refresh! picks up what a live session logged since"
+        (cli/note s ["later"])
+        (is (= (str (count events)) (ev "(count events)")))
+        (is (= (str (inc (count events))) (ev "(refresh!)")))
+        (is (= "\"later\"" (ev "(:text (last events))"))))
+      (finally ((requiring-resolve 'babashka.nrepl.server/stop-server!) server)
+               (remove-ns ns)))
+    (is (= before (files)) "no files added to the session")
+    (is (= events (pop (store/read-events s))) "the repl logged nothing; only the test's note")
+    (is (thrown-with-msg? Exception #"usage: lume repl" (cli/repl *root* ["a" "b"])))
+    (is (thrown-with-msg? Exception #"no session nope" (cli/repl *root* ["nope"])))))
+
 (deftest log-queries-filter-then-bound
   (let [s (new-session "goal")
         root *root*

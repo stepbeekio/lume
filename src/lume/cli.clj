@@ -1178,6 +1178,62 @@
                     (= "q" (str/trim typed)) (str "stopped at event " i " — lume replay --at " i)
                     :else (recur more (inc k))))))))))
 
+;; Repl: an nREPL on a session, for prototyping a fold or a screen against its
+;; real log before writing the code. The namespace gets the events, their
+;; projection and the lume namespaces; nothing it sets up writes to the log.
+
+(def ^:private repl-usage "usage: lume repl [<session>] [--port N]")
+
+(defn repl-ns!
+  "Set up ns-sym for working on session: events, state, render, refresh! and
+  the lume namespaces aliased. refresh! re-reads the log, for a live session."
+  [ns-sym session]
+  (let [sid (store/session-id session)]
+    (binding [*ns* (create-ns ns-sym)]
+      (refer-clojure)
+      (require '[clojure.string :as str] '[lume.store :as store] '[lume.status :as status]
+               '[lume.spec :as spec] '[lume.agents :as agents] '[lume.cli :as cli]))
+    (letfn [(refresh! []
+              (let [events (store/read-events session)]
+                (intern ns-sym 'events events)
+                (intern ns-sym 'state (status/project events))
+                (count events)))
+            (render
+              ([] (status/render sid @(ns-resolve ns-sym 'events) (Instant/now) {}))
+              ([n] (let [events @(ns-resolve ns-sym 'events)]
+                     (status/render sid (subvec events 0 n) (Instant/parse (:t (nth events (dec n))))
+                                    {:replay {:of (count events)}}))))]
+      (intern ns-sym 'session session)
+      (intern ns-sym 'sid sid)
+      (intern ns-sym 'refresh! refresh!)
+      (intern ns-sym 'render render)
+      (refresh!))))
+
+(defn start-repl
+  "Start an nREPL whose user namespace (or opts :ns) is set up on session.
+  Returns {:server :port :text}; stop it with babashka.nrepl.server/stop-server!."
+  [session {:keys [port ns] :or {port 0 ns 'user}}]
+  (let [n (repl-ns! ns session)
+        server ((requiring-resolve 'babashka.nrepl.server/start-server!) {:port port :quiet true})
+        port (.getLocalPort ^java.net.ServerSocket (:socket server))]
+    {:server server
+     :port port
+     :text (str/join "\n"
+                     [(str "lume repl · " (store/session-id session) " · " n " events · nREPL on 127.0.0.1:" port)
+                      (str "connect: clj-nrepl-eval -p " port " \"(count events)\"")
+                      (str "in " ns ": events, state (status/project events), (render) status now, (render N) after event N,")
+                      "  (refresh!) re-reads the log; aliases store status spec agents cli str"
+                      "runs until killed; writes nothing to the session"])}))
+
+(defn repl [root args]
+  (let [[[id & stray] {[port & ports] "--port"}] (take-flags args #{"--port"} repl-usage)
+        port (if port (or (parse-long port) (fail! repl-usage)) 0)
+        _ (when (or (seq stray) (seq ports)) (fail! repl-usage))
+        {:keys [text]} (start-repl (session-by-id root id) {:port port})]
+    (println text)
+    (flush)
+    @(promise)))
+
 (def usage
   "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
 lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
@@ -1230,6 +1286,8 @@ lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--gr
 lume replay [<session>] [--at N] [--step]   status as it stood after event N, from the log alone; no flags:
                                             the decisions (drive turns, spawns), each with its N (-n, 20);
                                             --step: the screen after each decision in turn, at a terminal
+lume repl [<session>] [--port N]            an nREPL (free port) with the session's events, state, render
+                                            and lume.* in user; prints the port; writes nothing; runs until killed
 lume clean [--session <id>] [--yes]         remove every trace of lume for this repo (or one session):
                                             its state, refs/lume/*, worktrees; lists them, refused without --yes")
 
@@ -1275,6 +1333,7 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
       "log" (if (#{"-h" "--help"} sub) log-usage (show-log @root (rest args)))
       "ls" (if (#{"-h" "--help"} sub) ls-usage (ls @root (rest args)))
       "replay" (if (#{"-h" "--help"} sub) replay-usage (replay @root (rest args)))
+      "repl" (if (#{"-h" "--help"} sub) repl-usage (repl @root (rest args)))
       "clean" (if (#{"-h" "--help"} sub) clean-usage (clean @root (rest args)))
       (nil "help" "-h" "--help") usage
       (fail! "unknown command:" cmd "\n\n" usage))))

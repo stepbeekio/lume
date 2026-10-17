@@ -346,7 +346,11 @@ Run `lume status` first. It is one screen:
 `lume ls` lists the repo's sessions, newest first; `lume status <session>` and
 `lume log --session <session>` read a past one without touching it. `lume replay`
 lists a session's decisions (drive turns, spawns), each with its event number N;
-`lume replay --at N` is status as it stood then, with what that decision did. `lume clean`
+`lume replay --at N` is status as it stood then, with what that decision did.
+To prototype a fold, a query or a screen, run `lume repl [<session>]` in the background:
+it prints a port, and `clj-nrepl-eval -p <port> \"<code>\"` evaluates with the session's
+`events`, `state`, `(render)` (`(render N)`: after event N), `(refresh!)` and lume.* in scope.
+Try the code on the real log there before writing it; the repl writes nothing. `lume clean`
 deletes sessions and is the human's; never run it.
 If there is no session, don't start one unprompted; ask the human for the goal.
 
