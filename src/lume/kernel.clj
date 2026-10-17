@@ -113,6 +113,11 @@
   [session]
   (store/read-events session))
 
+(defn find-event
+  "The first event in events of type whose id-key is id, or nil."
+  [events type id-key id]
+  (some #(when (and (= type (:type %)) (= id (id-key %))) %) events))
+
 (defn session-id [session] (store/session-id session))
 
 (defn project

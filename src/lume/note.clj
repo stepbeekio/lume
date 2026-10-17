@@ -35,9 +35,9 @@
 (defn note-show [session [id]]
   (when (str/blank? id) (fail! note-show-usage))
   (let [events (kernel/read-events session)
-        added (or (some #(when (and (= :note/added (:type %)) (= id (:note/id %))) %) events)
+        added (or (kernel/find-event events :note/added :note/id id)
                   (fail! "no such note:" id))
-        unpinned (some #(when (and (= :note/unpinned (:type %)) (= id (:note/id %))) %) events)
+        unpinned (kernel/find-event events :note/unpinned :note/id id)
         at #(str (subs (:t %) 0 16) " by " (:by %))]
     (str/join "\n"
               (concat

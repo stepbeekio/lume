@@ -2,6 +2,7 @@
   "Reading sessions: lume status, ls, log, replay and repl. They read any of a
   repo's sessions by id, and write nothing to it but repl/opened."
   (:require [clojure.string :as str]
+            [lume.ask :as ask]
             [lume.item :as item]
             [lume.kernel :as kernel :refer [*read-line* ago clip clock fail! session-by-id take-flags]]
             [lume.measure :as measure]
@@ -35,10 +36,10 @@
 
 ;; A session as one line. The outcome is what the session is doing or how it
 ;; ended, most pressing first.
-(defn- outcome [events {:keys [items spawns asks]}]
+(defn- outcome [events {:keys [items spawns] :as state}]
   (let [drive (last (filter #(#{:drive/started :drive/stopped} (:type %)) events))
         running (->> (vals spawns) (remove #(or (:interrupted %) (contains? % :exit))) (sort-by :t) last)
-        ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)]
+        ask (first (ask/open-asks state))]
     (cond (= :drive/started (:type drive)) "driving"
           running (str "running " (:spawn/id running))
           ask (str "ask " (:id ask) " open")

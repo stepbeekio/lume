@@ -4,16 +4,26 @@
   the notes, and LUME_NTFY (lume.ntfy reacts to :ask/opened)."
   (:require [clojure.string :as str]
             [lume.kernel :as kernel :refer [*read-line* actor columns fail! human-only! next-id paint]]
-            [lume.ntfy :refer [ask-item]]
             [lume.status :as status :refer [wrap]]))
+
+(defn open-asks
+  "The open asks in state, oldest first."
+  [{:keys [asks]}]
+  (->> (vals asks)
+       (filter #(= :open (:state %)))
+       (sort-by #(parse-long (subs (:id %) 1)))))
+
+(defn ask-item
+  "The item an ask concerns: a plateau's, or the asking worker's."
+  [events opened]
+  (or (:item/id opened)
+      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
 
 ;; With no question: what status clips, for the human to read and answer. Open
 ;; asks in full, oldest first, wrapped to the terminal.
-(defn- open-asks [session width]
+(defn- open-asks-text [session width]
   (let [events (kernel/read-events session)
-        open (->> (vals (:asks (kernel/project events)))
-                  (filter #(= :open (:state %)))
-                  (sort-by #(parse-long (subs (:id %) 1))))
+        open (open-asks (kernel/project events))
         opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) events))]
     (if (empty? open)
       "no open asks"
@@ -31,7 +41,7 @@
 (def ^:private ask-usage "usage: lume ask [\"<question>\"]")
 
 (defn ask [session [question & extra]]
-  (cond (and (nil? question) (nil? extra)) (open-asks session (columns))
+  (cond (and (nil? question) (nil? extra)) (open-asks-text session (columns))
         (or (str/blank? question) (seq extra)) (fail! ask-usage)
         :else (let [opened (kernel/append! session (fn [events]
                                                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
@@ -73,9 +83,9 @@
 (defn ask-show [session [id]]
   (when (str/blank? id) (fail! ask-show-usage))
   (let [events (kernel/read-events session)
-        opened (or (some #(when (and (= :ask/opened (:type %)) (= id (:ask/id %))) %) events)
+        opened (or (kernel/find-event events :ask/opened :ask/id id)
                    (fail! "no such ask:" id))
-        answered (some #(when (and (= :ask/answered (:type %)) (= id (:ask/id %))) %) events)
+        answered (kernel/find-event events :ask/answered :ask/id id)
         item (ask-item events opened)
         at #(str (subs (:t %) 0 16) " by " (:by %))]
     (str/join "\n"
@@ -91,10 +101,8 @@
 
 ;; Questions waiting on the human come first in status: they're what blocks.
 ;; Each wraps to 3 lines before it's clipped; a clipped one says where the rest is.
-(defn- ask-lines [{:keys [asks]} _ _]
-  (->> (vals asks)
-       (filter #(= :open (:state %)))
-       (sort-by #(parse-long (subs (:id %) 1)))
+(defn- ask-lines [state _ _]
+  (->> (open-asks state)
        (map (fn [{:keys [id question]}]
               (let [indent (apply str (repeat (inc (count id)) " "))
                     [l & more] (wrap question (- status/width 8 (count indent)) 3

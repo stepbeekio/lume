@@ -6,6 +6,7 @@
   --wait-on-ask reads answers back with wait-for-answer!."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [lume.ask :as ask]
             [lume.kernel :as kernel]))
 
 (def ^:dynamic *ntfy*
@@ -69,12 +70,6 @@
                                                       (when why {:error why})))))
          (catch Exception _ nil))))
 
-(defn ask-item
-  "The item an ask concerns: a plateau's, or the asking worker's."
-  [events opened]
-  (or (:item/id opened)
-      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
-
 (def ^:dynamic *ask-notices*
   "False inside a drive --wait-on-ask, which sends each ask itself, with its
   reply code."
@@ -104,7 +99,7 @@
   that post the answer to the reply topic; the code and that URL are never logged."
   [session {id :ask/id :keys [question] :as opened} & [code]]
   (when (or code *ask-notices*)
-    (let [item (ask-item (kernel/read-events session) opened)
+    (let [item (ask/ask-item (kernel/read-events session) opened)
           [reply auth] (when code (ntfy-target (reply-url)))
           button (fn [label answer]
                    (str/join ", " (concat ["http" label reply "method=POST"]
@@ -215,8 +210,7 @@
                   (.join t 2000))})))
 
 (defn- open-ask-ids [session]
-  (->> (vals (:asks (kernel/state session)))
-       (filter #(= :open (:state %))) (map :id) (sort-by #(parse-long (subs % 1)))))
+  (map :id (ask/open-asks (kernel/state session))))
 
 (defn- reply-answer
   "[ask-id answer] if message answers an ask in codes ({id code}), else why not."

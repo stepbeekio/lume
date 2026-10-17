@@ -8,6 +8,7 @@
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [lume.ask :as ask]
             [lume.kernel :as kernel :refer [child-env fail! flag next-id]]
             [lume.note :as note]
             [lume.ntfy :as ntfy]
@@ -61,7 +62,7 @@
   [events since id]
   (let [state (kernel/project events)
         gate (->> (drop since events) (filter #(and (= :gate/ran (:type %)) (= id (:item/id %)))) last)]
-    (cond (some #(= :open (:state %)) (vals (:asks state))) "an ask is open"
+    (cond (seq (ask/open-asks state)) "an ask is open"
           (policy/over-budget state) "the budget is reached"
           (and (:gate-fail (policy/cadence state)) gate (not (zero? (:exit gate))))
           (str "on gate-fail: " id " gate " (:gate/id gate) " failed"))))
@@ -162,10 +163,10 @@
     (try
       (loop [n from]
         (let [events (kernel/read-events session)
-              {:keys [items asks allow] :as state} (kernel/project events)
+              {:keys [items allow] :as state} (kernel/project events)
               idle (not-any? #(= :open (:state %)) (vals items))
               closing (when idle (unreviewed-spawn events))
-              ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
+              ask (first (ask/open-asks state))
               over (policy/over-budget state)
               now (when (> n from) (fingerprint src))
               changed (and now (not= now @loaded))
