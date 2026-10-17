@@ -632,16 +632,13 @@
                  [(str "answer   none yet; only the human answers: lume answer " id)])))))
 
 (defn- worker-prompt [events item]
-  (let [{:keys [goal notes]} (status/project events)
-        line #(if (:ask/id %) (str (:ask/id %) " " (:question %) " → " (:answer %)) (:text %))
-        bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (line %)) ns))))]
+  (let [{:keys [goal] :as state} (status/project events)]
     (str/join "\n"
               (concat
                ["You are a worker in a lume session."
                 (str "Session goal: " goal)
                 (str "Your work item (" (:id item) "): " (:intent item))]
-               (bullets "Pinned notes:" (filter :pinned notes))
-               (bullets "Recent notes from the session:" (take-last 10 (remove :pinned notes)))
+               (status/prompt-lines state item)
                ["Work in the current directory. Record findings with `lume note \"<text>\"`"
                 (str "and follow-up work with `lume item add \"<intent>\"` (add `--parent " (:id item)
                      "` if it emerged from this item).")
@@ -1683,7 +1680,7 @@ lume note --unpin <id>                      let a pinned note age out like the r
   "The built-in features with their commands, in order: lume help lists the
   commands in this order. -main binds kernel/*features* to these."
   (let [named (into {} (map (juxt :name identity)) status/features)
-        order ["install" "session" "item" "ask" "note" "spawn" "measure" "budget" "cadence" "drive"
+        order ["install" "session" "item" "ask" "note" "measure" "spawn" "budget" "cadence" "drive"
                "ntfy" "spec" "inspect" "clean"]]
     (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
     (mapv #(assoc (get named % {:name %}) :commands (get commands % [])) order)))

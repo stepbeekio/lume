@@ -772,6 +772,33 @@
       (dotimes [n 50] (cli/note s [(str "note " n)]))
       (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "+45 more")))))
 
+(deftest status-and-prompts-are-data
+  (let [s (new-session "frame")
+        id (cli/item-add s ["watched"])
+        noisy {:name "noisy"
+               :status [{:label "noisy" :order 55 :cap 2
+                         :lines (fn [_ _ _] (map #(str "line " % " " (apply str (repeat 200 "z"))) (range 9)))}
+                        {:label "plenty" :order 56 :lines (fn [_ _ _] (map #(str "u" %) (range 20)))}]
+               :item-lines (fn [_ item _] [(str "watching " (:id item))])
+               :prompt (fn [_ item] [(str "Noisy says: mind " (:id item))])}]
+    (binding [kernel/*features* (conj cli/features noisy)]
+      (let [out (status/render "sess" (store/read-events s) (Instant/now))
+            lines (str/split-lines out)]
+        (testing "the frame caps a section that returns too many lines, with a +N more hint"
+          (is (re-find #"(?m)^noisy   line 0 z+…\n        line 1 z+…\n        \+7 more — lume log$" out))
+          (is (re-find #"(?m)^plenty  u0\n(        u\d\n){4}        \+15 more — lume log$" out) "no :cap is a default cap"))
+        (testing "and clips every line to the width"
+          (is (every? #(<= (count %) 100) lines) out))
+        (testing "a feature's :item-lines sit under each open item, in feature order"
+          (is (re-find #"(?m)^open    i1  watched\n            watching i1$" out)))
+        (testing "sections sit in :order among the built-ins"
+          (is (< (str/index-of out "noisy ") (str/index-of out "open "))))
+        (is (<= (count lines) 40) out))
+      (testing "a feature's :prompt joins the worker prompt"
+        (cli/spawn s *root* [id "--agent" "prompt"])
+        (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
+          (is (str/includes? prompt "\nNoisy says: mind i1\n")))))))
+
 (deftest status-colour-is-for-humans-only
   (let [s (new-session "goal")
         t (str (Instant/now))]
