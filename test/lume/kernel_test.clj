@@ -10,6 +10,7 @@
             [lume.kernel :as kernel]
             [lume.measure :as measure]
             [lume.note :as note]
+            [lume.policy :as policy]
             [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store]
@@ -577,7 +578,7 @@
       (dotimes [n 10] (cli/ask s [(str "question " n " " (apply str (repeat 120 "q")))]))
       (cli/answer s ["a1" (apply str (repeat 120 "z"))])
       (cli/answer s ["a2" "yes"])
-      (cli/budget s ["--usd" "1000" "--spawns" "2000" "--minutes" "60000"])
+      (policy/budget s ["--usd" "1000" "--spawns" "2000" "--minutes" "60000"])
       (let [out (status/render "sess" (store/read-events s) (Instant/now))
             lines (str/split-lines out)]
         (is (<= (count lines) 40) out)
@@ -1265,149 +1266,6 @@
 ;; Fake drivers summarize like claude, so a turn can report a cost on a result line.
 (defmethod agents/summarize :driver [_ out] (agents/summarize :claude out))
 
-(defn- result-line [usd]
-  (str "echo '" (json/generate-string {:type "result" :result "ok" :total_cost_usd usd}) "'"))
-
-(deftest budgets-bound-spend
-  (let [s (new-session "goal")
-        spent #(:spent (status/project (store/read-events s)))]
-    (cli/item-add s ["work" "--gate" "false"])
-    (testing "with no flags it prints spent against limits"
-      (is (= "budget $0.00 · 0 spawns · 0 min" (cli/budget s []))))
-    (testing "bad values are usage errors"
-      (doseq [args [["--usd"] ["--usd" "x"] ["--spawns" "1.5"] ["--minutes" "-1"] ["10"] ["--usd" "1" "--usd" "2"]]]
-        (is (thrown-with-msg? Exception #"usage" (cli/budget s args)) (pr-str args))))
-    (testing "agents may set and lower limits, never raise them"
-      (binding [kernel/*actor* "d1"]
-        (is (= "budget $0.00/$5.00 · 0/3 spawns · 0 min" (cli/budget s ["--usd" "5" "--spawns" "3"])))
-        (cli/budget s ["--spawns" "2"])
-        (is (thrown-with-msg? Exception #"only the human raises" (cli/budget s ["--spawns" "4"])))
-        (is (thrown-with-msg? Exception #"only the human raises" (cli/budget s ["--usd" "1" "--spawns" "9"]))
-            "a raise refuses the whole command, lowering included"))
-      (is (= {:usd 5.0 :spawns 2} (:budget (status/project (store/read-events s))))))
-    (testing "the human raises at a terminal, with a typed confirmation"
-      (binding [kernel/*confirm* (constantly false)]
-        (is (thrown-with-msg? Exception #"interactive terminal" (cli/budget s ["--spawns" "4"]))))
-      (cli/budget s ["--spawns" "4"])
-      (is (= 4 (:spawns (:budget (status/project (store/read-events s)))))))
-    (testing "spawns and drive turns are spent: count, dollars and minutes"
-      (cli/spawn s *root* ["i1" "--agent" "test"])
-      (store/append! s (constantly {:type :spawn/exited :spawn/id "s9" :cost-usd 1.25 :ms 90000}))
-      (is (= "d2 logged no events" (drive! s (str (lume-cmd "note" "a") "; " (result-line 0.5)))))
-      (let [{:keys [ms cost-usd]} (first (filter #(= :drive/exited (:type %)) (store/read-events s)))]
-        (is (= 0.5 cost-usd) "a drive turn's cost comes from its result line")
-        (is (nat-int? ms)))
-      (is (= 1 (:spawns (spent))))
-      (is (= 1.75 (:usd (spent)))))
-    (testing "status shows spent/limit on one line"
-      (is (re-find #"(?m)^budget  \$1\.75/\$5\.00 · 1/4 spawns · 1\.\d min$"
-                   (status/render "sess" (store/read-events s) (Instant/now)))))
-    (testing "past a limit, spawns are refused and drive stops with the reason"
-      (cli/budget s ["--spawns" "1"])
-      (cli/item-add s ["more" "--gate" "true"])
-      (is (thrown-with-msg? Exception #"^budget reached: 1 of 1 spawns — only the human raises it, with lume budget --spawns N$"
-                            (cli/spawn s *root* ["i2" "--agent" "test"])))
-      (binding [kernel/*actor* "d9"]
-        (is (thrown-with-msg? Exception #"budget reached" (cli/spawn s *root* ["i2"])) "a driver's request too"))
-      (is (re-find #"^budget reached: 1 of 1 spawns" (drive! s (lume-cmd "note" "never"))))
-      (is (empty? @*driver-calls*) "no turn starts past a limit")
-      (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "reached: no new spawns or turns")))
-    (testing "dollars and minutes are limits too"
-      (cli/budget s ["--spawns" "100" "--usd" "1.75"])
-      (is (re-find #"^budget reached: \$1\.75 of \$1\.75 spent" (drive! s (lume-cmd "note" "never"))))
-      (cli/budget s ["--usd" "100" "--minutes" "1"])
-      (is (re-find #"^budget reached: 1\.\d of 1 minutes" (drive! s (lume-cmd "note" "never")))))))
-
-(defn- spawn-cmds [& ids]
-  (str/join "; " (map #(lume-cmd "spawn" % "--agent" "test") ids)))
-
-;; Cadence tests: one deftest per rule, so the drive-heavy ones run in parallel.
-(defn- started [s] (map :item/id (filter #(= :spawn/started (:type %)) (store/read-events s))))
-(defn- handed-back [s] (first (filter #(= :drive/handed-back (:type %)) (store/read-events s))))
-
-(defn- cadence-session [cadence & gates]
-  (let [s (new-session "goal")]
-    (when cadence (cli/cadence s [cadence]))
-    (doseq [g gates] (cli/item-add s ["work" "--gate" g]))
-    s))
-
-(deftest cadence-rules-are-data
-  (testing "rules are data: no rules prints them, bad rules are usage errors"
-    (let [s (cadence-session nil)
-          render #(status/render "sess" (store/read-events s) (Instant/now))
-          cad #(status/cadence (status/project (store/read-events s)))]
-      (is (= "cadence every-spawn · ceiling every-spawn" (cli/cadence s [])))
-      (is (not (re-find #"(?m)^allow" (render))) "an unset cadence isn't shown")
-      (doseq [args [["batch"] ["batch" "0"] ["on"] ["on" "plateau"] ["on" "fail"] ["sometimes"]]]
-        (is (thrown-with-msg? Exception #"usage: lume cadence" (cli/cadence s args)) (pr-str args)))
-      (is (= "cadence batch 3 on gate-fail on plateau 4 · ceiling batch 3 on gate-fail on plateau 4"
-             (cli/cadence s ["batch 3" "on" "gate-fail" "on plateau 4"])))
-      (is (= {:batch 3 :gate-fail true :plateau 4} (cad)))
-      (testing "a driver may hand back more often, within the human's ceiling, never less"
-        (binding [kernel/*actor* "d1"]
-          (cli/cadence s ["batch 2 on gate-fail on plateau 2"])
-          (doseq [rules ["batch 4 on gate-fail on plateau 4" "batch 2 on plateau 2" "batch 2 on gate-fail"
-                         "batch 2 on gate-fail on plateau 5"]]
-            (is (thrown-with-msg? Exception #"^only the human hands back less often \(" (cli/cadence s [rules])) rules)))
-        (is (= {:batch 2 :gate-fail true :plateau 2} (cad)))
-        (is (re-find #"(?m)^allow   cadence batch 2 on gate-fail on plateau 2 \(ceiling batch 3 on gate-fail on plateau 4\)$"
-                     (render))))
-      (testing "the human raises at a terminal, and their cadence is the new ceiling"
-        (binding [kernel/*confirm* (constantly false)]
-          (is (thrown-with-msg? Exception #"interactive terminal" (cli/cadence s ["batch 5"]))))
-        (cli/cadence s ["every-spawn"])
-        (binding [kernel/*actor* "d1"]
-          (is (thrown-with-msg? Exception #"batch 1 → 2" (cli/cadence s ["batch 2"]))))
-        (is (re-find #"(?m)^allow   cadence every-spawn$" (render)))))))
-
-(deftest cadence-every-spawn-and-batch
-  (testing "every-spawn: a turn may request one spawn"
-    (let [s (cadence-session nil "false" "false")]
-      (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2"))))
-      (is (= ["i1"] (started s)))
-      (binding [kernel/*actor* "d9"]
-        (cli/spawn s *root* ["i2"])
-        (is (thrown-with-msg? Exception #"^cadence every-spawn allows 1 spawn request\(s\) a turn, and this turn has made them"
-                              (cli/spawn s *root* ["i2"]))))))
-  (testing "batch N: up to N requests a turn, run in order, failed gates and all"
-    (let [s (cadence-session "batch 3" "false" "false" "false" "false")]
-      (binding [kernel/*actor* "d9"]
-        (is (re-find #"\(1 of 3 this turn\)" (cli/spawn s *root* ["i1"]))))
-      (is (= "d2 logged no events" (drive! s (spawn-cmds "i3" "i2" "i1" "i4"))))
-      (is (= ["i3" "i2" "i1"] (started s)))
-      (is (nil? (handed-back s))))))
-
-(deftest cadence-on-gate-fail
-  (testing "on gate-fail: a failed gate ends the batch and hands back"
-    (let [s (cadence-session "batch 3 on gate-fail" "true" "false" "true")]
-      (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2" "i3"))))
-      (is (= ["i1" "i2"] (started s)) "a passing gate carries on")
-      (is (= {:drive/id "d1" :why "on gate-fail: i2 gate g2 failed" :skipped ["i3"]}
-             (select-keys (handed-back s) [:drive/id :why :skipped]))))))
-
-(deftest cadence-on-plateau
-  (testing "on plateau K: K rows without a new best ask the human, and drive stops"
-    (let [s (cadence-session "batch 5 on plateau 2" "false")]
-      (spit (str (fs/path *root* "t")) "t=5")
-      (measure/item-measure s ["i1" "cat t"])
-      (is (re-find #"^ask a1 is open: i1 plateaued: 2 measurement rows without a new best \(best m1, lower is better\)"
-                   (drive! s (spawn-cmds "i1" "i1" "i1" "i1") (lume-cmd "note" "never"))))
-      (is (= ["i1" "i1" "i1"] (started s)))
-      (is (= ["i1"] (:skipped (handed-back s))))
-      (is (= "an ask is open" (:why (handed-back s))))
-      (is (= 1 (count @*driver-calls*)))
-      (testing "one ask at a time per item, and a new best resets the count"
-        (measure/measure s ["i1"])
-        (is (not (str/includes? (measure/measure s ["i1"]) "ask")) "m5 is 4 rows on, but a1 is open")
-        (cli/answer s ["a1" "keep going"])
-        (measure/measure s ["i1"])
-        (is (str/includes? (measure/measure s ["i1"]) "\nask a2 i1 plateaued: 6 measurement rows"))
-        (cli/answer s ["a2" "keep going"])
-        (spit (str (fs/path *root* "t")) "t=4")
-        (is (re-find #"^m8 i1 t=4\(-1\)" (measure/measure s ["i1"])))
-        (is (= {:stale 0 :best-id "m8"}
-               (select-keys (get-in (status/project (store/read-events s)) [:items "i1" :plateau]) [:stale :best-id])))))))
-
 (defn- session-from-spec
   "A session started from a spec's events, as lume run will."
   [sp]
@@ -1450,7 +1308,7 @@
               s (session-from-spec sp)
               state (status/project (store/read-events s))]
           (is (= sp (edn/read-string (cli/show-spec s []))) (pr-str c))
-          (is (= (merge {:batch 1} c) (status/cadence state) (status/cadence-ceiling state))
+          (is (= (merge {:batch 1} c) (policy/cadence state) (policy/cadence-ceiling state))
               "the default fills in on read"))))
     (testing "session -> spec -> session: a hand-built session's harness is reusable"
       (cli/init *root* ["by hand" "--gate" "bb test" "--allow" "jj"])
@@ -1458,8 +1316,8 @@
         (cli/item-add s ["first"])
         (measure/item-measure s ["i1" "bb bench" "--runs" "5" "--drop" "1"])
         (cli/item-add s ["second" "--gate" "make check"])
-        (cli/budget s ["--usd" "10"])
-        (cli/cadence s ["batch 2 on plateau 3"])
+        (policy/budget s ["--usd" "10"])
+        (policy/cadence-cmd s ["batch 2 on plateau 3"])
         (let [sp (edn/read-string (cli/show-spec s []))]
           (is (= {:goal "by hand" :gate "bb test" :allow ["jj"] :budget {:usd 10.0}
                   :cadence {:batch 2 :plateau 3}
@@ -1584,7 +1442,7 @@
           (is (str/starts-with? ret "--turns 0"))
           (is (every? #(= "d7" (:by %)) events))
           (is (= sp (edn/read-string (cli/show-spec (store/current-session *root*) ["--all"]))))
-          (is (= status/default-cadence (status/cadence-ceiling (status/project events)))
+          (is (= policy/default-cadence (policy/cadence-ceiling (status/project events)))
               "an agent's cadence is no ceiling")))
       (let [before (store/current-session *root*)]
         (doseq [[extra why] [[{:allow ["jj"]} #"workers may run jj"]
@@ -1600,7 +1458,7 @@
       (run! (spec-file (assoc sp :allow ["jj"] :cadence {:batch 3})) "--turns" "0")
       (let [state (status/project (store/read-events (store/current-session *root*)))]
         (is (= ["jj"] (:allow state)))
-        (is (= 3 (:batch (status/cadence-ceiling state))))))))
+        (is (= 3 (:batch (policy/cadence-ceiling state))))))))
 
 (deftest claude-driver-args
   (is (= ["--model" "opus" "--tools" "Bash,Read"

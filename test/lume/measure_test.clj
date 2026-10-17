@@ -7,6 +7,7 @@
             [lume.cli :as cli]
             [lume.kernel :as kernel]
             [lume.measure :as measure]
+            [lume.policy :as policy]
             [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store])
@@ -320,7 +321,7 @@
 ;; Plateaus: under cadence on plateau K, K rows without a new best ask the human.
 (defn- plateau-session []
   (let [s (new-session "goal")]
-    (cli/cadence s ["batch 5 on plateau 2"])
+    (policy/cadence-cmd s ["batch 5 on plateau 2"])
     (cli/item-add s ["work" "--gate" "false"])
     s))
 

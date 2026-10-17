@@ -6,65 +6,8 @@
   (:require [clojure.string :as str]
             [lume.kernel :as kernel :refer [ago clock paint]]
             [lume.measure :as measure]
-            [lume.note :as note]))
-
-;; Budgets bound what agents spend: dollars and minutes of spawns and drive
-;; turns, and how many spawns started.
-(defn- spend [s {:keys [cost-usd ms]}]
-  (cond-> s
-    cost-usd (update-in [:spent :usd] + cost-usd)
-    ms (update-in [:spent :minutes] + (/ ms 60000.0))))
-
-;; Cadence: when drive hands control back. A driver may request up to :batch
-;; spawns a turn (every-spawn is 1), run in order; :gate-fail ends a batch at a
-;; failed gate; :plateau K asks the human after K rows without a new best. The
-;; human's latest cadence is the ceiling for everyone else's.
-;; A cadence event holds only the rules given (a spec may leave out :batch), so
-;; the default fills in on read.
-(def default-cadence {:batch 1})
-
-(defn cadence [state] (merge default-cadence (:cadence state)))
-
-(defn cadence-ceiling [state] (merge default-cadence (:cadence-ceiling state)))
-
-(defn cadence-text
-  "The rules as lume cadence takes them, e.g. batch 3 on gate-fail on plateau 4."
-  [{:keys [batch gate-fail plateau]}]
-  (str/join " " (cond-> [(if (= 1 batch) "every-spawn" (str "batch " batch))]
-                  gate-fail (conj "on gate-fail")
-                  plateau (conj (str "on plateau " plateau)))))
-
-(defn cadence-raises
-  "How cadence c hands back less often than the ceiling allows, as text, or nil."
-  [ceiling c]
-  (not-empty
-   (str/join ", " (remove nil? [(when (> (:batch c) (:batch ceiling))
-                                  (str "batch " (:batch ceiling) " → " (:batch c)))
-                                (when (and (:gate-fail ceiling) (not (:gate-fail c)))
-                                  "drops on gate-fail")
-                                (when (and (:plateau ceiling) (> (or (:plateau c) Long/MAX_VALUE) (:plateau ceiling)))
-                                  (str "plateau " (:plateau ceiling) " → " (or (:plateau c) "none")))]))))
-
-(defn amount [k v]
-  (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
-    (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
-
-(defn over-budget
-  "Why no more agent work may start, or nil: the first limit that spending has
-  reached. Spend is the whole session's, spawns and drive turns alike."
-  [{:keys [budget spent]}]
-  (some (fn [[k unit]]
-          (when-let [limit (get budget k)]
-            (when (>= (get spent k) limit)
-              (str "budget reached: " (amount k (get spent k)) " of " (amount k limit) unit
-                   " — only the human raises it, with lume budget --" (name k) " N"))))
-        [[:usd " spent"] [:spawns " spawns"] [:minutes " minutes"]]))
-
-(defn budget-text
-  "Spent against each limit, e.g. $1.20/$10.00 · 7/20 spawns · 12.5 min."
-  [{:keys [budget spent]}]
-  (str/join " · " (for [[k unit] [[:usd ""] [:spawns " spawns"] [:minutes " min"]]]
-                    (str (amount k (get spent k)) (when-let [l (get budget k)] (str "/" (amount k l))) unit))))
+            [lume.note :as note]
+            [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]))
 
 ;; Rendering
 
@@ -162,12 +105,6 @@
                 (map #(paint :yellow %)
                      (cons (str id " " l) (map #(str indent %) more))))))))
 
-(defn- budget-lines [{:keys [budget spent] :as state} _ _]
-  (when (or (seq budget) (some pos? (vals spent)))
-    [(let [over (over-budget state)
-           line (clip (str (budget-text state) (when over " · reached: no new spawns or turns")) (- width 8))]
-       (if over (paint :red line) line))]))
-
 ;; An open item is a group: its line, then each feature's :item-lines under it.
 (defn- open-lines [{:keys [items] :as state} _ now]
   (let [under (keep :item-lines (kernel/features))]
@@ -255,37 +192,6 @@
           :spawn/exited (fn [s e] (update-in s [:spawns (:spawn/id e)] merge e))}
    :item-lines (fn [s item now] (when-let [sp (get (:spawns s) (peek (:spawns item)))] [(spawn-line now sp)]))})
 
-(defn- within-budget [s _] (over-budget s))
-
-(def budget-feature
-  {:name "budget"
-   :events {:session/budgeted {:req #{}}}
-   :init {:spent {:usd 0 :spawns 0 :minutes 0}}
-   :fold {:session/budgeted (fn [s e] (update s :budget merge (select-keys e [:usd :spawns :minutes])))
-          :spawn/started (fn [s _] (update-in s [:spent :spawns] inc))
-          :spawn/exited spend
-          :drive/exited spend}
-   :guards {:spawn/started within-budget
-            :drive/turn within-budget
-            :spawn/requested within-budget}
-   :status [{:label "budget" :order 40 :cap 1 :lines budget-lines}]})
-
-;; A driver's turn may request up to its cadence's batch of spawns; :requested
-;; counts each actor's requests (a driver id is one turn).
-(def cadence-feature
-  {:name "cadence"
-   :events {:session/cadence {:req #{}}}
-   :fold {:session/cadence (fn [s e]
-                             (let [c (select-keys e [:batch :gate-fail :plateau])]
-                               (cond-> (assoc s :cadence c)
-                                 (= "human" (:by e)) (assoc :cadence-ceiling c))))
-          :spawn/requested (fn [s e] (update-in s [:requested (:by e)] (fnil inc 0)))}
-   :guards {:spawn/requested (fn [s e]
-                               (let [c (cadence s)]
-                                 (when (>= (get-in s [:requested (:by e)] 0) (:batch c))
-                                   (str "cadence " (cadence-text c) " allows " (:batch c) " spawn request(s) a turn,"
-                                        " and this turn has made them; finish the turn now"))))}})
-
 (def drive-feature
   {:name "drive"
    :events {:spawn/requested {:req #{:item/id}}
@@ -311,7 +217,7 @@
 (def features
   "The built-in features, in fold order. lume.cli binds kernel/*features* to these."
   [session-feature item-feature ask-feature note/feature measure/feature spawn-feature
-   budget-feature cadence-feature drive-feature ntfy-feature inspect-feature])
+   policy/budget-feature policy/cadence-feature drive-feature ntfy-feature inspect-feature])
 
 (defn project
   "Fold the log into the current state of the session (kernel/project), with

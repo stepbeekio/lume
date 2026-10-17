@@ -8,6 +8,7 @@
                                             human-only! next-id open-item run-in-repo! session-by-id take-flags]]
             [lume.measure :as measure]
             [lume.note :as note]
+            [lume.policy :as policy]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -259,59 +260,6 @@
                                          :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
-;; Budgets: the substrate, not the driver, bounds spend. Anyone may lower or add
-;; a limit; raising one is the human's, like permissions.
-(def ^:private budget-usage "usage: lume budget [--usd N] [--spawns N] [--minutes N]")
-
-(defn budget [session args]
-  (let [usage budget-usage
-        [pos vals] (take-flags args #{"--usd" "--spawns" "--minutes"} usage)
-        limits (into {} (for [[flag [v & more]] vals
-                              :let [k (keyword (subs flag 2))
-                                    n (if (= :spawns k) (parse-long v) (parse-double v))]]
-                          (do (when (or (seq more) (nil? n) (neg? n)) (fail! usage))
-                              [k n])))
-        state #(status/project (store/read-events session))]
-    (when (seq pos) (fail! usage))
-    (when (seq limits)
-      (let [{:keys [budget]} (state)
-            raised (filter (fn [[k n]] (when-let [l (get budget k)] (> n l))) limits)]
-        (when (seq raised)
-          (human-only! "only the human raises a budget; lower it, or ask with lume ask \"<question>\""
-                       (str "Raise the budget: " (str/join " · " (map (fn [[k n]] (str (name k) " " (budget k) " → " n)) raised)) ".")
-                       "yes"))
-        (kernel/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
-    (let [s (state)]
-      (str "budget " (status/budget-text s) (when-let [over (status/over-budget s)] (str "\n" over))))))
-
-;; Cadence: when drive hands control back, as data. Anyone may hand back more
-;; often than the human's latest cadence; handing back less often is the human's.
-(def ^:private cadence-usage "usage: lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]")
-
-(defn- parse-cadence [words]
-  (let [n #(let [n (some-> % parse-long)] (if (and n (pos? n)) n (fail! cadence-usage)))]
-    (loop [[a b c :as words] words, rules status/default-cadence]
-      (cond (empty? words) rules
-            (= "every-spawn" a) (recur (rest words) (assoc rules :batch 1))
-            (= "batch" a) (recur (drop 2 words) (assoc rules :batch (n b)))
-            (= ["on" "gate-fail"] [a b]) (recur (drop 2 words) (assoc rules :gate-fail true))
-            (= ["on" "plateau"] [a b]) (recur (drop 3 words) (assoc rules :plateau (n c)))
-            :else (fail! cadence-usage)))))
-
-(defn cadence [session args]
-  (let [words (remove str/blank? (mapcat #(str/split % #"\s+") args))
-        state #(status/project (store/read-events session))]
-    (when (seq words)
-      (let [c (parse-cadence words)]
-        (when-let [raises (status/cadence-raises (status/cadence-ceiling (state)) c)]
-          (human-only! (str "only the human hands back less often (" raises "); hand back more often,"
-                            " or ask with lume ask \"<question>\"")
-                       (str "Raise the cadence ceiling: " raises ".") "yes"))
-        (kernel/append! session (constantly (assoc c :type :session/cadence :by (actor))))))
-    (let [s (state)]
-      (str "cadence " (status/cadence-text (status/cadence s))
-           " · ceiling " (status/cadence-text (status/cadence-ceiling s))))))
-
 ;; Questions for the human. Anyone may ask; only the human answers, and the
 ;; answer reaches status and workers alongside the notes, and LUME_NTFY.
 
@@ -550,7 +498,7 @@
                                   (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
       (let [state (status/project (store/read-events session))
             n (get-in state [:requested (actor)])
-            batch (:batch (status/cadence state))]
+            batch (:batch (policy/cadence state))]
         (if (< n batch)
           (str id " spawn requested (" n " of " batch " this turn); requests run in order when your turn ends")
           (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
@@ -605,8 +553,8 @@
   (let [state (status/project events)
         gate (->> (drop since events) (filter #(and (= :gate/ran (:type %)) (= id (:item/id %)))) last)]
     (cond (some #(= :open (:state %)) (vals (:asks state))) "an ask is open"
-          (status/over-budget state) "the budget is reached"
-          (and (:gate-fail (status/cadence state)) gate (not (zero? (:exit gate))))
+          (policy/over-budget state) "the budget is reached"
+          (and (:gate-fail (policy/cadence state)) gate (not (zero? (:exit gate))))
           (str "on gate-fail: " id " gate " (:gate/id gate) " failed"))))
 
 (defn- run-requests
@@ -841,7 +789,7 @@
               idle (not-any? #(= :open (:state %)) (vals items))
               closing (when idle (unreviewed-spawn events))
               ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
-              over (status/over-budget state)
+              over (policy/over-budget state)
               now (when (> n from) (fingerprint src))
               changed (and now (not= now @loaded))
               broken (when changed (load-error src))]
@@ -1090,7 +1038,7 @@
   "The human-only parts of a spec, as text for the confirmation, or nil."
   [{:keys [allow cadence]}]
   (let [raises (when cadence
-                 (status/cadence-raises status/default-cadence (merge status/default-cadence cadence)))]
+                 (policy/cadence-raises policy/default-cadence (merge policy/default-cadence cadence)))]
     (not-empty (str/join "; " (cond-> []
                                 (seq allow) (conj (str "workers may run " (str/join " · " (distinct allow))))
                                 raises (conj (str "the cadence ceiling is raised: " raises)))))))
@@ -1324,20 +1272,6 @@ lume ask                                    open asks in full, wrapped to the te
     {:path ["allow"] :needs :session :usage allow-usage
      :run (fn [{:keys [session]} args] (allow session args))
      :help "lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}]
-   "budget"
-   [{:path ["budget"] :needs :session :usage budget-usage
-     :run (fn [{:keys [session]} args] (budget session args))
-     :help "lume budget [--usd N] [--spawns N] [--minutes N]
-                                            limit the session's agent spend (spawns and drive turns); with no
-                                            flags, print spent/limit. Lowering is anyone's; raising, the human's"}]
-   "cadence"
-   [{:path ["cadence"] :needs :session :usage cadence-usage
-     :run (fn [{:keys [session]} args] (cadence session args))
-     :help "lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
-                                            when drive hands back: N spawn requests a turn, run in order;
-                                            a failed gate ends the batch; K rows without a new best (lower
-                                            is better, unless --higher) ask the human. No rules: print it. Above the human's
-                                            latest cadence is the human's"}]
    "drive"
    [{:path ["drive"] :needs #{:session :root} :usage drive-usage
      :run (fn [{:keys [session root]} args] (drive session root args))
