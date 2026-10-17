@@ -5,7 +5,7 @@
   human's (human-only!), like permissions. Drive reads them through cadence and
   over-budget."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor clip-to fail! human-only! paint take-flags]]))
+            [lume.kernel :as kernel :refer [actor clip fail! human-only! paint take-flags]]))
 
 ;; Budgets bound what agents spend: dollars and minutes of spawns and drive
 ;; turns, and how many spawns started.
@@ -121,7 +121,7 @@
 (defn- budget-lines [{:keys [budget spent] :as state} _ _]
   (when (or (seq budget) (some pos? (vals spent)))
     [(let [over (over-budget state)
-           line (clip-to 92 (str (budget-text state) (when over " · reached: no new spawns or turns")))]
+           line (clip 92 (str (budget-text state) (when over " · reached: no new spawns or turns")))]
        (if over (paint :red line) line))]))
 
 (defn- within-budget [s _] (over-budget s))

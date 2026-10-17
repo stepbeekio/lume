@@ -4,7 +4,7 @@
   prompt. Pinned notes stay in status and every worker prompt until unpinned;
   others age out."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor clip-to clock fail! next-id]]))
+            [lume.kernel :as kernel :refer [actor clip clock fail! next-id]]))
 
 (def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
 
@@ -66,7 +66,7 @@
    :status [{:label "pinned" :order 50 :cap (fn [_ shown] (- 6 (max 0 (- (shown "asks" 0) 4))))
              :lines (fn [s _ _] (map #(str (:note/id %) " " (:text %)) (filter :pinned (:notes s))))}
             {:label "notes" :order 80 :cap (fn [s _] (if (some :pinned (:notes s)) 3 5))
-             :lines (fn [s _ _] (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip-to 80 (:text %)))
+             :lines (fn [s _ _] (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip 80 (:text %)))
                                      (reverse (remove :pinned (:notes s)))))}]
    :prompt prompt
    ;; note show needs an id: with anything else, show is the text.

@@ -3,9 +3,9 @@
   repo's sessions by id, and write nothing to it but repl/opened."
   (:require [clojure.string :as str]
             [lume.item :as item]
-            [lume.kernel :as kernel :refer [*read-line* actor ago clip-to clock fail! session-by-id take-flags]]
+            [lume.kernel :as kernel :refer [*read-line* actor ago clip clock fail! session-by-id take-flags]]
             [lume.measure :as measure]
-            [lume.status :as status :refer [clip]]
+            [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
 
@@ -53,11 +53,11 @@
   (let [{:keys [goal items] :as state} (status/project events)
         open (count (filter #(= :open (:state %)) (vals items)))]
     (str (if current? "* " "  ")
-         (clip (str session-id " " (clip (or goal "(no goal)") 40)
+         (clip (- status/width 2)
+               (str session-id " " (clip 40 (or goal "(no goal)"))
                     " · " open " open " (- (count items) open) " closed"
                     (when-let [t (:t (last events))] (str " · " (ago now t)))
-                    " · " (outcome events state))
-               (- status/width 2)))))
+                    " · " (outcome events state))))))
 
 (def ^:private ls-usage "usage: lume ls [--all]")
 
@@ -123,7 +123,7 @@
       (str/join "\n" (concat (when (> (count ds) (count shown))
                                [(str "+" (- (count ds) (count shown)) " earlier decisions — -n " (count ds))])
                              (for [[i e] shown]
-                               (clip-to 100 (str/replace (str i " " (subs (:t e) 0 16) " " (status/decision-text e)) #"\s+" " ")))
+                               (clip 100 (str i " " (subs (:t e) 0 16) " " (status/decision-text e))))
                              [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
 
 (defn replay [root args]
@@ -231,7 +231,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :port :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
+       (clip 70 (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :port :intent :gate :measure :command :text :question :answer :goal :why])))))
 
 (def feature
   {:name "inspect"

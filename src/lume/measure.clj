@@ -7,7 +7,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor ago clip-to fail! next-id open-item paint
+            [lume.kernel :as kernel :refer [actor ago clip fail! next-id open-item paint
                                             run-in-repo! run-repeated secs sh-out take-flags]]))
 
 ;; A measurement spec is its command and how it repeats; rows compare only
@@ -102,11 +102,11 @@
 ;; The latest row only; lume item show has the rest.
 (defn- measure-line [now {:keys [measure runs drop last-measure]}]
   (let [repeats (spec-text {:runs runs :drop drop})]
-    (str "measure " (clip-to (- 18 (count repeats)) measure) repeats
+    (str "measure " (clip (- 18 (count repeats)) measure) repeats
          (when-let [{:keys [t exit base] mid :measure/id :as m} last-measure]
            (str " · " mid (when base (str " vs " (:measure/id base))) " "
                 (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
-                (clip-to 36 (measure-text (-> m (assoc :exit 0) (dissoc :runs)) :vs false)) " · " (ago now t))))))
+                (clip 36 (measure-text (-> m (assoc :exit 0) (dissoc :runs)) :vs false)) " · " (ago now t))))))
 
 ;; A measurement runs after every spawn on the item, and on demand with lume measure.
 ;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
@@ -322,7 +322,7 @@
                               [{} []] shown))
         lines (map (fn [{mid :measure/id iid :item/id :keys [t] :as row} spec]
                      (str mid " " iid " " (subs t 0 16) " " (measure-text row)
-                          (when spec (str " · " (clip-to 60 spec)))))
+                          (when spec (str " · " (clip 60 spec)))))
                    shown specs)]
     (if (empty? rows)
       (if id (str id " has no measurement rows") "no measurement rows")

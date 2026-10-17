@@ -5,7 +5,7 @@
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [clock paint]]))
+            [lume.kernel :as kernel :refer [clip clock paint]]))
 
 ;; Rendering
 
@@ -13,10 +13,6 @@
 
 (defn strip-color [s]
   (str/replace s #"\u001b\[[0-9;]*m" ""))
-
-(defn clip [s n]
-  (let [s (str/replace (str s) #"\s+" " ")]
-    (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
 (defn wrap
   "Lines of at most n, broken at spaces (a word longer than n is cut). With
@@ -35,7 +31,7 @@
      (if (and max-lines (> (count lines) max-lines))
        (let [last-n (- n (count tail))]
          (conj (vec (take (dec max-lines) lines))
-               (str (clip (str/join " " (drop (dec max-lines) lines)) last-n) tail)))
+               (str (clip last-n (str/join " " (drop (dec max-lines) lines))) tail)))
        lines))))
 
 ;; Replay: a decision is a drive turn or a spawn, and ends with its exit event.
@@ -97,11 +93,11 @@
 (defn- fit [n s]
   (let [plain (strip-color (str s))
         [_ indent text] (re-matches #"(?s)( *)(.*)" plain)]
-    (if (> (count plain) n) (str indent (clip text (- n (count indent)))) (str s))))
+    (if (> (count plain) n) (str indent (clip (- n (count indent)) text)) (str s))))
 
 (defn- section [label lines]
   (when (seq lines)
-    (let [label (clip label 7)]
+    (let [label (clip 7 label)]
       (cons (str (paint :dim label) (subs "        " (count label)) (first lines))
             (map #(str "        " %) (rest lines))))))
 

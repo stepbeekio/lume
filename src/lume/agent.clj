@@ -6,12 +6,12 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.item :as item]
-            [lume.kernel :as kernel :refer [*default-agent* actor ago child-env driver? fail! flag human-only!
+            [lume.kernel :as kernel :refer [*default-agent* actor ago child-env clip driver? fail! flag human-only!
                                             next-id open-item paint sh-out]]
             [lume.measure :as measure]
             [lume.note :as note]
             [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]
-            [lume.status :as status :refer [clip]]))
+            [lume.status :as status]))
 
 ;; lume.agents loads on first use, via requiring-resolve: most lume calls
 ;; (note, item, ask, a driver's spawn request) are short processes that don't
@@ -205,8 +205,8 @@
                :else (str "exit " exit))
          " · " (ago now t)
          (when-let [steps (or (:steps sp) (:steps progress))] (str " · " steps (if (= 1 steps) " step" " steps")))
-         (cond result (str " · " (clip result 60))
-               (and running (:last progress)) (str " · " (clip (:last progress) 50) " (" (ago now (:t progress)) ")")))))
+         (cond result (str " · " (clip 60 result))
+               (and running (:last progress)) (str " · " (clip 50 (:last progress)) " (" (ago now (:t progress)) ")")))))
 
 (def feature
   {:name "spawn"

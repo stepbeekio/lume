@@ -2,9 +2,9 @@
   "Work items: lume item add, gate, close and show, and gates. An item's gate
   is a shell command whose exit code decides done."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor ago clip-to fail! next-id open-item paint run-in-repo!]]
+            [lume.kernel :as kernel :refer [actor ago clip fail! next-id open-item paint run-in-repo!]]
             [lume.measure :as measure]
-            [lume.status :as status :refer [clip]]))
+            [lume.status :as status]))
 
 ;; --parent files work that emerged while on an open item under it. The tree
 ;; only makes that work visible: nothing is inherited and nothing orders spawns.
@@ -93,7 +93,7 @@
 
 (defn- item-event-line [e]
   (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip-to 240 (case (:type e)
+       (clip 240 (case (:type e)
                       :measure/ran (str (:measure/id e) " " (measure/measure-text e)
                                         (when (:env e) (str " · " (measure/env-text (:env e)))))
                       :item/measuring (measure/spec-text e)
@@ -112,8 +112,8 @@
         shown (take-last 20 related)]
     (str/join "\n"
               (concat
-               [(str id " " (name (:state item)) (when (:why item) (str " — " (clip-to 200 (:why item)))))
-                (str "intent  " (clip-to 2000 (:intent item)))
+               [(str id " " (name (:state item)) (when (:why item) (str " — " (clip 200 (:why item)))))
+                (str "intent  " (clip 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
                (when (:measure item) [(str "measure " (measure/spec-text item))])
                (when (> (count related) (count shown))
@@ -124,10 +124,10 @@
 ;; it, then the latest closed.
 
 (defn- gate-line [now {:keys [gate last-gate]}]
-  (str "gate " (clip gate 40)
+  (str "gate " (clip 40 gate)
        (when-let [{:keys [exit t tail] gid :gate/id} last-gate]
          (str " · " gid " " (if (zero? exit) (paint :green "pass") (paint :red (str "fail exit " exit))) " · " (ago now t)
-              (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
+              (when (and tail (not (zero? exit))) (str " · " (clip 30 tail)))))))
 
 ;; An open item is a group: its line, then each feature's :item-lines under it.
 (defn- open-lines [{:keys [items] :as state} _ now]
@@ -135,13 +135,13 @@
     (map (fn [[{:keys [id intent] :as item} depth]]
            (let [in (apply str (repeat (* 2 depth) " "))]
              (map #(str in %)
-                  (cons (str id "  " (clip intent (- 80 (count in))))
+                  (cons (str id "  " (clip (- 80 (count in)) intent))
                         (map #(str "    " %) (mapcat #(% state item now) under))))))
          (status/tree (filter #(= :open (:state %)) (vals items))))))
 
 (defn- closed-lines [{:keys [items]} _ _]
   (map (fn [{:keys [id state intent why]}]
-         (str id "  " (name state) " — " (clip intent 40) (when why (str " — " (clip why 40)))))
+         (str id "  " (name state) " — " (clip 40 intent) (when why (str " — " (clip 40 why)))))
        (reverse (sort-by :closed-at (sort-by :order (remove #(= :open (:state %)) (vals items)))))))
 
 (def feature

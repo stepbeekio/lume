@@ -252,7 +252,7 @@
                 (for [{:keys [name scope sha256 state] :as r} rs]
                   (str name " " (state-text r) " · " scope " · sha256 " (subs sha256 0 12)
                        (case state
-                         :loaded (str " · state " (kernel/clip-to 60 (pr-str (get-in st [:ext name]))))
+                         :loaded (str " · state " (kernel/clip 60 (pr-str (get-in st [:ext name]))))
                          (:unapproved :changed) (str " — lume ext approve " (if (= "session" scope) name (:path r)))
                          "")))))))
 

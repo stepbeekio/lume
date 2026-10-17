@@ -81,7 +81,7 @@
     (let [tail (last (remove str/blank? (str/split-lines (slurp out))))]
       (cond-> {:exit (if done (:exit done) 124) :ms (- (System/currentTimeMillis) t0) :out (str out)}
         (not done) (assoc :timed-out true)
-        tail (assoc :tail (kernel/clip-to 200 tail))))))
+        tail (assoc :tail (kernel/clip 200 tail))))))
 
 (defn- fire! [session {:keys [id] :as rule} e]
   (try

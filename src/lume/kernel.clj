@@ -270,7 +270,10 @@
   [t]
   (.format (.atZone (Instant/parse t) (ZoneId/systemDefault)) (DateTimeFormatter/ofPattern "HH:mm")))
 
-(defn clip-to [n s]
+(defn clip
+  "s on one line (whitespace runs become a space), cut to at most n with … at
+  the end when it was longer."
+  [n s]
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
