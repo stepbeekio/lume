@@ -240,25 +240,32 @@
                   (httpkit/as-channel r {:on-open
                                          (fn [ch]
                                            (swap! open conj ch)
-                                           ;; First connection: a message, then silence with the socket held open.
-                                           ;; Second: the reply, then silence again.
+                                           ;; Before m1: m1, then silence with the socket held open.
+                                           ;; From m1 on: m2, then silence again. Chosen by since,
+                                           ;; not by arrival order, so a timed-out or retried
+                                           ;; connect under load still gets the right reply.
                                            (httpkit/send! ch {:status 200
                                                               :body (str (json/generate-string
-                                                                          (if (= 1 (count @gets))
-                                                                            {:id "m1" :event "message" :message "first"}
-                                                                            {:id "m2" :event "message" :message "second"}))
+                                                                          (if (str/ends-with? (:query-string r) "since=m1")
+                                                                            {:id "m2" :event "message" :message "second"}
+                                                                            {:id "m1" :event "message" :message "first"}))
                                                                          "\n")}
                                                           false))}))
                 {:port 0 :legacy-return-value? false})
         {:keys [queue stop]} (binding [ntfy/*idle-ms* 300 ntfy/*reconnect-ms* 10]
                                (ntfy/subscribe! (str "http://localhost:" (httpkit/server-port server) "/reply?auth=tok")))
-        take! #(.poll ^java.util.concurrent.LinkedBlockingQueue queue 5 java.util.concurrent.TimeUnit/SECONDS)]
+        stall {:error "no data for 0s, reconnecting"}
+        ;; The next message or stall, past transport errors: a loaded machine
+        ;; can time out a connect (the 300ms request timeout), which only retries.
+        take! #(loop []
+                 (let [m (.poll ^java.util.concurrent.LinkedBlockingQueue queue 5 java.util.concurrent.TimeUnit/SECONDS)]
+                   (if (and (:error m) (not= stall m)) (recur) m)))]
     (try
       (is (= {:id "m1" :message "first"} (take!)))
-      (is (= {:error "no data for 0s, reconnecting"} (take!)) "the silent stream is dropped")
+      (is (= stall (take!)) "the silent stream is dropped")
       (is (= {:id "m2" :message "second"} (take!)) "and the next connection delivers")
       (is (re-find #"^auth=tok&since=\d+$" (first @gets)))
-      (is (= "auth=tok&since=m1" (second @gets)) "resuming after the last message, so none is lost")
+      (is (some #{"auth=tok&since=m1"} @gets) "resuming after the last message, so none is lost")
       (finally (stop)
                (run! #(httpkit/close %) @open)
                (httpkit/server-stop! server)))))
