@@ -80,7 +80,7 @@
 ;; Item show: what status clips. The intent and gate in full, then the item's
 ;; events: its own, its spawns' (bar progress), and notes and asks naming it.
 
-(defn item-event?
+(defn item-event-pred
   "A predicate for the events of item id: its own, those of its spawns (bar
   progress), and notes and asks that name it."
   [id spawn-ids]
@@ -108,7 +108,7 @@
   (when (str/blank? id) (fail! item-show-usage))
   (let [events (kernel/read-events session)
         item (or (get-in (kernel/project events) [:items id]) (fail! "no such item:" id))
-        related (filter (item-event? id (set (:spawns item))) events)
+        related (filter (item-event-pred id (set (:spawns item))) events)
         shown (take-last 20 related)]
     (str/join "\n"
               (concat

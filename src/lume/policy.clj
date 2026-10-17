@@ -124,7 +124,7 @@
            line (clip 92 (str (budget-text state) (when over " · reached: no new spawns or turns")))]
        (if over (paint :red line) line))]))
 
-(defn- within-budget [s _] (over-budget s))
+(defn- over-budget-why [s _] (over-budget s))
 
 (def budget-feature
   {:name "budget"
@@ -134,9 +134,9 @@
           :spawn/started (fn [s _] (update-in s [:spent :spawns] inc))
           :spawn/exited spend
           :drive/exited spend}
-   :guards {:spawn/started within-budget
-            :drive/turn within-budget
-            :spawn/requested within-budget}
+   :guards {:spawn/started over-budget-why
+            :drive/turn over-budget-why
+            :spawn/requested over-budget-why}
    :status [{:label "budget" :order 40 :cap 1 :lines budget-lines}]
    :commands [{:path ["budget"] :needs :session :usage budget-usage
                :run (fn [{:keys [session]} args] (budget session args))

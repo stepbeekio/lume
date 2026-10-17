@@ -87,7 +87,7 @@
   (let [re (when re (try (re-pattern re) (catch Exception e (fail! "bad --grep regex:" (ex-message e)))))
         spawn-ids (when iid
                     (set (:spawns (or (get-in (status/project events) [:items iid]) (fail! "no such item:" iid)))))
-        of-item (when iid (item/item-event? iid spawn-ids))]
+        of-item (when iid (item/item-event-pred iid spawn-ids))]
     (filterv (fn [e]
                (and (or (nil? t) (str/starts-with? (subs (str (:type e)) 1) t))
                     (or (nil? iid) (of-item e) (contains? spawn-ids (:spawn/id e)))

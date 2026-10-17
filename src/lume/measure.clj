@@ -11,7 +11,7 @@
 
 ;; A measurement spec is its command and how it repeats; rows compare only
 ;; with rows of the same spec. One run, none dropped, is the default.
-(defn- spec [{:keys [measure runs drop]}]
+(defn- measure-spec [{:keys [measure runs drop]}]
   {:measure measure :runs (or runs 1) :drop (or drop 0)})
 
 (defn before-row
@@ -19,14 +19,14 @@
   item's current spec, or nil: no spawn has started, or no good row preceded
   it."
   [item]
-  (last (get-in item [:before-rows (spec item)])))
+  (last (get-in item [:before-rows (measure-spec item)])))
 
 (defn spec-text
   "The command, then how it repeats, then the numbers where higher is better,
   then whether a spawn takes a before row, e.g. bb bench ×10 drop 1 higher
   score before."
   [{:keys [measure higher before] :as m}]
-  (let [{:keys [runs drop]} (spec m)]
+  (let [{:keys [runs drop]} (measure-spec m)]
     (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop))
          (when (seq higher) (str " higher " (str/join "," higher)))
          (when before " before"))))
@@ -351,13 +351,13 @@
                                             (fn [item]
                                               (let [names #(set (keys (:values %)))
                                                     base (last (filter #(some (names %) (keys (:values e)))
-                                                                       (or (get-in item [:before-rows (spec e)])
-                                                                           (get-in item [:good-measures (spec e)]))))
-                                                    p (plateau (get-in item [:plateaus (spec e)]) e)]
+                                                                       (or (get-in item [:before-rows (measure-spec e)])
+                                                                           (get-in item [:good-measures (measure-spec e)]))))
+                                                    p (plateau (get-in item [:plateaus (measure-spec e)]) e)]
                                                 (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
-                                                  (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (spec e)] p))
+                                                  (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (measure-spec e)] p))
                                                   (and (zero? (:exit e)) (seq (:values e)))
-                                                  (update-in [:good-measures (spec e)]
+                                                  (update-in [:good-measures (measure-spec e)]
                                                              (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
                                                   (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
                            ;; Every row, newest last, as compared when it was taken: lume ledger.
