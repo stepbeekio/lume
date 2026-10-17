@@ -1,8 +1,9 @@
 (ns lume.ext
-  "Extensions: features of your own, as .clj files in <session>/ext. One
-  loads only once the human approves it (lume ext approve <path>, at a tty,
-  typing its name) and only while its sha256 is the one approved; a changed
-  or unapproved file is skipped and status says so in one line.
+  "Extensions: features of your own, as .clj files in LUME_HOME/ext (user),
+  <repo-dir>/ext (repo) or <session>/ext (session). One loads only once the
+  human approves it (lume ext approve <path>, at a tty, typing its name) and
+  only while its sha256 is the one approved; a changed or unapproved file is
+  skipped and status says so in one line.
 
   An extension is <name>.clj, ns lume.ext.<name>, defining `feature`: a
   feature map (lume.kernel) kept to its own corner. It requires only
@@ -19,6 +20,18 @@
   (:import (java.security MessageDigest)))
 
 (defn ext-dir [session] (str (fs/path session "ext")))
+
+;; Scopes, loaded in this order: user (LUME_HOME/ext, every repo), repo
+;; (<repo-dir>/ext under LUME_HOME, every session of the repo), session. A
+;; session extension's approval is in its log; user and repo ones outlive any
+;; session, so theirs are in the home log, LUME_HOME/log.edn (a7).
+
+(defn- scopes
+  "[{:scope :dir :log}] for session in repo root, in load order."
+  [session root]
+  (cond-> [{:scope "user" :dir (str (fs/path store/*home* "ext")) :log store/*home*}]
+    root (conj {:scope "repo" :dir (str (fs/path (store/repo-dir root) "ext")) :log store/*home*})
+    :always (conj {:scope "session" :dir (ext-dir session) :log session})))
 
 (defn- sha256 [path]
   (let [d (.digest (MessageDigest/getInstance "SHA-256") (fs/read-all-bytes path))]
@@ -161,27 +174,38 @@
         (if-let [why (feature-why name f)] [nil why] [f nil]))
       (catch Exception x [nil (str "it failed to load: " (ex-message x))]))))
 
+(defn- approvals
+  "{path sha256}, by the :ext/approved events in log."
+  [log]
+  (:extensions (kernel/project (kernel/read-events log))))
+
 (defn scan
-  "Each .clj in the session's ext dir with its approval, as
-  {:name :path :sha256 :state} where :state is :approved, :changed or
-  :unapproved, by the :ext/approved events in state."
-  [session approved]
-  (let [dir (ext-dir session)]
-    (if (fs/directory? dir)
-      (for [f (sort (map str (fs/glob dir "*.clj")))
-            :let [path (str (fs/absolutize f)) sha (sha256 path) ok (get approved path)]]
-        {:name (ext-name path) :path path :sha256 sha
-         :state (cond (nil? ok) :unapproved (= sha ok) :approved :else :changed)})
-      [])))
+  "Each .clj in the session's scopes, user then repo then session, with its
+  approval, as {:name :scope :path :sha256 :state} where :state is :approved,
+  :changed or :unapproved by its scope's log, or :refused when an earlier
+  scope has an extension of that name."
+  [session root]
+  (let [approved (memoize approvals)]
+    (reduce (fn [rs {:keys [name] :as r}]
+              (if-let [earlier (some #(when (= name (:name %)) %) rs)]
+                (conj rs (assoc r :state :refused :why (str "the " (:scope earlier) " extension " name " has its name")))
+                (conj rs r)))
+            []
+            (for [{:keys [scope dir log]} (scopes session root)
+                  :when (fs/directory? dir)
+                  f (sort (map str (fs/glob dir "*.clj")))
+                  :let [path (str (fs/absolutize f)) sha (sha256 path) ok (get (approved log) path)]]
+              {:name (ext-name path) :scope scope :path path :sha256 sha
+               :state (cond (nil? ok) :unapproved (= sha ok) :approved :else :changed)}))))
 
 (defn with-extensions
-  "features, then every approved extension in session's ext dir that passes
+  "features, then every approved extension in session's scopes that passes
   its checks, kept to its corner, after one that holds their initial states
   and what happened to each (:ext/report, which lume ext and status read)."
   [features session]
   (let [report (when session
-                 (scan session (binding [kernel/*features* features]
-                                 (:extensions (kernel/project (kernel/read-events session))))))]
+                 (binding [kernel/*features* features]
+                   (scan session (:repo (kernel/project (kernel/read-events session))))))]
     (if (empty? report)
       features
       (let [loaded (for [{:keys [name path state] :as r} report]
@@ -215,45 +239,59 @@
     :refused (str "refused: " why)
     (name state)))
 
+(defn- session-scopes [session]
+  (scopes session (:repo (kernel/project (kernel/read-events session)))))
+
 (defn ext-list [session]
   (let [rs (report)
         st (when (seq rs) (kernel/project (kernel/read-events session)))]
     (if (empty? rs)
-      (str "no extensions; put <name>.clj in " (ext-dir session) " and lume ext approve it")
+      (str "no extensions; put <name>.clj in one of these and lume ext approve it:\n"
+           (str/join "\n" (for [{:keys [scope dir]} (session-scopes session)] (str scope " " dir))))
       (str/join "\n"
-                (for [{:keys [name sha256 state] :as r} rs]
-                  (str name " " (state-text r) " · sha256 " (subs sha256 0 12)
+                (for [{:keys [name scope sha256 state] :as r} rs]
+                  (str name " " (state-text r) " · " scope " · sha256 " (subs sha256 0 12)
                        (case state
                          :loaded (str " · state " (kernel/clip-to 60 (pr-str (get-in st [:ext name]))))
-                         (:unapproved :changed) (str " — lume ext approve " name)
+                         (:unapproved :changed) (str " — lume ext approve " (if (= "session" scope) name (:path r)))
                          "")))))))
 
-(def ^:private approve-usage "usage: lume ext approve <path>")
+(def ^:private approve-usage "usage: lume ext approve <path|name>")
 
 (defn- ext-file
-  "The ext dir's file that arg names: a path, a file name, or an extension name."
+  "The scope and path of the extension arg names: a path, or a file or
+  extension name in one scope's dir."
   [session arg]
-  (let [dir (ext-dir session)
-        f (some #(when (fs/regular-file? %) (str (fs/absolutize %)))
-                [arg (fs/path dir arg) (fs/path dir (str arg ".clj"))])]
-    (cond (nil? f) (fail! "no extension" arg "in" dir)
-          (not= (str (fs/canonicalize dir)) (str (fs/canonicalize (fs/parent f))))
-          (fail! "refused: extensions load only from" dir)
+  (let [ss (session-scopes session)
+        in (fn [{:keys [dir]} f] (and (fs/directory? dir)
+                                      (= (str (fs/canonicalize dir)) (str (fs/canonicalize (fs/parent f))))))
+        found (if (fs/regular-file? arg)
+                (let [f (str (fs/absolutize arg))]
+                  (or (some #(when (in % f) [[% f]]) ss)
+                      (fail! "refused: extensions load only from" (str/join ", " (map :dir ss)))))
+                (for [s ss
+                      f [(fs/path (:dir s) arg) (fs/path (:dir s) (str arg ".clj"))]
+                      :when (fs/regular-file? f)]
+                  [s (str f)]))
+        [[scope f] more] found]
+    (cond (nil? f) (fail! "no extension" arg "in" (str/join ", " (map :dir ss)))
+          more (fail! arg "is a" (str/join " and a " (map (comp :scope first) found)) "extension; approve one by its path")
           (not (str/ends-with? f ".clj")) (fail! "refused: an extension is a .clj file")
-          :else (str (fs/path (fs/absolutize dir) (fs/file-name f))))))
+          :else [scope (str (fs/path (fs/absolutize (:dir scope)) (fs/file-name f)))])))
 
 (defn approve [session [arg & more]]
   (when (or (str/blank? arg) (seq more)) (fail! approve-usage))
-  (let [path (ext-file session arg)
+  (let [[{:keys [scope log]} path] (ext-file session arg)
         name (ext-name path)
         src (slurp path)
-        sha (sha256 path)]
+        sha (sha256 path)
+        reach (case scope "user" "every lume command, in every repo" "repo" "every lume command in this repo" "every lume command")]
     (some->> (or (name-why name (remove :ext/path (kernel/features))) (source-why name src)) (fail! "refused:"))
     (human-only! "only the human approves extensions; ask with lume ask \"<question>\""
-                 (str src "\n\nApprove extension " name " (" path ", sha256 " (subs sha 0 12) ") to load into every lume command?")
+                 (str src "\n\nApprove " scope " extension " name " (" path ", sha256 " (subs sha 0 12) ") to load into " reach "?")
                  name)
-    (kernel/append! session (constantly {:type :ext/approved :ext/name name :path path :sha256 sha :by (actor)}))
-    (str "approved " name " · sha256 " (subs sha 0 12) " · it loads from the next lume command")))
+    (kernel/append! log (constantly {:type :ext/approved :ext/name name :path path :sha256 sha :by (actor)}))
+    (str "approved " scope " extension " name " · sha256 " (subs sha 0 12) " · it loads into " reach " from the next one")))
 
 (defn- report-lines [_ _ _]
   (when-let [off (seq (remove #(= :loaded (:state %)) (report)))]
@@ -265,10 +303,10 @@
    :init {:extensions {}}
    :fold {:ext/approved (fn [s e] (assoc-in s [:extensions (:path e)] (:sha256 e)))}
    :status [{:label "ext" :order 85 :cap 1 :lines report-lines}]
-   :commands [{:path ["ext"] :needs :session :usage "usage: lume ext | lume ext approve <path>"
+   :commands [{:path ["ext"] :needs :session :usage "usage: lume ext | lume ext approve <path|name>"
                :run (fn [{:keys [session]} args]
-                      (if (seq args) (fail! "usage: lume ext | lume ext approve <path>") (ext-list session)))
-               :help "lume ext                                    extensions in <session>/ext: loaded, unapproved, changed or refused"}
+                      (if (seq args) (fail! "usage: lume ext | lume ext approve <path|name>") (ext-list session)))
+               :help "lume ext                                    extensions (user, repo, session): loaded, unapproved, changed or refused"}
               {:path ["ext" "approve"] :needs :session :usage approve-usage
                :run (fn [{:keys [session]} args] (approve session args))
-               :help "lume ext approve <path>                     human at a tty, reads the source, types its name: load it while unchanged"}]})
+               :help "lume ext approve <path|name>                human at a tty, reads the source, types its name: load it while unchanged"}]})

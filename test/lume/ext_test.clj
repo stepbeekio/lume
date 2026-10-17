@@ -34,9 +34,10 @@
 ;; parallel never load different code into one.
 (def ^:private tally-src (slurp "test/lume/ext/tally.clj"))
 
-(defn- put! [s name & {:keys [edit] :or {edit identity}}]
-  (let [f (fs/path (ext/ext-dir s) (str name ".clj"))]
-    (fs/create-dirs (ext/ext-dir s))
+(defn- put! [s name & {:keys [edit dir] :or {edit identity}}]
+  (let [dir (or dir (ext/ext-dir s))
+        f (fs/path dir (str name ".clj"))]
+    (fs/create-dirs dir)
     (spit (str f) (edit (str/replace tally-src "tally" name)))
     (str f)))
 
@@ -79,7 +80,7 @@
     (testing "an unapproved extension doesn't load, and status says so in one line"
       (is (thrown-with-msg? Exception #"unknown command: tally" (lume s "tally")))
       (is (re-find #"(?m)^ext     tally unapproved — lume ext$" (render s)))
-      (is (re-find #"^tally unapproved · sha256 \w{12} — lume ext approve tally$" (lume s "ext"))))
+      (is (re-find #"^tally unapproved · session · sha256 \w{12} — lume ext approve tally$" (lume s "ext"))))
     (testing "approval is the human's, at a tty, typing the name after reading the source"
       (binding [kernel/*actor* "s1"]
         (is (thrown-with-msg? Exception #"only the human approves" (lume s "ext" "approve" "tally"))))
@@ -87,7 +88,7 @@
         (is (thrown-with-msg? Exception #"interactive terminal" (lume s "ext" "approve" "tally"))))
       (let [asked (atom nil)]
         (binding [kernel/*confirm* (fn [prompt expected] (reset! asked [prompt expected]) true)]
-          (is (re-find #"^approved tally · sha256 \w{12}" (lume s "ext" "approve" path))))
+          (is (re-find #"^approved session extension tally · sha256 \w{12}" (lume s "ext" "approve" path))))
         (is (= "tally" (second @asked)))
         (is (str/includes? (first @asked) "(ns lume.ext.tally")))
       (is (= ["tally" path] ((juxt :ext/name :path) (last (store/read-events s))))))
@@ -97,7 +98,7 @@
       (is (= :tally/seen (:type (last (store/read-events s)))) "its reaction ran")
       (gate! s)
       (is (= "total 3 · gates 1" (lume s "tally")))
-      (is (re-find #"^tally loaded · sha256 \w{12} · state \{:counts \[3\], :gates 1\}$" (lume s "ext")))
+      (is (re-find #"^tally loaded · session · sha256 \w{12} · state \{:counts \[3\], :gates 1\}$" (lume s "ext")))
       (is (re-find #"(?m)^tally   total 3 · gates 1\n        \+3$" (render s)))
       (is (not (re-find #"(?m)^ext " (render s))) "nothing to say about extensions that loaded"))
     (testing "a changed file doesn't load until approved again"
@@ -160,5 +161,55 @@
                    (refused "prompts" #(str/replace % ":init {" ":prompt (fn [_ _] []) :init {"))))
       (is (re-find #"refused: it failed to load"
                    (refused "broken" #(str % "\n(def oops (inc nil))\n"))))
-      (is (re-find #"(?m)^outside refused: it declares :gate/fake; .* · sha256 \w{12}$" (lume s "ext")))
+      (is (re-find #"(?m)^outside refused: it declares :gate/fake; .* · session · sha256 \w{12}$" (lume s "ext")))
       (is (re-find #"(?m)^ext     broken refused: .*…$" (render s)) "one line, however many"))))
+
+(deftest user-and-repo-extensions-outlive-a-session
+  (let [s1 (new-session "first")
+        user-dir (str (fs/path store/*home* "ext"))
+        repo-dir (str (fs/path (store/repo-dir *root*) "ext"))
+        mine (put! s1 "mine" :dir user-dir)
+        ours (put! s1 "ours" :dir repo-dir)]
+    (testing "they're listed by scope, user first, and wait for approval"
+      (is (re-find #"^mine unapproved · user · sha256 \w{12} — lume ext approve /.*mine\.clj\nours unapproved · repo · " (lume s1 "ext"))))
+    (testing "their approvals go to the home log, not the session's"
+      (is (re-find #"^approved user extension mine · .* every repo" (lume s1 "ext" "approve" mine)))
+      (is (re-find #"^approved repo extension ours · .* this repo" (lume s1 "ext" "approve" "ours")))
+      (is (= [mine ours] (map :path (filter #(= :ext/approved (:type %)) (store/read-events store/*home*)))))
+      (is (not-any? #(= :ext/approved (:type %)) (store/read-events s1))))
+    (testing "a later session loads them unasked, with its own state"
+      (lume s1 "mine" "add" "1")
+      (let [s2 (new-session "second")]
+        (is (= "total 0 · gates 0" (lume s2 "mine")))
+        (lume s2 "ours" "add" "2")
+        (is (= "total 2 · gates 0" (lume s2 "ours")))
+        (is (re-find #"^mine loaded · user .*\nours loaded · repo " (lume s2 "ext")))
+        (testing "a session extension can't take a user or repo one's name"
+          (put! s2 "mine")
+          (is (re-find #"(?m)^mine refused: the user extension mine has its name · session" (lume s2 "ext")))
+          (is (re-find #"mine is a user and a session extension; approve one by its path"
+                       (try (lume s2 "ext" "approve" "mine") (catch Exception x (ex-message x))))))
+        (testing "an edited user extension stops loading everywhere"
+          (spit mine (str (slurp mine) "\n"))
+          (is (thrown-with-msg? Exception #"unknown command: mine" (lume s1 "mine")))
+          (is (re-find #"(?m)^ext     mine changed since approval" (render s2))))))
+    (testing "only files in a scope's dir are approved"
+      (let [stray (str (fs/path *root* "stray.clj"))]
+        (spit stray (slurp ours))
+        (is (re-find #"refused: extensions load only from"
+                     (try (lume s1 "ext" "approve" stray) (catch Exception x (ex-message x)))))))))
+
+(deftest an-agent-written-extension-works-once-approved
+  ;; i80's done-check: an agent writes a session extension, the human
+  ;; approves it, and it works with no change to lume's source.
+  (let [s (new-session "goal")]
+    (fs/create-dirs (ext/ext-dir s))
+    (fs/copy "test/lume/ext/gatefails.clj" (fs/path (ext/ext-dir s) "gatefails.clj"))
+    (binding [kernel/*actor* "s1"]
+      (is (thrown-with-msg? Exception #"only the human approves" (lume s "ext" "approve" "gatefails"))))
+    (lume s "ext" "approve" "gatefails")
+    (let [failing (item/item-add s ["flaky" "--gate" "false"])]
+      (dotimes [_ 2] (item/run-gate s {:id failing :gate "false"}))
+      (gate! s)
+      (is (= (str failing " 2") (lume s "gatefails")))
+      (is (re-find (re-pattern (str "(?m)^gatefa… gate failures " failing " 2$")) (render s))))))

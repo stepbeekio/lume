@@ -149,7 +149,7 @@ Rules are yours, like `lume allow`: adding or removing one needs a terminal and 
 
 ### Extensions
 
-An extension is a feature of your own: events, folds, commands and status lines, in a `.clj` file in the session's `ext/` directory (`lume ext` prints where). It is `<name>.clj` with ns `lume.ext.<name>`, and defines `feature`, a map like the built-in features':
+An extension is a feature of your own: events, folds, commands and status lines, in a `.clj` file in an `ext/` directory: `LUME_HOME/ext` for every repo (user), the repo's dir under `LUME_HOME` for every session of one repo (repo), or the session's (session); `lume ext` prints where. They load user first, then repo, then session, and a name can be taken only once. It is `<name>.clj` with ns `lume.ext.<name>`, and defines `feature`, a map like the built-in features':
 
 ```clojure
 (ns lume.ext.tally
@@ -170,7 +170,7 @@ An extension is a feature of your own: events, folds, commands and status lines,
    :status [{:lines (fn [{:keys [counts gates]}] [(str "total " (reduce + counts) " · gates " gates)])}]})
 ```
 
-It loads into every lume command for the session only once you approve it: `lume ext approve tally` shows you the source, at a terminal, and loads it once you type its name. The approval (`:ext/approved`, yours alone like `lume allow`) names the file and its sha256, so an edited file stops loading until you approve it again; an unapproved, changed or refused one is skipped, and status says so in one line. `lume ext` lists every extension with its state.
+It loads into every lume command for the session only once you approve it: `lume ext approve tally` shows you the source, at a terminal, and loads it once you type its name. The approval (`:ext/approved`, yours alone like `lume allow`) names the file and its sha256, so an edited file stops loading until you approve it again. A session extension's approval is in the session's log; a user or repo one's is in the home log, `LUME_HOME/log.edn`, so it holds in every later session too; an unapproved, changed or refused one is skipped, and status says so in one line. `lume ext` lists every extension with its state.
 
 An extension keeps to its corner, or it is refused (the reason shows in `lume ext`): its ns requires only `lume.kernel` and `clojure.string`/`set`/`edn`, and its code doesn't load, resolve or reach Java at run time; its name isn't a built-in's (`item`, `note`, …); its event types are `:<name>/…`; its folds see and return only `(get-in state [:ext name])`, and its guards see only that and guard only its own types; its commands are `lume <name> …`; each status section is `(fn [ext-state] lines)`, cut to 2 lines, and all extensions share 4. A reaction that throws prints a warning and never fails the command that triggered it. These checks are about shape, not a sandbox: an extension runs as you, so your reading of its source at approval is what trusts it. `test/lume/ext/tally.clj` is a complete one.
 
@@ -213,8 +213,8 @@ lume allow [--revoke] "<cmd>"  only you grant permissions
 lume on <event-pattern> "<cmd>"
                                only you: run <cmd> after each matching event (gate/ran, ask, ...)
 lume on [--remove <id>]        list rules with their last run, or drop one (only you)
-lume ext                       extensions in <session>/ext: loaded, unapproved, changed or refused
-lume ext approve <path>        only you, after reading its source: load it while it's unchanged
+lume ext                       extensions (user, repo, session): loaded, unapproved, changed or refused
+lume ext approve <path|name>   only you, after reading its source: load it while it's unchanged
 lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any
 lume spec [--all]              this session's harness as spec EDN
 lume run <spec.edn> ["<goal>"] [--turns N]
