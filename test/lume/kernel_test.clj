@@ -221,6 +221,13 @@
       worker {:kind "execute" :command "bb test && rm -rf ."} false
       worker {:kind "execute" :command "bb test $(rm -rf .)"} false
       worker {:kind "execute" :command "bb test > out"} false
+      worker {:kind "execute" :command "bb test & rm -rf ."} false
+      worker {:kind "execute" :command "bb test&rm -rf ."} false
+      worker {:kind "execute" :command "bb test 2>&1 & rm -rf ."} false
+      worker {:kind "execute" :command "bb test || (rm -rf .)"} false
+      worker {:kind "execute" :command "bb test (rm -rf .)"} false
+      worker {:kind "execute" :command "bb test\rrm -rf ."} false
+      worker {:kind "execute" :command "bb test &"} true
       worker {:kind "execute" :command "jj st"} false
       worker {:kind "edit" :file "a.clj"} true
       worker {:kind "fetch"} false

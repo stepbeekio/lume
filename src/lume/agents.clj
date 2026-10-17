@@ -145,14 +145,15 @@
 
 (defn- allowed-command?
   "Whether shell `cmd` is only allowed commands: each part of a pipeline or
-  list must start with an allowed prefix (or be head, tail, grep or wc), and
-  nothing may substitute or redirect, bar 2>&1."
+  list (split on && || ; | and a lone &) must start with an allowed prefix (or
+  be head, tail, grep or wc), and nothing may substitute, redirect (bar 2>&1)
+  or open a subshell."
   [prefixes cmd]
   (let [cmd (str/replace (str/trim cmd) "2>&1" "")
-        parts (map str/trim (str/split cmd #"&&|\|\||;|\|"))
+        parts (map str/trim (str/split cmd #"&&|\|\||;|\||&"))
         ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
                              (concat prefixes ["head" "tail" "grep" "wc"])))]
-    (boolean (and (not (re-find #"[`$<>\n]" cmd))
+    (boolean (and (not (re-find #"[`$<>()\n\r]" cmd))
                   (every? ok? parts)))))
 
 (defn acp-permit?
