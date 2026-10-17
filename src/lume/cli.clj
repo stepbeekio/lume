@@ -704,7 +704,7 @@
 
 ;; Drive: a loop of fresh driver agents, each making one decision from status.
 
-(defn- driver-prompt [session did]
+(defn- driver-prompt [session did closing]
   (str/join "\n"
             [(str "You are the driver of a lume session, turn " did ". Make ONE decision, carry it out with")
              "lume commands, and exit. A fresh driver takes the next turn from `lume status`, so"
@@ -723,16 +723,19 @@
              ""
              "Rules: never push. Don't edit files; workers do that. Add items with --gate \"bb test\"."
              "End with one line: what you decided and why."
-             ""
+             (if closing
+               (str "\nNo item is open, but " closing " exited after the last driver turn, so this is the closing\n"
+                    "turn: review its changes and commit them, or say what's wrong.\n")
+               "")
              (status/render (store/session-id session) (store/read-events session) (Instant/now))]))
 
 (defn- drive-turn
   "Run one driver agent until it exits, and return its summary."
-  [session root agent did allow]
+  [session root agent did allow closing]
   (let [out (fs/path session "drives" (str did ".out"))]
     (fs/create-dirs (fs/parent out))
     (let [t0 (System/currentTimeMillis)
-          {:keys [exit]} @(p/process ((requiring-resolve 'lume.agents/command) agent (driver-prompt session did) {:allow allow :role :driver})
+          {:keys [exit]} @(p/process ((requiring-resolve 'lume.agents/command) agent (driver-prompt session did closing) {:allow allow :role :driver})
                                      {:dir root :in ""
                                       :out :write :out-file (fs/file out)
                                       :err :write :err-file (fs/file (str out ".err"))
@@ -769,6 +772,16 @@
                                                   :skipped skipped :by (actor)}))
               (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
             (recur more)))))))
+
+;; A spawn that closes the last item leaves its diff in the working copy, and
+;; "no open items" would end the drive before any driver reviewed it. So a
+;; spawn that exited after the last driver turn earns one closing turn.
+
+(defn- unreviewed-spawn
+  "The id of the last spawn that exited after the last driver turn, or nil."
+  [events]
+  (->> (reverse events) (take-while #(not= :drive/turn (:type %)))
+       (filter #(= :spawn/exited (:type %))) first :spawn/id))
 
 ;; A drive outlives the commits its turns make, so before each turn it checks
 ;; the lume source it loaded. When that changed and the new code loads, the
@@ -819,7 +832,10 @@
     (.addShutdownHook (Runtime/getRuntime) hook)
     (try
       (loop [n from]
-        (let [{:keys [items asks allow] :as state} (status/project (store/read-events session))
+        (let [events (store/read-events session)
+              {:keys [items asks allow] :as state} (status/project events)
+              idle (not-any? #(= :open (:state %)) (vals items))
+              closing (when idle (unreviewed-spawn events))
               ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
               over (status/over-budget state)
               now (when (> n from) (fingerprint src))
@@ -832,7 +848,8 @@
           (cond
             ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
             over (stop! over)
-            (not-any? #(= :open (:state %)) (vals items)) (stop! "no open items")
+            (and idle (not closing)) (stop! "no open items")
+            (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
             (> n turns) (stop! (str turns " turns run"))
             (and changed (not broken))
             (do (store/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
@@ -841,13 +858,13 @@
             (let [{did :drive/id} (store/append! session (fn [events]
                                                            {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
                                                             :n n :by (actor)}))
-                  {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow)
+                  {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
                   logged (rest (drop-while #(not= did (:drive/id %)) (store/read-events session)))]
               ;; Logged after reading what the turn did, so it never counts as the turn's work.
               (store/append! session (constantly (merge {:type :drive/exited :drive/id did}
                                                         turn)))
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
-              (if (empty? logged)
+              (if (and (empty? logged) (not closing))
                 (stop! (str did " logged no events"))
                 (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))
                     (recur (inc n))))))))

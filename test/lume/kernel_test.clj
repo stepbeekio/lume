@@ -1050,10 +1050,21 @@
         (is (= "d1" (:by (first (filter #(= :spawn/requested (:type %)) events)))))
         (is (= "done by s1" (get-in spawns ["s1" :result])))
         (is (= :done (get-in items ["i1" :state])) "the spawn's gate closed it"))
-      (let [{:keys [prompt role]} (first @*driver-calls*)]
+      (let [[{:keys [prompt role]} closing] @*driver-calls*]
         (is (= :driver role))
         (is (str/includes? prompt "turn d1"))
-        (is (str/includes? prompt "open    i1  do it") "the prompt carries status"))))
+        (is (str/includes? prompt "open    i1  do it") "the prompt carries status")
+        (is (not (str/includes? prompt "closing")))
+        (is (str/includes? (:prompt closing) "s1 exited after the last driver turn, so this is the closing")
+            "the spawn closed the last item, so a closing turn reviews its diff, though it logged nothing")
+        (is (= 2 (count @*driver-calls*))))))
+  (testing "with no turn left for the closing turn, the stop line says the diff is uncommitted"
+    (let [s (new-session "goal")]
+      (cli/item-add s ["do it" "--gate" "true"])
+      (reset! *driver-turns* [(lume-cmd "spawn" "i1" "--agent" "test")])
+      (with-out-str (cli/drive s *root* ["--agent" "driver" "--turns" "1"]))
+      (is (= "no open items, and no turn left to review s1's changes: they're uncommitted"
+             (last (keep :why (store/read-events s)))))))
   (testing "a request that names no agent runs the drive's"
     (let [s (new-session "goal")]
       (cli/item-add s ["do it" "--gate" "true"])
