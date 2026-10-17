@@ -1,12 +1,13 @@
 (ns lume.cli
   "The lume command line: the built-in features' commands, run by the kernel.
   Output is agent-first: short, structured, bounded."
-  (:require [lume.features :as features]
+  (:require [lume.ext :as ext]
+            [lume.features :as features]
             [lume.kernel :as kernel]))
 
 (defn -main [& args]
   (try
-    (println (binding [kernel/*features* features/all] (kernel/run args)))
+    (println (binding [kernel/*features* (ext/with-extensions features/all (ext/run-session))] (kernel/run args)))
     (catch clojure.lang.ExceptionInfo e
       (if (:lume/user-error (ex-data e))
         (do (binding [*out* *err*] (println (ex-message e)))

@@ -147,6 +147,33 @@ lume on gate/ran '[ "$LUME_EVENT_EXIT" = 0 ] || curl -s -d "gate failed on $LUME
 
 Rules are yours, like `lume allow`: adding or removing one needs a terminal and a typed `yes`. They run in your own lume process, with your env (`LUME_NTFY` included), never inside a worker or driver; a worker's events fire your rules in the `lume spawn` or `lume drive` that started it, when the worker exits. A rule's command acts as the rule (`LUME_ACTOR=r1`), so what it logs says which rule did it. Each run is logged as `:rule/ran` with its exit, time and last line of output (in full under the session's `rules/`). A rule that fails or hangs (killed after 60s, exit 124) never fails the command that triggered it. What a rule logs can fire rules in turn, up to a depth cap; a rule that would run past it logs `:rule/capped` instead. `lume on` lists the rules with each one's last run; `lume on --remove r1` drops one.
 
+### Extensions
+
+An extension is a feature of your own: events, folds, commands and status lines, in a `.clj` file in the session's `ext/` directory (`lume ext` prints where). It is `<name>.clj` with ns `lume.ext.<name>`, and defines `feature`, a map like the built-in features':
+
+```clojure
+(ns lume.ext.tally
+  (:require [lume.kernel :as kernel]))
+
+(def feature
+  {:events {:tally/added {:req #{:n}}}                     ; its event types, all :tally/…
+   :init {:counts [] :gates 0}                             ; its state, (get-in state [:ext "tally"])
+   :fold {:tally/added (fn [s e] (update s :counts conj (:n e)))
+          :gate/ran (fn [s _] (update s :gates inc))}      ; it may fold any event, into its own state
+   :guards {:tally/added (fn [s e] (when (neg? (:n e)) "refused: counts are positive"))}
+   :reactions [{:on :tally/added :run (fn [e] (println "tallied" (:n e)))}] ; after an event, like rules
+   :commands [{:path ["tally" "add"] :needs :session :usage "usage: lume tally add <n>"
+               :run (fn [{:keys [session]} [n]]
+                      (kernel/append! session (constantly {:type :tally/added :n (parse-long n)}))
+                      (str "tallied " n))
+               :help "lume tally add <n>    add a count"}]
+   :status [{:lines (fn [{:keys [counts gates]}] [(str "total " (reduce + counts) " · gates " gates)])}]})
+```
+
+It loads into every lume command for the session only once you approve it: `lume ext approve tally` shows you the source, at a terminal, and loads it once you type its name. The approval (`:ext/approved`, yours alone like `lume allow`) names the file and its sha256, so an edited file stops loading until you approve it again; an unapproved, changed or refused one is skipped, and status says so in one line. `lume ext` lists every extension with its state.
+
+An extension keeps to its corner, or it is refused (the reason shows in `lume ext`): its ns requires only `lume.kernel` and `clojure.string`/`set`/`edn`, and its code doesn't load, resolve or reach Java at run time; its name isn't a built-in's (`item`, `note`, …); its event types are `:<name>/…`; its folds see and return only `(get-in state [:ext name])`, and its guards see only that and guard only its own types; its commands are `lume <name> …`; each status section is `(fn [ext-state] lines)`, cut to 2 lines, and all extensions share 4. A reaction that throws prints a warning and never fails the command that triggered it. These checks are about shape, not a sandbox: an extension runs as you, so your reading of its source at approval is what trusts it. `test/lume/ext/tally.clj` is a complete one.
+
 ## Commands
 
 ```
@@ -186,6 +213,8 @@ lume allow [--revoke] "<cmd>"  only you grant permissions
 lume on <event-pattern> "<cmd>"
                                only you: run <cmd> after each matching event (gate/ran, ask, ...)
 lume on [--remove <id>]        list rules with their last run, or drop one (only you)
+lume ext                       extensions in <session>/ext: loaded, unapproved, changed or refused
+lume ext approve <path>        only you, after reading its source: load it while it's unchanged
 lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any
 lume spec [--all]              this session's harness as spec EDN
 lume run <spec.edn> ["<goal>"] [--turns N]

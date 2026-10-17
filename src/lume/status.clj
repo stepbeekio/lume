@@ -71,8 +71,8 @@
 
 ;; The frame. Each feature's :status sections are
 ;;   {:label "open" :order 60      where it sits, lowest first
-;;    :cap 10                      most lines, or (fn [state shown]) with shown
-;;                                 {label lines} of the sections above it
+;;    :cap 10                      most lines (0 hides it), or (fn [state shown])
+;;                                 with shown {label lines} of the sections above it
 ;;    :more "items — lume log"     after "+N more " when cut (default "— lume log")
 ;;    :lines (fn [state events now] lines)}
 ;; where a line is a string, or a seq of strings kept whole (an item and the
@@ -108,9 +108,10 @@
 (defn- sections [state events now]
   (:out (reduce (fn [{:keys [shown] :as acc} {:keys [label cap more lines]}]
                   (let [cap (cond (fn? cap) (cap state shown) cap cap :else default-cap)
-                        ls (map #(fit (- width 8) %) (cut cap (or more "— lume log") (lines state events now)))]
+                        ls (when (pos? cap)
+                             (map #(fit (- width 8) %) (cut cap (or more "— lume log") (lines state events now))))]
                     (-> acc
-                        (assoc-in [:shown label] (count ls))
+                        (update-in [:shown label] (fnil + 0) (count ls))
                         (update :out into (section label ls)))))
                 {:shown {} :out []}
                 (sort-by :order (mapcat :status (kernel/features))))))
@@ -137,7 +138,8 @@
 (defn render
   "Status as text: a header, the bound features' :status sections, then the
   commands to run next. Every section is capped, so it stays one screen
-  however long the session runs: at most 40 lines with every section full.
+  however long the session runs: at most 40 lines with every section full,
+  and 4 more from extensions (lume.ext).
   Plain unless {:color true}; colour adds escapes only, never visible width.
   {:past true} marks a session that isn't the repo's current one.
   {:replay {:of M}} renders the session as it stood after these events, the

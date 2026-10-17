@@ -5,6 +5,7 @@
             [lume.ask :as ask]
             [lume.clean :as clean]
             [lume.drive :as drive]
+            [lume.ext :as ext]
             [lume.inspect :as inspect]
             [lume.install :as install]
             [lume.item :as item]
@@ -18,5 +19,5 @@
 
 (def all
   [install/feature session/feature item/feature ask/feature note/feature measure/feature agent/feature
-   policy/budget-feature policy/cadence-feature drive/feature ntfy/feature rule/feature spec/feature inspect/feature
-   clean/feature])
+   policy/budget-feature policy/cadence-feature drive/feature ntfy/feature rule/feature ext/feature spec/feature
+   inspect/feature clean/feature])

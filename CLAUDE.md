@@ -8,7 +8,7 @@ A durable substrate for disposable agent harnesses. Read `pitch.md` for the why;
 - `src/lume/store.clj` — state under `LUME_HOME` (default `~/.lume`), append-only EDN session log
 - `src/lume/kernel.clj` — what every feature shares: actor, fail!, flags, human-only!, append!/project/reactions, command dispatch (`run`), running commands in the repo
 - `src/lume/status.clj` — the status frame: render the features' sections as one bounded screen
-- features, each a namespace requiring `lume.kernel` (never `lume.cli`) with its events, folds, status and commands: `session` (init), `item`, `ask`, `note`, `measure`, `agent` (spawn, allow), `policy` (budget, cadence), `drive`, `ntfy`, `spec` (check, spec, run), `inspect` (status, ls, log, replay, repl), `install`, `clean`
+- features, each a namespace requiring `lume.kernel` (never `lume.cli`) with its events, folds, status and commands: `session` (init), `item`, `ask`, `note`, `measure`, `agent` (spawn, allow), `policy` (budget, cadence), `drive`, `ntfy`, `rule` (on), `ext` (extensions: approve, load, `with-extensions`), `spec` (check, spec, run), `inspect` (status, ls, log, replay, repl), `install`, `clean`
 - `src/lume/features.clj` — the built-in features, in order
 - `src/lume/agents.clj` — adapters; the only code that knows which agent CLI is in play
 - `src/lume/cli.clj` — `-main`: binds the built-in features, calls `kernel/run`
