@@ -350,7 +350,7 @@ lists a session's decisions (drive turns, spawns), each with its event number N;
 To prototype a fold, a query or a screen, run `lume repl [<session>]` in the background:
 it prints a port, and `clj-nrepl-eval -p <port> \"<code>\"` evaluates with the session's
 `events`, `state`, `(render)` (`(render N)`: after event N), `(refresh!)` and lume.* in scope.
-Try the code on the real log there before writing it; the repl writes nothing. `lume clean`
+Try the code on the real log there before writing it; the repl only logs that it opened. `lume clean`
 deletes sessions and is the human's; never run it.
 If there is no session, don't start one unprompted; ask the human for the goal.
 

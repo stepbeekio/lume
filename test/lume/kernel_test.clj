@@ -768,7 +768,7 @@
               (or (get acc "value") (get acc "err") (get acc "ex"))
               (recur acc))))))))
 
-(deftest repl-serves-a-session-and-writes-nothing
+(deftest repl-serves-a-session-and-logs-only-that-it-opened
   (let [s (new-session "prototype here")
         _ (cli/item-add s ["first" "--gate" "true"])
         _ (cli/note s ["a note"])
@@ -778,14 +778,19 @@
         ;; A namespace of its own: tests run in parallel, and user is shared.
         ns (symbol (str "lume.repl-test-" (System/nanoTime)))
         {:keys [server port text]} (cli/start-repl s {:ns ns})
-        ev (partial nrepl-eval port ns)]
+        ev (partial nrepl-eval port ns)
+        opened (last (store/read-events s))
+        events (conj events opened)]
     (try
+      (testing "it logs that it opened, on which port and by whom"
+        (is (= {:type :repl/opened :port port :by "human"} (dissoc opened :t))))
       (testing "it says where it listens and how to connect"
         (is (pos? port))
         (is (str/starts-with? text (str "lume repl · " (store/session-id s) " · " (count events) " events · nREPL on 127.0.0.1:" port)))
         (is (str/includes? text (str "clj-nrepl-eval -p " port))))
       (testing "events, state, render and the lume namespaces are in scope"
         (is (= (str (count events)) (ev "(count events)")))
+        (is (= ":repl/opened" (ev "(:type (last events))")))
         (is (= "\"prototype here\"" (ev "(:goal state)")))
         (is (= "true" (ev "(str/includes? (render) \"i1  first\")")))
         (is (= "true" (ev "(str/starts-with? (render 1) \"lume replay\")")))
@@ -799,7 +804,7 @@
       (finally ((requiring-resolve 'babashka.nrepl.server/stop-server!) server)
                (remove-ns ns)))
     (is (= before (files)) "no files added to the session")
-    (is (= events (pop (store/read-events s))) "the repl logged nothing; only the test's note")
+    (is (= events (pop (store/read-events s))) "the repl logged repl/opened and nothing else; then the test's note")
     (is (thrown-with-msg? Exception #"usage: lume repl" (cli/repl *root* ["a" "b"])))
     (is (thrown-with-msg? Exception #"no session nope" (cli/repl *root* ["nope"])))))
 

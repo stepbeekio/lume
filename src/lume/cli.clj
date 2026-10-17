@@ -1187,7 +1187,7 @@
 
 ;; Repl: an nREPL on a session, for prototyping a fold or a screen against its
 ;; real log before writing the code. The namespace gets the events, their
-;; projection and the lume namespaces; nothing it sets up writes to the log.
+;; projection and the lume namespaces; it logs repl/opened and nothing else.
 
 (def ^:private repl-usage "usage: lume repl [<session>] [--port N]")
 
@@ -1220,9 +1220,11 @@
   "Start an nREPL whose user namespace (or opts :ns) is set up on session.
   Returns {:server :port :text}; stop it with babashka.nrepl.server/stop-server!."
   [session {:keys [port ns] :or {port 0 ns 'user}}]
-  (let [n (repl-ns! ns session)
-        server ((requiring-resolve 'babashka.nrepl.server/start-server!) {:port port :quiet true})
-        port (.getLocalPort ^java.net.ServerSocket (:socket server))]
+  (let [server ((requiring-resolve 'babashka.nrepl.server/start-server!) {:port port :quiet true})
+        port (.getLocalPort ^java.net.ServerSocket (:socket server))
+        ;; The one write: the log shows prototyping happened, e.g. before a spec.
+        _ (store/append! session (constantly {:type :repl/opened :port port :by (actor)}))
+        n (repl-ns! ns session)]
     {:server server
      :port port
      :text (str/join "\n"
@@ -1230,7 +1232,7 @@
                       (str "connect: clj-nrepl-eval -p " port " \"(count events)\"")
                       (str "in " ns ": events, state (status/project events), (render) status now, (render N) after event N,")
                       "  (refresh!) re-reads the log; aliases store status spec agents cli str"
-                      "runs until killed; writes nothing to the session"])}))
+                      "runs until killed; logs repl/opened and writes nothing else"])}))
 
 (defn repl [root args]
   (let [[[id & stray] {[port & ports] "--port"}] (take-flags args #{"--port"} repl-usage)

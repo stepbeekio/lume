@@ -304,7 +304,7 @@
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
+       (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :port :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
 
 ;; Replay: a decision is a drive turn or a spawn, and ends with its exit event.
 (defn decision? [e] (#{:drive/exited :spawn/exited} (:type e)))
