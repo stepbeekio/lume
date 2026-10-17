@@ -411,6 +411,14 @@
       (is (= "n=1235 secs=0.764[0.699..0.773] · 0.0s"
              (status/measure-text {:values {"secs" 0.7635452455 "n" 1234.567} :spread {"secs" [0.699478972 0.772594053]}
                                    :ms 0 :exit 0}))))
+    (testing "a change is marked ~ within noise, ! outside it, only when both rows have spreads"
+      (let [base {:measure/id "m1" :values {"a" 41.2 "b" 10 "c" 5} :spread {"a" [40.1 42.0] "b" [9 11]}}]
+        (is (= "a=37.9(-3.3 !)[37..38.5] b=10.5(+0.5 ~)[10..11] c=4(-1) · 0.0s · vs m1"
+               (status/measure-text {:values {"a" 37.9 "b" 10.5 "c" 4} :spread {"a" [37.0 38.5] "b" [10 11] "c" [4 4]}
+                                     :ms 0 :exit 0 :base base})))
+        (is (= "a=37.9(-3.3) · 0.0s · vs m1"
+               (status/measure-text {:values {"a" 37.9} :ms 0 :exit 0 :base base}))
+            "a single-run row gets no mark")))
     (testing "lume measure --help prints usage"
       (is (= "usage: lume measure <id>" (cli/run ["measure" "--help"]))))
     (testing "a closed item can still be measured"
@@ -468,7 +476,7 @@
         (is (= 5 (count (re-seq #"(?m)^--- run \d/5 · exit 0 · " out))) out)
         (is (str/includes? out "t=100"))))
     (testing "the same spec compares with its last passing row"
-      (is (re-matches #"m2 i1 k=7 t=10\.5\(-0\.5\)\[10\.\.12\] · \d+\.\ds · 4 of 5 runs · vs m1" (first (rows 1)))))
+      (is (re-matches #"m2 i1 k=7 t=10\.5\(-0\.5 ~\)\[10\.\.12\] · \d+\.\ds · 4 of 5 runs · vs m1" (first (rows 1)))))
     (testing "changing runs or drop is a new spec, so a new baseline"
       (cli/item-measure s [id (str "sh " f) "--runs" "3"])
       (is (re-matches #"m3 i1 k=7 t=11\[10\.\.12\] · \d+\.\ds · 3 runs" (first (rows 1))))

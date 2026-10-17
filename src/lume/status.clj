@@ -251,20 +251,25 @@
     (let [d (bigdec v)]
       (-> d (.round (java.math.MathContext. (max 3 (- (.precision d) (.scale d))))) .stripTrailingZeros .toPlainString))))
 
-(defn- change [v b]
+;; With both spreads, " ~" when the ranges overlap (within noise), " !" when
+;; they don't; a single-run row or base has no spread, so no mark.
+(defn- change [v b [lo hi] [blo bhi]]
   (when (and (number? v) (number? b) (not= v b))
     (let [d (num-text (- v b))]
-      (str "(" (when-not (str/starts-with? d "-") "+") d ")"))))
+      (str "(" (when-not (str/starts-with? d "-") "+") d
+           (when (and lo blo) (if (and (<= lo bhi) (<= blo hi)) " ~" " !"))
+           ")"))))
 
 (defn measure-text
   "A ledger row's numbers: name=value pairs (name↑ where higher is better),
-  each with its change against the row's :base when it has one, then wall
+  each with its change against the row's :base when it has one (marked ~
+  within noise or ! outside it when both rows have spreads), then wall
   time, then a failure, then which row it was compared with (unless :vs is
   false), then the spawn it was taken before, if it's a before row."
   [{:keys [values spread ms exit base runs drop failed-run higher before-spawn] :or {drop 0}} & {:keys [vs] :or {vs true}}]
   (str (if (seq values)
          (str/join " " (map (fn [[k v]]
-                              (str k (when (some #{k} higher) "↑") "=" (num-text v) (change v (get (:values base) k))
+                              (str k (when (some #{k} higher) "↑") "=" (num-text v) (change v (get (:values base) k) (get spread k) (get (:spread base) k))
                                    (when-let [[lo hi] (get spread k)]
                                      (when (not= lo hi) (str "[" (num-text lo) ".." (num-text hi) "]")))))
                             (sort values)))
