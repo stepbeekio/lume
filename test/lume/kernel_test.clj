@@ -228,6 +228,18 @@
       worker {:kind "execute" :command "bb test (rm -rf .)"} false
       worker {:kind "execute" :command "bb test\rrm -rf ."} false
       worker {:kind "execute" :command "bb test &"} true
+      worker {:kind "execute" :command "lume note \"x (y) <z> a; b | c && d & e\""} true
+      worker {:kind "execute" :command "lume note 'x (y) $(z) `w` \"q\"'"} true
+      worker {:kind "execute" :command "lume note \"say \\\"hi\\\" for \\$5\""} true
+      worker {:kind "execute" :command "lume note x\\;y"} true
+      worker {:kind "execute" :command "lume note \"$(rm -rf .)\""} false
+      worker {:kind "execute" :command "lume note \"`rm -rf .`\""} false
+      worker {:kind "execute" :command "lume note \"x\"; rm -rf ."} false
+      worker {:kind "execute" :command "lume note \"x\\\"; rm -rf .; echo \""} true
+      worker {:kind "execute" :command "lume note \\' ; rm -rf . ; echo '"} false
+      worker {:kind "execute" :command "lume note \"x; rm -rf ."} false
+      worker {:kind "execute" :command "lume note 'x; rm -rf ."} false
+      worker {:kind "execute" :command "lume note \"x\nrm -rf .\""} false
       worker {:kind "execute" :command "jj st"} false
       worker {:kind "edit" :file "a.clj"} true
       worker {:kind "fetch"} false

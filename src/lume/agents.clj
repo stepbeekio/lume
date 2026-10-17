@@ -143,18 +143,41 @@
   ["bb" "-cp" (lume-src) "-m" "lume.agents" "acp"
    (pr-str {:agent (acp-agent-argv) :allow (vec allow) :role role}) prompt])
 
+(defn- mask-quoted
+  "`cmd` with every quoted or backslash-escaped character replaced by _, so
+  only what the shell would interpret is left; nil when a quote is unbalanced
+  or a double-quoted string substitutes with $ or a backtick."
+  [cmd]
+  (loop [[c & more] cmd, quote nil, out (StringBuilder.)]
+    (cond
+      (nil? c) (when-not quote (str out))
+      (#{\newline \return} c) nil
+      (= quote \') (if (= c \')
+                     (recur more nil (.append out c))
+                     (recur more quote (.append out \_)))
+      (= c \\) (if (seq more)
+                 (recur (rest more) quote (.append out "__"))
+                 nil)
+      (= quote \") (cond
+                     (= c \") (recur more nil (.append out c))
+                     (#{\$ \`} c) nil
+                     :else (recur more quote (.append out \_)))
+      (#{\' \"} c) (recur more c (.append out c))
+      :else (recur more nil (.append out c)))))
+
 (defn- allowed-command?
   "Whether shell `cmd` is only allowed commands: each part of a pipeline or
   list (split on && || ; | and a lone &) must start with an allowed prefix (or
   be head, tail, grep or wc), and nothing may substitute, redirect (bar 2>&1)
-  or open a subshell."
+  or open a subshell. Quoted text is an argument, so its metachars don't count."
   [prefixes cmd]
-  (let [cmd (str/replace (str/trim cmd) "2>&1" "")
-        parts (map str/trim (str/split cmd #"&&|\|\||;|\||&"))
-        ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
-                             (concat prefixes ["head" "tail" "grep" "wc"])))]
-    (boolean (and (not (re-find #"[`$<>()\n\r]" cmd))
-                  (every? ok? parts)))))
+  (boolean
+   (when-let [cmd (some-> (mask-quoted (str/trim cmd)) (str/replace "2>&1" ""))]
+     (let [parts (map str/trim (str/split cmd #"&&|\|\||;|\||&"))
+           ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
+                                (concat prefixes ["head" "tail" "grep" "wc"])))]
+       (and (not (re-find #"[`$<>()]" cmd))
+            (every? ok? parts))))))
 
 (defn acp-permit?
   "Whether to allow a session/request_permission. Workers may edit and run the
