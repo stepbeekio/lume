@@ -6,6 +6,7 @@
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [*read-line* actor child-env clip-to columns driver? fail! flag
                                             human-only! next-id open-item run-in-repo! run-repeated take-flags]]
+            [lume.note :as note]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -437,47 +438,6 @@
     (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
     (measure-row session (run-measure session item))))
 
-;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
-(def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
-
-(defn note [session [a b]]
-  (let [usage note-usage]
-    (case a
-      "--unpin"
-      (do (when (str/blank? b) (fail! usage))
-          (kernel/append! session (fn [events]
-                                    (when-not (some #(and (= b (:note/id %)) (:pinned %))
-                                                    (:notes (status/project events)))
-                                      (fail! "no pinned note:" b))
-                                    {:type :note/unpinned :note/id b :by (actor)}))
-          (str "unpinned " b))
-      (let [pin (= "--pin" a)
-            text (if pin b a)]
-        (when (str/blank? text) (fail! usage))
-        (let [e (kernel/append! session (fn [events]
-                                          (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
-                                                   :text text :by (actor)}
-                                            pin (assoc :pinned true))))]
-          (str (if pin "pinned " "noted ") (:note/id e)))))))
-
-;; Note show: what status clips. The text in full, who noted it and when, and
-;; whether it's pinned.
-(def ^:private note-show-usage "usage: lume note show <id>")
-
-(defn note-show [session [id]]
-  (when (str/blank? id) (fail! note-show-usage))
-  (let [events (store/read-events session)
-        added (or (some #(when (and (= :note/added (:type %)) (= id (:note/id %))) %) events)
-                  (fail! "no such note:" id))
-        unpinned (some #(when (and (= :note/unpinned (:type %)) (= id (:note/id %))) %) events)
-        at #(str (subs (:t %) 0 16) " by " (:by %))]
-    (str/join "\n"
-              (concat
-               [(str id (cond unpinned " unpinned" (:pinned added) " pinned" :else ""))
-                (str "noted    " (at added))]
-               (when unpinned [(str "unpinned " (at unpinned))])
-               [(:text added)]))))
-
 ;; Only the human grants permissions: workers and agent drivers would grant themselves
 ;; whatever they need, so they ask with lume ask instead.
 (def ^:private allow-usage "usage: lume allow [--revoke] \"<cmd>\"")
@@ -757,7 +717,7 @@
                        (idle-why session sid before (worktree-fingerprint root)))]
              (cond
                (not= :open (:state item)) nil
-               why (str "\n" id " left open: " why " · " (note session [(str id " left open, not gated: " why)]))
+               why (str "\n" id " left open: " why " · " (note/note session [(str id " left open, not gated: " why)]))
                (:measure item) (str "\n" id " left open to decide"
                                     (when (:gate item) (str " · " (gate-summary (run-gate session item))))
                                     " · lume item close " id " done|dropped \"<why>\"")
@@ -1075,7 +1035,7 @@
               broken (when changed (load-error src))]
           (when broken
             (reset! loaded now)
-            (note session [(str "drive: lume source changed but doesn't load, so turn " n
+            (note/note session [(str "drive: lume source changed but doesn't load, so turn " n
                                 " runs the code the drive started with: " broken)]))
           (cond
             (and ask wait) (do (wait-for-answer! session codes replies say) (recur n))
@@ -1531,8 +1491,9 @@
     @(promise)))
 
 ;; The built-in commands (see kernel/run), by feature name: joined to the
-;; built-in features here until those move out of status.clj (i87+). Each
-;; :help is its entry in lume help, which lists them in feature order.
+;; built-in features here until those move out of status.clj (i87+); a split
+;; feature (lume.note) carries its own. Each :help is its entry in lume help,
+;; which lists them in feature order.
 
 (def ^:private commands
   {"install"
@@ -1568,7 +1529,7 @@ lume item close <id> dropped --revert \"<why>\"
     {:path ["item" "show"] :needs :session :usage item-show-usage
      :run (fn [{:keys [session]} args] (item-show session args))
      :help "lume item show <id>                         one item in full: intent, gate, disposition and its events"}]
-   ;; note show and ask show need an id: with anything else, show is the text.
+   ;; ask show needs an id: with anything else, show is the text.
    "ask"
    [{:path ["ask"] :needs :session :usage ask-usage
      :run (fn [{:keys [session]} args] (ask session args))
@@ -1581,14 +1542,6 @@ lume ask                                    open asks in full, wrapped to the te
      :run (fn [{:keys [session]} args] (answer session args))
      :help "lume answer <id> [\"<text>\"]                 answer an ask (human at a tty: retype the id); no text: prompt for it
                                             after the full question. Answers join the notes"}]
-   "note"
-   [{:path ["note"] :needs :session :usage note-usage
-     :run (fn [{:keys [session]} args] (note session args))
-     :help "lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
-lume note --unpin <id>                      let a pinned note age out like the rest"}
-    {:path ["note" "show"] :needs :session :usage note-show-usage
-     :run (fn [{:keys [session]} args] (if (= 1 (count args)) (note-show session args) (note session (cons "show" args))))
-     :help "lume note show <id>                         one note in full: text, who noted it and when, pinned or not"}]
    "spawn"
    [{:path ["spawn"] :needs #{:session :root} :usage spawn-usage
      :run (fn [{:keys [session root]} args] (spawn session root args))
@@ -1683,7 +1636,7 @@ lume note --unpin <id>                      let a pinned note age out like the r
         order ["install" "session" "item" "ask" "note" "measure" "spawn" "budget" "cadence" "drive"
                "ntfy" "spec" "inspect" "clean"]]
     (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
-    (mapv #(assoc (get named % {:name %}) :commands (get commands % [])) order)))
+    (mapv #(update (get named % {:name %}) :commands (fn [own] (or own (get commands % [])))) order)))
 
 (defn -main [& args]
   (try

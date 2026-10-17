@@ -4,9 +4,9 @@
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [secs]])
-  (:import (java.time Duration Instant ZoneId)
-           (java.time.format DateTimeFormatter)))
+            [lume.kernel :as kernel :refer [clock secs]]
+            [lume.note :as note])
+  (:import (java.time Duration Instant)))
 
 ;; Budgets bound what agents spend: dollars and minutes of spawns and drive
 ;; turns, and how many spawns started.
@@ -158,9 +158,6 @@
           (< secs 86400) (str (quot secs 3600) "h ago")
           :else (str (quot secs 86400) "d ago"))))
 
-(defn- clock [t]
-  (.format (.atZone (Instant/parse t) (ZoneId/systemDefault)) (DateTimeFormatter/ofPattern "HH:mm")))
-
 (defn- spawn-line [now {:keys [exit interrupted result t progress] :as sp}]
   (let [running (not (or interrupted (contains? sp :exit)))]
     (str (:spawn/id sp) " "
@@ -300,13 +297,6 @@
          (str id "  " (name state) " — " (clip intent 40) (when why (str " — " (clip why 40)))))
        (reverse (sort-by :closed-at (sort-by :order (remove #(= :open (:state %)) (vals items)))))))
 
-;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
-(defn- note-prompt [{:keys [notes]} _]
-  (let [line #(if (:ask/id %) (str (:ask/id %) " " (:question %) " → " (:answer %)) (:text %))
-        bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (line %)) ns))))]
-    (concat (bullets "Pinned notes:" (filter :pinned notes))
-            (bullets "Recent notes from the session:" (take-last 10 (remove :pinned notes))))))
-
 ;; The built-in features (see lume.kernel): the events each appends and how
 ;; they fold into the state status renders, the status sections they add,
 ;; the lines under each open item and what they add to a worker's prompt.
@@ -363,22 +353,6 @@
                                                          :question (get-in s [:asks (:ask/id e) :question])
                                                          :text (str (:ask/id e) " → " (:answer e))))))}
    :status [{:label "asks" :order 20 :cap 7 :more "asks — lume ask" :lines ask-lines}]})
-
-(def note-feature
-  {:name "note"
-   :events {:note/added {:req #{:note/id :text}}
-            :note/unpinned {:req #{:note/id}}}
-   :init {:notes []}
-   :fold {:note/added (fn [s e] (update s :notes conj e))
-          :note/unpinned (fn [s e] (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned)))))}
-   ;; Pinned notes are the lasting ones. Asks past 4 lines take their room, so
-   ;; status stays one screen; when there are any, recent notes give up room.
-   :status [{:label "pinned" :order 50 :cap (fn [_ shown] (- 6 (max 0 (- (shown "asks" 0) 4))))
-             :lines (fn [s _ _] (map #(str (:note/id %) " " (:text %)) (filter :pinned (:notes s))))}
-            {:label "notes" :order 80 :cap (fn [s _] (if (some :pinned (:notes s)) 3 5))
-             :lines (fn [s _ _] (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip (:text %) 80))
-                                     (reverse (remove :pinned (:notes s)))))}]
-   :prompt note-prompt})
 
 (def spawn-feature
   {:name "spawn"
@@ -486,7 +460,7 @@
 
 (def features
   "The built-in features, in fold order. lume.cli binds kernel/*features* to these."
-  [session-feature item-feature ask-feature note-feature measure-feature spawn-feature
+  [session-feature item-feature ask-feature note/feature measure-feature spawn-feature
    budget-feature cadence-feature drive-feature ntfy-feature inspect-feature])
 
 (defn project

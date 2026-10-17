@@ -5,7 +5,9 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.store :as store]))
+            [lume.store :as store])
+  (:import (java.time Instant ZoneId)
+           (java.time.format DateTimeFormatter)))
 
 (defn fail! [& msg]
   (throw (ex-info (str/join " " msg) {:lume/user-error true})))
@@ -93,6 +95,11 @@
   "Every declared event type: {type {:req #{keys} :human true?}}."
   []
   (apply merge (map :events (features))))
+
+(defn read-events
+  "The session's log, oldest first."
+  [session]
+  (store/read-events session))
 
 (defn project
   "Fold the log into the current state of the session: each event through the
@@ -193,6 +200,11 @@
 
 (defn secs [ms]
   (format "%.1fs" (/ ms 1000.0)))
+
+(defn clock
+  "An event's :t as local HH:mm."
+  [t]
+  (.format (.atZone (Instant/parse t) (ZoneId/systemDefault)) (DateTimeFormatter/ofPattern "HH:mm")))
 
 (defn clip-to [n s]
   (let [s (str/replace (str s) #"\s+" " ")]

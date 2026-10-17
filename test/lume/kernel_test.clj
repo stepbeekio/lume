@@ -8,6 +8,7 @@
             [lume.agents :as agents]
             [lume.cli :as cli]
             [lume.kernel :as kernel]
+            [lume.note :as note]
             [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store]
@@ -47,7 +48,7 @@
     (is (= "i1" (cli/item-add s ["first"])))
     (is (= "i2" (cli/item-add s ["second"])))
     (cli/item-close s ["i1" "done" "works"])
-    (cli/note s ["keep it small"])
+    (note/note s ["keep it small"])
     (let [{:keys [goal items notes]} (status/project (store/read-events s))]
       (is (= "build the kernel" goal))
       (is (= :done (get-in items ["i1" :state])))
@@ -108,7 +109,7 @@
     (testing "a feature bound for a run declares, folds and guards its events"
       (binding [kernel/*features* (conj status/features tally)]
         (kernel/append! s (constantly {:type :tally/counted :n 4}))
-        (cli/note s ["also counts"])
+        (note/note s ["also counts"])
         (is (= 5 (:tally (kernel/project (store/read-events s)))))
         (is (thrown-with-msg? Exception #"tally full"
                               (kernel/append! s (constantly {:type :tally/counted :n 6}))))
@@ -628,8 +629,8 @@
         intent (str "a long intent " (str/join " " (repeat 40 "word")) " END")
         id (cli/item-add s [intent "--gate" "false"])
         other (cli/item-add s ["unrelated"])]
-    (cli/note s ["about i1: it matters"])
-    (cli/note s ["about i11 and i10, not this one"])
+    (note/note s ["about i1: it matters"])
+    (note/note s ["about i11 and i10, not this one"])
     (cli/spawn s *root* [id "--agent" "test"])
     (cli/spawn s *root* [other "--agent" "test"])
     (let [out (cli/item-show s [id])
@@ -647,7 +648,7 @@
       (cli/item-close s [other "dropped" "not needed"])
       (is (str/starts-with? (cli/item-show s [other]) "i2 dropped — not needed")))
     (testing "events are capped to the last 20"
-      (dotimes [n 25] (cli/note s [(str "i2 note " n)]))
+      (dotimes [n 25] (note/note s [(str "i2 note " n)]))
       (let [lines (str/split-lines (cli/item-show s [other]))]
         (is (= 24 (count lines)))
         (is (re-find #"^\+\d+ earlier events" (nth lines 3)))
@@ -746,8 +747,8 @@
       (dotimes [n 20] (cli/allow s [(str "cmd-" n " " (apply str (repeat 20 "a")))]))
       (dotimes [n 200] (cli/item-add s [(str "item " n " " (apply str (repeat 50 "x"))) "--gate" "true"]))
       (dotimes [n 20] (cli/item-close s [(str "i" (inc n)) "dropped" (apply str (repeat 60 "w"))]))
-      (dotimes [n 50] (cli/note s [(str "note " n)]))
-      (dotimes [n 20] (cli/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
+      (dotimes [n 50] (note/note s [(str "note " n)]))
+      (dotimes [n 20] (note/note s ["--pin" (str "lesson " n " " (apply str (repeat 120 "y")))]))
       (dotimes [n 10] (cli/ask s [(str "question " n " " (apply str (repeat 120 "q")))]))
       (cli/answer s ["a1" (apply str (repeat 120 "z"))])
       (cli/answer s ["a2" "yes"])
@@ -769,7 +770,7 @@
 (deftest status-notes-take-unused-room
   (testing "without pinned notes, notes get the room back"
     (let [s (new-session "goal")]
-      (dotimes [n 50] (cli/note s [(str "note " n)]))
+      (dotimes [n 50] (note/note s [(str "note " n)]))
       (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "+45 more")))))
 
 (deftest status-and-prompts-are-data
@@ -865,7 +866,7 @@
         _ (store/append! s (constantly {:type :drive/turn :drive/id "d1" :n 1 :by "human"}))
         _ (store/append! s (constantly {:type :drive/exited :drive/id "d1" :exit 0 :result "spawn i1 next"}))
         _ (cli/spawn s *root* ["i1" "--agent" "test"])
-        _ (cli/note s ["after the spawn"])
+        _ (note/note s ["after the spawn"])
         events (store/read-events s)
         m (count events)
         [d1 s1] (keep-indexed #(when (status/decision? %2) (inc %1)) events)
@@ -943,7 +944,7 @@
 (deftest repl-serves-a-session-and-logs-only-that-it-opened
   (let [s (new-session "prototype here")
         _ (cli/item-add s ["first" "--gate" "true"])
-        _ (cli/note s ["a note"])
+        _ (note/note s ["a note"])
         events (store/read-events s)
         files #(set (map str (fs/list-dir s)))
         before (files)
@@ -976,7 +977,7 @@
         (is (= "[2 nil]" (ev "((juxt :exit :values) (measure \"exit 2\"))")))
         (is (= (str (count events)) (ev "(count (store/read-events session))"))))
       (testing "refresh! picks up what a live session logged since"
-        (cli/note s ["later"])
+        (note/note s ["later"])
         (is (= (str (count events)) (ev "(count events)")))
         (is (= (str (inc (count events))) (ev "(refresh!)")))
         (is (= "\"later\"" (ev "(:text (last events))"))))
@@ -998,9 +999,9 @@
     (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id i1 :by "human"}))
     (store/append! s (constantly {:type :spawn/progress :spawn/id "s1" :text "editing"}))
     (binding [kernel/*actor* "s1"]
-      (cli/note s ["about i1: done soon"])
-      (cli/note s ["unrelated (i10)"]))
-    (cli/note s ["see i2"])
+      (note/note s ["about i1: done soon"])
+      (note/note s ["unrelated (i10)"]))
+    (note/note s ["see i2"])
     (testing "--type takes a prefix of ns/name"
       (is (= [:note/added :note/added :note/added] (map :type (run ["--type" "note"]))))
       (is (= [:spawn/started :spawn/progress] (map :type (run ["--type" "spawn/"]))))
@@ -1021,24 +1022,6 @@
       (is (thrown-with-msg? Exception #"bad --grep regex" (cli/show-log root ["--grep" "("])))
       (is (thrown-with-msg? Exception #"usage: lume log" (cli/show-log root ["--by" "a" "--by" "b"])))
       (is (thrown-with-msg? Exception #"usage: lume log" (cli/show-log root ["--type"]))))))
-
-(deftest note-show-reads-a-note-in-full
-  (let [s (new-session "goal")
-        long-text (str "start " (str/join " " (repeat 80 "word")) " the end")]
-    (binding [kernel/*actor* "s1"] (cli/note s [long-text]))
-    (cli/note s ["--pin" "lasting"])
-    (cli/note s ["--pin" "was lasting"])
-    (cli/note s ["--unpin" "n3"])
-    (let [out (cli/note-show s ["n1"])]
-      (is (re-find #"^n1\nnoted    \d{4}-\d\d-\d\dT\d\d:\d\d by s1\n" out))
-      (is (str/ends-with? out (str "\n" long-text))))
-    (is (str/starts-with? (cli/note-show s ["n2"]) "n2 pinned\n"))
-    (is (re-find #"^n3 unpinned\nnoted .*\nunpinned \S+ by human\nwas lasting$" (cli/note-show s ["n3"])))
-    (binding [store/*session* s]
-      (is (str/starts-with? (kernel/run ["note" "show" "n2"]) "n2 pinned"))
-      (is (= "noted n4" (kernel/run ["note" "show"])) "a note that just says show is still a note"))
-    (is (thrown-with-msg? Exception #"no such note: n9" (cli/note-show s ["n9"])))
-    (is (thrown-with-msg? Exception #"usage: lume note show <id>" (cli/note-show s [])))))
 
 (deftest ask-show-reads-an-ask-in-full
   (let [s (new-session "goal")
@@ -1961,31 +1944,6 @@
   (doseq [role [:worker :driver]]
     (is (some #{"--strict-mcp-config"} (agents/command :claude "p" {:role role :allow []}))
         (str (name role) " runs must not load the user's MCP servers"))))
-
-(deftest pinned-notes-outlive-the-window
-  (let [s (new-session "goal")
-        id (cli/item-add s ["read the notes"])]
-    (is (= "pinned n1" (cli/note s ["--pin" "run bb test before done"])))
-    (dotimes [n 12] (cli/note s [(str "chatter " n)]))
-    (is (= "noted n14" (cli/note s ["latest"])))
-    (let [out (status/render "sess" (store/read-events s) (Instant/now))]
-      (is (re-find #"(?m)^pinned  n1 run bb test before done$" out))
-      (is (not (re-find #"\] run bb test" out)) "pinned notes are left out of notes")
-      (is (< (str/index-of out "pinned  n1") (str/index-of out "open    i1"))))
-    (testing "workers see every pinned note and the last 10 others"
-      (cli/spawn s *root* [id "--agent" "prompt"])
-      (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
-        (is (str/includes? prompt "Pinned notes:\n- run bb test before done\n"))
-        (is (str/includes? prompt "- chatter 3\n"))
-        (is (not (str/includes? prompt "- chatter 2\n")))
-        (is (str/includes? prompt "- latest\n"))))
-    (testing "unpinning returns a note to the notes section"
-      (is (= "unpinned n1" (cli/note s ["--unpin" "n1"])))
-      (is (thrown-with-msg? Exception #"no pinned note: n1" (cli/note s ["--unpin" "n1"])))
-      (is (thrown-with-msg? Exception #"no pinned note: n99" (cli/note s ["--unpin" "n99"])))
-      (let [out (status/render "sess" (store/read-events s) (Instant/now))]
-        (is (not (re-find #"(?m)^pinned" out)))
-        (is (str/includes? out "+9 more") "14 notes, 5 shown")))))
 
 (deftest install-writes-the-skill-and-prints-the-settings-line
   (let [claude agents/*claude-home*
