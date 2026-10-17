@@ -264,16 +264,12 @@
     (flush)
     @(promise)))
 
-(defn- event-line [e]
-  (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip 70 (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :port :intent :gate :measure :command :text :question :answer :goal :why])))))
-
 (def feature
   {:name "inspect"
    :events {:repl/opened {:req #{:port}}}
    ;; Progress is shown on its spawn; in recent it would crowd out everything else.
    :status [{:label "recent" :order 90 :cap 3
-             :lines (fn [_ events _] (map event-line (take-last 3 (remove #(= :spawn/progress (:type %)) events))))}]
+             :lines (fn [_ events _] (map #(kernel/event-line clock 70 %) (take-last 3 (remove #(= :spawn/progress (:type %)) events))))}]
    :commands [{:path ["status"] :needs :root :usage status-usage
                :run (fn [{:keys [root]} args] (show-status root args))
                :help "lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);

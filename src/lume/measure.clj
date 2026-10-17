@@ -384,6 +384,11 @@
   (let [s (update-in s [:items (:item/id e)] item-after-row e)]
     (update s :ledger conj (get-in s [:items (:item/id e) :last-measure]))))
 
+(defn ran-text
+  "A :measure/ran event as text: its id, its numbers, where it was taken."
+  [e]
+  (str (:measure/id e) " " (measure-text e) (when (:env e) (str " · " (env-text (:env e))))))
+
 (def feature
   {:name "measure"
    :events {:item/measuring {:req #{:item/id :measure}}
@@ -394,6 +399,7 @@
                                        #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before]))))
           :measure/ran fold-ran
           :spawn/started (fn [s e] (update-in s [:items (:item/id e)] #(assoc % :before-rows (:good-measures %))))}
+   :event-text {:measure/ran ran-text :item/measuring spec-text}
    :item-lines (fn [_ item now] (when (:measure item) [(measure-line now item)]))
    :commands [{:path ["item" "measure"] :needs :session :usage item-measure-usage
                :run (fn [{:keys [session]} args] (item-measure session args))

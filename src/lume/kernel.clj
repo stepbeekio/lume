@@ -107,7 +107,8 @@
 ;;    :events {type {:req #{keys} :human true?}}  the types it appends
 ;;    :init   {..}                                 its part of the state
 ;;    :fold   {type (fn [state e] state)}          how its events fold
-;;    :guards {type (fn [state e] why-or-nil)}}    what refuses an append
+;;    :guards {type (fn [state e] why-or-nil)}     what refuses an append
+;;    :event-text {type (fn [e] text)}}            optional: how an event reads (event-text)
 ;; bound per run in *features*, never a global, so parallel tests bind their
 ;; own. Every type lume appends is declared by a feature with the keys it must
 ;; carry; :human types are policy, logged only when the human acts. Reading
@@ -326,6 +327,28 @@
   [n s]
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
+
+;; An event as text: its feature's :event-text for its type, else the values
+;; of the keys most events carry, in this order.
+(def ^:private event-keys
+  [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :port
+   :intent :gate :measure :command :text :question :answer :goal :why :result :tail])
+
+(defn- event-keys-text [e]
+  (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
+                      event-keys)))
+
+(defn event-text
+  "Event e's text: the :event-text fn a feature gives for its type, else its
+  common keys' values."
+  [e]
+  ((or (some #(get-in % [:event-text (:type e)]) (features)) event-keys-text) e))
+
+(defn event-line
+  "Event e as one line: its :t through time-text, its type, then its text
+  clipped to n."
+  [time-text n e]
+  (str (time-text (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " " (clip n (event-text e))))
 
 (def width "Status's width: no line is longer." 100)
 

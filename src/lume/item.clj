@@ -113,15 +113,9 @@
           (and (#{:note/added :ask/opened :ask/answered} type)
                (some #(and % (re-find named %)) [(:text e) (:question e) (:answer e)]))))))
 
+;; Every line here is the item's, so its id is left out.
 (defn- item-event-line [e]
-  (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
-       (clip 240 (case (:type e)
-                      :measure/ran (str (:measure/id e) " " (measure/measure-text e)
-                                        (when (:env e) (str " · " (measure/env-text (:env e)))))
-                      :item/measuring (measure/spec-text e)
-                      (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
-                                          [:spawn/id :gate/id :note/id :ask/id :disposition :exit
-                                           :command :gate :measure :text :question :answer :why :result :tail]))))
+  (str (kernel/event-line #(subs % 0 16) 240 (dissoc e :item/id))
        (when (:by e) (str " [" (:by e) "]"))))
 
 (def ^:private item-show-usage "usage: lume item show <id>")
@@ -137,7 +131,8 @@
                [(str id " " (name (:state item)) (when (:why item) (str " — " (clip 200 (:why item)))))
                 (str "intent  " (clip 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
-               (when (:measure item) [(str "measure " (measure/spec-text item))])
+               (when (:measure item)
+                 [(str "measure " (kernel/event-text (last (filter #(= :item/measuring (:type %)) related))))])
                (more related shown (str "earlier events — lume log --item " id " -n N"))
                (map item-event-line shown)))))
 
