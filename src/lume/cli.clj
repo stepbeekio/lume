@@ -266,7 +266,9 @@
 (defn- environment
   "Where a row was taken, so a noisy one can be explained: host, 1-minute
   load average, and the repo's git HEAD and jj change. Read-only, and it asks
-  only the tools that can answer: each process costs a row a few ms."
+  only the tools that can answer: each process costs a row a few ms. The jj
+  change's commit (:jj-commit) is what a revert restores; read-only means it
+  is the working copy as of jj's last snapshot."
   [root]
   (let [load (if (fs/exists? "/proc/loadavg")
                (some-> (re-find #"^[\d.]+" (first (fs/read-all-lines "/proc/loadavg"))) parse-double)
@@ -276,9 +278,10 @@
       :always (merge (when (fs/exists? (fs/path root ".git"))
                        (when-let [c (sh-out root "git" "rev-parse" "--short" "HEAD")] {:commit c}))
                      (when (fs/exists? (fs/path root ".jj"))
-                       (when-let [c (sh-out root "jj" "log" "-r" "@" "--ignore-working-copy" "--no-graph"
-                                            "-T" "change_id.short(8)")]
-                         {:change c}))))))
+                       (when-let [[change commit] (some-> (sh-out root "jj" "log" "-r" "@" "--ignore-working-copy" "--no-graph"
+                                                                  "-T" "change_id.short(8) ++ \" \" ++ commit_id.short(12)")
+                                                          (str/split #" "))]
+                         {:change change :jj-commit commit}))))))
 
 (defn- plateau-ask!
   "Under cadence on plateau K, the row that makes K (2K, …) rows without a new
@@ -352,19 +355,57 @@
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
        (when (and tail (not (zero? exit))) (str " · " (str/replace tail #"\s+" " ") "\n" out))))
 
-(defn item-close [session [id disposition why]]
-  (when-not (#{"done" "dropped"} disposition)
-    (fail! "usage: lume item close <id> done|dropped \"<why>\""))
-  (let [item (open-item (store/read-events session) id)
-        ran (when (and (= "done" disposition) (:gate item)) (run-gate session item))]
-    (when (and ran (not (zero? (:exit ran))))
-      (fail! id "not done: gate" (gate-summary ran)))
-    (store/append! session (fn [events]
-                             (open-item events id)
-                             (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
-                                      :why why :by (actor)}
-                               ran (assoc :gate/id (:gate/id ran)))))
-    (str id " " disposition (when ran (str " · " (gate-summary ran))))))
+;; Rollback is data: dropped --revert restores the working copy to the jj
+;; commit (or, without jj, the git commit) the item's before row was taken at,
+;; and the close event says which row and commit. History is left alone: the
+;; restore is a diff in the working copy, and jj's snapshot before it keeps
+;; the dropped edits in the op log.
+(defn- revert!
+  "Restore root's working copy to the before row's commit and return what was
+  restored, or fail without touching the log."
+  [root id item]
+  (let [row (or (status/before-row item)
+                (fail! id "has no before row to revert to: a spawn must start on it after a good measurement"))
+        mid (:measure/id row)
+        {:keys [jj-commit commit]} (:env row)
+        [restored cmd] (cond (fs/exists? (fs/path root ".jj"))
+                             (if jj-commit
+                               [{:jj-commit jj-commit} ["jj" "restore" "--from" jj-commit]]
+                               (fail! id "not reverted:" mid "records no jj commit"))
+                             (fs/exists? (fs/path root ".git"))
+                             (if commit
+                               [{:commit commit} ["git" "restore" (str "--source=" commit) "--staged" "--worktree" "--" ":/"]]
+                               (fail! id "not reverted:" mid "records no git commit"))
+                             :else (fail! id "not reverted:" root "is neither a jj nor a git repo"))
+        {:keys [exit err]} (try (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)
+                                (catch Exception e {:exit -1 :err (ex-message e)}))]
+    (when-not (zero? exit)
+      (fail! id "not reverted:" (str/join " " cmd) "failed:" (str/trim (str err))))
+    (assoc restored :measure/id mid)))
+
+(defn item-close [session [id disposition & more]]
+  (let [usage "usage: lume item close <id> done|dropped [--revert] \"<why>\""
+        revert (boolean (some #{"--revert"} more))
+        why (first (remove #{"--revert"} more))]
+    (when-not (#{"done" "dropped"} disposition) (fail! usage))
+    (when (and revert (not= "dropped" disposition)) (fail! "--revert goes with dropped;" usage))
+    (let [events (store/read-events session)
+          item (open-item events id)
+          ran (when (and (= "done" disposition) (:gate item)) (run-gate session item))
+          _ (when (and ran (not (zero? (:exit ran))))
+              (fail! id "not done: gate" (gate-summary ran)))
+          restored (when revert
+                     (revert! (:repo (status/project events)) id (get-in (status/project events) [:items id])))]
+      (store/append! session (fn [events]
+                               (open-item events id)
+                               (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
+                                        :why why :by (actor)}
+                                 ran (assoc :gate/id (:gate/id ran))
+                                 restored (merge restored))))
+      (str id " " disposition (when ran (str " · " (gate-summary ran)))
+           (when restored
+             (str " · restored " (if (:jj-commit restored) (str "jj " (:jj-commit restored)) (str "git " (:commit restored)))
+                  " from " (:measure/id restored)))))))
 
 (def ^:private measure-usage "usage: lume measure <id>")
 
@@ -1328,6 +1369,9 @@ lume measure <id>                           run the item's measurement now and p
 lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
                                             numbers with change vs the row compared, spread, wall time, exit
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
+lume item close <id> dropped --revert \"<why>\"
+                                            also restore the working copy to the jj (else git) commit
+                                            of the item's before row; refused if it has none or that fails
 lume item show <id>                         one item in full: intent, gate, disposition and its events
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest

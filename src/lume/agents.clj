@@ -441,7 +441,9 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 - After a worker: review its diff, commit it with a message saying what and why, then
   `lume note \"committed <id>: <change id> <what>\"`.
 - `lume item close <id> done \"<why>\"` runs the gate and is refused if it fails;
-  `dropped` needs only a reason.
+  `dropped` needs only a reason and changes nothing; `dropped --revert \"<why>\"` also
+  restores the working copy to the item's before row (its jj commit, or git commit
+  without jj) and is refused if there is none.
 - Record what you learn with `lume note \"<text>\"`; `lume note --pin` for anything the
   next session must not forget. When status lacked something you needed, add an item.
 

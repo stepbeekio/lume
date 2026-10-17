@@ -19,6 +19,13 @@
 (defn- spec [{:keys [measure runs drop]}]
   {:measure measure :runs (or runs 1) :drop (or drop 0)})
 
+(defn before-row
+  "The row a projected item's latest spawn pinned as its before row for the
+  item's current spec, or nil: no spawn has started, or no good row preceded
+  it."
+  [item]
+  (last (get-in item [:before-rows (spec item)])))
+
 (defn spec-text
   "The command, then how it repeats, then the numbers where higher is better,
   then whether a spawn takes a before row, e.g. bb bench ×10 drop 1 higher

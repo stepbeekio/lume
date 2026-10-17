@@ -1074,6 +1074,74 @@
       (is (= [{:intent "fewer lines" :gate "true" :measure "echo t=1" :before true}]
              (:items (spec/from-state (status/project (store/read-events s)))))))))
 
+;; i71: dropped --revert puts the working copy back at the before row.
+(def ^:private vcs-env
+  {"GIT_AUTHOR_NAME" "t" "GIT_AUTHOR_EMAIL" "t@t" "GIT_COMMITTER_NAME" "t" "GIT_COMMITTER_EMAIL" "t@t"
+   "JJ_USER" "t" "JJ_EMAIL" "t@t"})
+
+(defn- vcs! [& cmd]
+  (apply p/shell {:dir *root* :out :string :err :string :extra-env vcs-env} cmd))
+
+(defn- made [] (slurp (str (fs/path *root* "made"))))
+
+(defn- closed [s id] (last (filter #(and (= :item/closed (:type %)) (= id (:item/id %))) (store/read-events s))))
+
+(defn- measured-spawn
+  "An item measured once, then a spawn that appends to made: its before row is m1."
+  [s]
+  (let [id (cli/item-add s ["fewer lines" "--gate" "true"])]
+    (cli/item-measure s [id "echo t=$(wc -l < made)"])
+    (cli/measure s [id])
+    (cli/spawn s *root* [id "--agent" "writes"])
+    id))
+
+(deftest dropped-revert-restores-the-jj-commit
+  (spit (str (fs/path *root* "made")) "start\n")
+  (vcs! "jj" "git" "init")
+  (vcs! "jj" "commit" "-m" "start")
+  (let [s (new-session "goal")]
+    (testing "refused without a before row, and only with dropped"
+      (let [id (cli/item-add s ["unspawned" "--gate" "true"])]
+        (cli/item-measure s [id "echo t=1"])
+        (cli/measure s [id])
+        (is (thrown-with-msg? Exception #"i1 has no before row" (cli/item-close s [id "dropped" "--revert" "no"])))
+        (is (thrown-with-msg? Exception #"--revert goes with dropped" (cli/item-close s [id "done" "--revert" "no"])))
+        (is (= :open (get-in (status/project (store/read-events s)) [:items id :state])))))
+    (let [id (measured-spawn s)
+          c (:jj-commit (:env (first (filter #(= "m2" (:measure/id %)) (store/read-events s)))))]
+      (is (= "start\nmore\n" (made)))
+      (is (re-matches #"[0-9a-f]{12}" (str c)))
+      (is (= (str id " dropped · restored jj " c " from m2") (cli/item-close s [id "dropped" "--revert" "slower"])))
+      (is (= "start\n" (made)))
+      (is (= {:disposition :dropped :why "slower" :measure/id "m2" :jj-commit c}
+             (select-keys (closed s id) [:disposition :why :measure/id :jj-commit]))))))
+
+(deftest dropped-revert-restores-the-git-commit
+  (spit (str (fs/path *root* "made")) "start\n")
+  (vcs! "git" "init" "-q")
+  (vcs! "git" "add" "made")
+  (vcs! "git" "commit" "-qm" "start")
+  (let [s (new-session "goal")
+        head (str/trim (:out (vcs! "git" "rev-parse" "--short" "HEAD")))]
+    (testing "without --revert, dropped changes nothing"
+      (let [id (measured-spawn s)]
+        (is (= (str id " dropped") (cli/item-close s [id "dropped" "slower"])))
+        (is (= "start\nmore\n" (made)))
+        (is (nil? (:commit (closed s id))))))
+    (testing "--revert restores the before row's commit, a committed change too"
+      (let [id (measured-spawn s)]
+        (vcs! "git" "commit" "-qam" "more")
+        (is (= "start\nmore\nmore\n" (made)))
+        (is (= (str id " dropped · restored git " head " from m3") (cli/item-close s [id "dropped" "--revert" "slower"])))
+        (is (= "start\n" (made)))
+        (is (= ["m3" head] ((juxt :measure/id :commit) (closed s id))))))
+    (testing "a failed restore is refused and the item stays open"
+      (let [id (measured-spawn s)]
+        (fs/delete-tree (fs/path *root* ".git"))
+        (vcs! "git" "init" "-q")
+        (is (thrown-with-msg? Exception #"not reverted: git restore .* failed" (cli/item-close s [id "dropped" "--revert" "x"])))
+        (is (= :open (get-in (status/project (store/read-events s)) [:items id :state])))))))
+
 (deftest the-default-agent-is-lume-agent
   (let [s (new-session "goal")]
     (cli/item-add s ["do it"])
