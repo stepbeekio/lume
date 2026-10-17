@@ -94,13 +94,17 @@
       (some-> (System/getenv "COLUMNS") parse-long)
       100))
 
+(defn unconfirmed!
+  "Refuse a human-only command that no human at a terminal confirmed."
+  []
+  (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
+         "agents ask with lume ask \"<question>\""))
+
 (defn human-only!
   "Refuse unless the actor is the human and a human at a terminal confirms."
   [refusal prompt expected]
   (when-not (= "human" (actor)) (fail! refusal))
-  (when-not (*confirm* prompt expected)
-    (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
-           "agents ask with lume ask \"<question>\"")))
+  (when-not (*confirm* prompt expected) (unconfirmed!)))
 
 ;; Features: what lume does, as data. A feature is a map
 ;;   {:name   "item"
@@ -328,11 +332,31 @@
   [t]
   (.format (.atZone (Instant/parse t) (ZoneId/systemDefault)) (DateTimeFormatter/ofPattern "HH:mm")))
 
+(defn stamp
+  "An event's :t as yyyy-MM-ddTHH:mm."
+  [t]
+  (subs t 0 16))
+
+(defn stamp-by
+  "When event e was appended and by whom: \"<stamp> by <actor>\"."
+  [e]
+  (str (stamp (:t e)) " by " (:by e)))
+
+(defn one-line
+  "s on one line: whitespace runs become a space."
+  [s]
+  (str/replace (str s) #"\s+" " "))
+
+(defn tail-line
+  "The last non-blank line of s, or nil."
+  [s]
+  (last (remove str/blank? (str/split-lines (str s)))))
+
 (defn clip
   "s on one line (whitespace runs become a space), cut to at most n with … at
   the end when it was longer."
   [n s]
-  (let [s (str/replace (str s) #"\s+" " ")]
+  (let [s (one-line s)]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
 ;; An event as text: its feature's :event-text for its type, else the values
@@ -364,7 +388,7 @@
   max-lines, the last line kept is clipped and ends in tail when there is more."
   ([s n] (wrap s n nil nil))
   ([s n max-lines tail]
-   (let [lines (loop [words (str/split (str/trim (str/replace (str s) #"\s+" " ")) #" ")
+   (let [lines (loop [words (str/split (str/trim (one-line s)) #" ")
                       line nil, out []]
                  (if-let [[w & more] (seq words)]
                    (cond (nil? line) (if (> (count w) n)
@@ -462,7 +486,7 @@
                                             output)
                                    :append true)))
         {:keys [exit ms output]} (peek runs)
-        tail (last (remove str/blank? (str/split-lines output)))
+        tail (tail-line output)
         ran (append! session (fn [events]
                                (let [[id e] (event-for events runs)]
                                  (cond-> (merge {:exit exit :ms ms} e

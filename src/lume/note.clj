@@ -52,13 +52,12 @@
         events (kernel/read-events session)
         added (or (kernel/find-event events :note/added :note/id id)
                   (fail! "no such note:" id))
-        unpinned (kernel/find-event events :note/unpinned :note/id id)
-        at #(str (subs (:t %) 0 16) " by " (:by %))]
+        unpinned (kernel/find-event events :note/unpinned :note/id id)]
     (str/join "\n"
               (concat
                [(str id (cond unpinned " unpinned" (:pinned added) " pinned" :else ""))
-                (str "noted    " (at added))]
-               (when unpinned [(str "unpinned " (at unpinned))])
+                (str "noted    " (kernel/stamp-by added))]
+               (when unpinned [(str "unpinned " (kernel/stamp-by unpinned))])
                [(:text added)]))))
 
 ;; An answer is steering, like a note, so it joins the notes (and reaches status

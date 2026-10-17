@@ -330,7 +330,7 @@
                                   [(assoc last-spec iid spec) (conj out (when (not= spec (last-spec iid)) spec))]))
                               [{} []] shown))
         lines (map (fn [{mid :measure/id iid :item/id :keys [t] :as row} spec]
-                     (str mid " " iid " " (subs t 0 16) " " (measure-text row)
+                     (str mid " " iid " " (kernel/stamp t) " " (measure-text row)
                           (when spec (str " · " (clip 60 spec)))))
                    shown specs)]
     (if (empty? rows)

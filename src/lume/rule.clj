@@ -81,7 +81,7 @@
                                 done (deref proc *timeout-ms* nil)]
                             (when-not done (p/destroy-tree proc) @proc)
                             done))]
-    (let [tail (last (remove str/blank? (str/split-lines (slurp out))))]
+    (let [tail (kernel/tail-line (slurp out))]
       (cond-> {:exit (if done (:exit done) 124) :ms ms :out (str out)}
         (not done) (assoc :timed-out true)
         tail (assoc :tail (kernel/clip 200 tail))))))

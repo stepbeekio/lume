@@ -199,7 +199,7 @@
     (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
                                                turn)))
     (kernel/react-for! session did)
-    (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
+    (say (str did " exit " exit (when result (str " · " (kernel/one-line result))) "\n" out))
     (if (and (empty? logged) (not closing))
       (str did " logged no events")
       (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))

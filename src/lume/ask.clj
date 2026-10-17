@@ -52,7 +52,7 @@
                       :let [item (ask-item events a)]]
                   (str/join "\n"
                             (concat
-                             [(str id " · asked " (subs t 0 16) " by " by
+                             [(str id " · asked " (kernel/stamp t) " by " by
                                    (when item (str " · item " item (when measure (str " at " measure)))))]
                              (map #(str "  " %) (wrap question (- width 2)))
                              [(str "  → lume answer " id "   (or lume answer " id " \"<text>\")")])))))))
@@ -84,8 +84,7 @@
     (or (some-> (*read-line* (str/join "\n" (cons (str id ":") (map #(str "  " %) (wrap question (- (columns) 2)))))
                              "Answer: ")
                 str/trim)
-        (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
-               "agents ask with lume ask \"<question>\""))))
+        (kernel/unconfirmed!))))
 
 (defn answer [session args]
   (let [[id text] (answer-args args)]
@@ -109,17 +108,16 @@
         opened (or (get-in (kernel/project events) [:asks id])
                    (fail! "no such ask:" id))
         answered (kernel/find-event events :ask/answered :ask/id id)
-        item (ask-item events opened)
-        at #(str (subs (:t %) 0 16) " by " (:by %))]
+        item (ask-item events opened)]
     (str/join "\n"
               (concat
                [(str id " " (if answered "answered" "open"))
                 (str "question " (:question opened))
-                (str "asked    " (at opened))]
+                (str "asked    " (kernel/stamp-by opened))]
                (when item [(str "item     " item (when (:measure opened) (str " at " (:measure opened))))])
                (if answered
                  [(str "answer   " (:answer answered))
-                  (str "answered " (at answered) (when-let [via (:via answered)] (str " via " (name via))))]
+                  (str "answered " (kernel/stamp-by answered) (when-let [via (:via answered)] (str " via " (name via))))]
                  [(str "answer   none yet; only the human answers: lume answer " id)])))))
 
 ;; Questions waiting on the human come first in status: they're what blocks.

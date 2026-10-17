@@ -160,7 +160,7 @@
            (count events) " events — lume replay --at N")
       (str/join "\n" (concat (more ds shown (str "earlier decisions — -n " (count ds)))
                              (for [[i e] shown]
-                               (clip 100 (str i " " (subs (:t e) 0 16) " " (decision-text e))))
+                               (clip 100 (str i " " (kernel/stamp (:t e)) " " (decision-text e))))
                              [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
 
 (defn- replay-args

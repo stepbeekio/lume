@@ -54,7 +54,7 @@
 
 (defn gate-summary [{:keys [exit tail out] gid :gate/id}]
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
-       (when (and tail (not (zero? exit))) (str " · " (str/replace tail #"\s+" " ") "\n" out))))
+       (when (and tail (not (zero? exit))) (str " · " (kernel/one-line tail) "\n" out))))
 
 ;; dropped --revert restores the working copy to the item's before row (lume.measure).
 (def ^:private item-close-usage "usage: lume item close <id> done|dropped [--revert] \"<why>\"")
@@ -115,7 +115,7 @@
 
 ;; Every line here is the item's, so its id is left out.
 (defn- item-event-line [e]
-  (str (kernel/event-line #(subs % 0 16) 240 (dissoc e :item/id))
+  (str (kernel/event-line kernel/stamp 240 (dissoc e :item/id))
        (when (:by e) (str " [" (:by e) "]"))))
 
 (def ^:private item-show-usage "usage: lume item show <id>")

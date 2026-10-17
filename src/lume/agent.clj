@@ -60,7 +60,12 @@
 
 (def ^:dynamic *progress-ms* 15000)
 
-(defn- clip-last [s] (subs s 0 (min 200 (count s))))
+;; Not kernel/clip: :last is logged as the adapter saw it, whitespace and all,
+;; and cut without an ellipsis; status clips it when it shows it.
+(defn- clip-last
+  "s cut to at most 200 characters, otherwise as it was."
+  [s]
+  (subs s 0 (min 200 (count s))))
 
 (defn- follow!
   "Copy the worker's stdout to `out` until it closes, logging :spawn/progress
@@ -156,7 +161,7 @@
 
 (defn- exited-line [id out {sid :spawn/id :keys [exit ms result]}]
   (str sid " " id " exit " exit " in " (quot ms 1000) "s"
-       (when result (str " · " (str/replace (str result) #"\s+" " ")))
+       (when result (str " · " (kernel/one-line result)))
        "\n" out))
 
 ;; After the worker exits, its item is measured, then: the worker may have

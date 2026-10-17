@@ -40,7 +40,7 @@
   (throw (ex-info (str "lume install knows no agent " (name agent)) {:lume/user-error true})))
 
 (defmethod summarize :default [_ out]
-  {:result (last (remove str/blank? (str/split-lines (str out))))})
+  {:result (kernel/tail-line out)})
 
 (defmethod progress :default [_ prog line]
   (if (str/blank? line)
