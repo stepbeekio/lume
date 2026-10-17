@@ -6,6 +6,7 @@
   calls run-measure and measure-row for that."
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
+            [lume.ask :as ask]
             [lume.kernel :as kernel :refer [ago clip fail! more next-id open-item paint
                                             run-in-repo! run-repeated secs sh-out take-flags]]))
 
@@ -203,7 +204,7 @@
         {:keys [stale best-id higher counted]} (get-in state [:items id :plateau])]
     (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
                (= :open (get-in state [:items id :state]))
-               (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks state))))
+               (not-any? #(= id (:item %)) (ask/open-asks state)))
       (str id " plateaued: " stale " measurement rows without a new best"
            (when best-id (str " (best " best-id ", " (direction-text (sort higher)) ")"))
            "; keep going, change approach, or stop?"))))
@@ -215,8 +216,7 @@
   (kernel/append! session
                   (fn [events]
                     (when-let [q (plateau-question (kernel/project events) id mid)]
-                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
-                       :question q}))))
+                      (ask/opened-event events q :item/id id :measure/id mid)))))
 
 (defn- measure-fields
   "A row's fields from its runs: the kept runs summarized, the spec, and which

@@ -14,27 +14,47 @@
        (sort-by #(parse-long (subs (:id %) 1)))))
 
 (defn ask-item
-  "The item an ask concerns: a plateau's, or the asking worker's."
-  [events opened]
-  (or (:item/id opened)
-      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
+  "The item an ask (as folded into state) concerns: a plateau's, or the
+  asking worker's."
+  [events {:keys [item by]}]
+  (or item
+      (some #(when (and (= :spawn/started (:type %)) (= by (:spawn/id %))) (:item/id %)) events)))
+
+(defn opened-event
+  "The :ask/opened event for question, with the next ask id; extra adds keys
+  (a plateau's :item/id and :measure/id)."
+  [events question & {:as extra}]
+  (merge {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :question question} extra))
+
+(defn answer-why
+  "Why ask id in state can't be answered, or nil when it is open."
+  [state id]
+  (case (get-in state [:asks id :state])
+    nil (str "no such ask: " id)
+    :answered (str id " is already answered")
+    :open nil))
+
+(defn answered-event
+  "The :ask/answered event giving ask id the answer text, or nil when the ask
+  isn't open (answer-why says why); extra adds keys (:via)."
+  [events id text & {:as extra}]
+  (when-not (answer-why (kernel/project events) id)
+    (merge {:type :ask/answered :ask/id id :answer text} extra)))
 
 ;; With no question: what status clips, for the human to read and answer. Open
 ;; asks in full, oldest first, wrapped to the terminal.
 (defn- open-asks-text [session width]
   (let [events (kernel/read-events session)
-        open (open-asks (kernel/project events))
-        opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) events))]
+        open (open-asks (kernel/project events))]
     (if (empty? open)
       "no open asks"
       (str/join "\n\n"
-                (for [{:keys [id question]} open
-                      :let [e (opened id)
-                            item (ask-item events e)]]
+                (for [{:keys [id question t by measure] :as a} open
+                      :let [item (ask-item events a)]]
                   (str/join "\n"
                             (concat
-                             [(str id " · asked " (subs (:t e) 0 16) " by " (:by e)
-                                   (when item (str " · item " item (when (:measure/id e) (str " at " (:measure/id e))))))]
+                             [(str id " · asked " (subs t 0 16) " by " by
+                                   (when item (str " · item " item (when measure (str " at " measure)))))]
                              (map #(str "  " %) (wrap question (- width 2)))
                              [(str "  → lume answer " id "   (or lume answer " id " \"<text>\")")])))))))
 
@@ -43,10 +63,7 @@
 (defn ask [session [question & extra]]
   (cond (and (nil? question) (nil? extra)) (open-asks-text session (columns))
         (or (str/blank? question) (seq extra)) (fail! ask-usage)
-        :else (let [opened (kernel/append! session (fn [events]
-                                                     {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
-                                                      :question question}))]
-                (:ask/id opened))))
+        :else (:ask/id (kernel/append! session #(opened-event % question)))))
 
 ;; With no text, at a terminal, the human reads the question in full and types
 ;; the answer at the prompt; the typed-id confirmation still follows.
@@ -55,14 +72,10 @@
 (defn answer [session [id text]]
   (when (str/blank? id) (fail! answer-usage))
   (when-not (= "human" (actor)) (fail! "only the human answers asks; record what you think with lume note"))
-  (let [open-ask (fn [events]
-                   (let [{:keys [state] :as a} (get-in (kernel/project events) [:asks id])]
-                     (case state
-                       nil (fail! "no such ask:" id)
-                       :answered (fail! id "is already answered")
-                       :open a)))
-        text (or text
-                 (let [{:keys [question]} (open-ask (kernel/read-events session))]
+  (let [text (or text
+                 (let [state (kernel/state session)
+                       question (get-in state [:asks id :question])]
+                   (some-> (answer-why state id) fail!)
                    (or (some-> (*read-line* (str/join "\n" (cons (str id ":") (map #(str "  " %) (wrap question (- (columns) 2)))))
                                             "Answer: ")
                                str/trim)
@@ -72,8 +85,8 @@
     (human-only! "only the human answers asks; record what you think with lume note"
                  (str "Answer " id ": " text) id)
     (kernel/append! session (fn [events]
-                              (open-ask events)
-                              {:type :ask/answered :ask/id id :answer text}))
+                              (or (answered-event events id text)
+                                  (fail! (answer-why (kernel/project events) id)))))
     (str id " answered")))
 
 ;; Ask show: what status clips. The question in full, who asked and when, the
@@ -83,7 +96,7 @@
 (defn ask-show [session [id]]
   (when (str/blank? id) (fail! ask-show-usage))
   (let [events (kernel/read-events session)
-        opened (or (kernel/find-event events :ask/opened :ask/id id)
+        opened (or (get-in (kernel/project events) [:asks id])
                    (fail! "no such ask:" id))
         answered (kernel/find-event events :ask/answered :ask/id id)
         item (ask-item events opened)
@@ -93,7 +106,7 @@
                [(str id " " (if answered "answered" "open"))
                 (str "question " (:question opened))
                 (str "asked    " (at opened))]
-               (when item [(str "item     " item (when (:measure/id opened) (str " at " (:measure/id opened))))])
+               (when item [(str "item     " item (when (:measure opened) (str " at " (:measure opened))))])
                (if answered
                  [(str "answer   " (:answer answered))
                   (str "answered " (at answered) (when-let [via (:via answered)] (str " via " (name via))))]
@@ -110,14 +123,19 @@
                 (map #(paint :yellow %)
                      (cons (str id " " l) (map #(str indent %) more))))))))
 
+;; The fold keeps who asked and when, and a plateau's item and row, so readers
+;; don't go back to the log for the opened event.
+(defn- opened-ask [s {id :ask/id :keys [question t by] item :item/id mid :measure/id}]
+  (assoc-in s [:asks id] (cond-> {:id id :question question :state :open :t t :by by}
+                           item (assoc :item item)
+                           mid (assoc :measure mid))))
+
 (def feature
   {:name "ask"
    :events {:ask/opened {:req #{:ask/id :question}}
             :ask/answered {:req #{:ask/id :answer} :human true}}
    :init {:asks {}}
-   :fold {:ask/opened (fn [s e]
-                        (update s :asks assoc (:ask/id e) (cond-> {:id (:ask/id e) :question (:question e) :state :open}
-                                                            (:item/id e) (assoc :item (:item/id e)))))
+   :fold {:ask/opened opened-ask
           ;; The note feature folds the answer into the notes too.
           :ask/answered (fn [s e] (assoc-in s [:asks (:ask/id e) :state] :answered))}
    :status [{:label "asks" :order 20 :cap 7 :more "asks — lume ask" :lines ask-lines}]

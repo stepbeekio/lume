@@ -97,16 +97,16 @@
   "Send an ask, unless a waiting drive will. With a reply code, the message
   says how to answer it and a yes/no or (a)/(b)/(c) ask carries buttons
   that post the answer to the reply topic; the code and that URL are never logged."
-  [session {id :ask/id :keys [question] :as opened} & [code]]
+  [session {:keys [id question by] :as a} & [code]]
   (when (or code *ask-notices*)
-    (let [item (ask/ask-item (kernel/read-events session) opened)
+    (let [item (ask/ask-item (kernel/read-events session) a)
           [reply auth] (when code (ntfy-target (reply-url)))
           button (fn [label answer]
                    (str/join ", " (concat ["http" label reply "method=POST"]
                                           (for [[k v] auth] (str "headers." k "=" v))
                                           [(str "body=" id " " code " " answer) "clear=true"])))]
-      (notify! session (cond-> opened item (assoc :item/id item))
-               (str "lume: ask " id (when item (str " on " item)) " from " (:by opened))
+      (notify! session (cond-> {:type :ask/opened :ask/id id} item (assoc :item/id item))
+               (str "lume: ask " id (when item (str " on " item)) " from " by)
                (str question "\n" (if code (str "reply " id " <code> <answer>, or lume answer " id) (str "lume answer " id)))
                :secret (when code (str "code " code))
                :headers (when-let [buttons (and code
@@ -231,12 +231,11 @@
   replies delivers the reply subscriber. Messages whose id is in *sent* are
   the drive's own, echoed on a shared topic, and skipped."
   [session codes replies say]
-  (let [opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) (kernel/read-events session)))]
-    (doseq [id (open-ask-ids session) :when (not (@codes id))]
-      (let [code (reply-code)]
-        (swap! codes assoc id code)
-        (notify-ask! session (opened id) code)
-        (say (str "waiting on " id " for an answer on ntfy, or lume answer " id)))))
+  (doseq [{:keys [id] :as a} (ask/open-asks (kernel/state session)) :when (not (@codes id))]
+    (let [code (reply-code)]
+      (swap! codes assoc id code)
+      (notify-ask! session a code)
+      (say (str "waiting on " id " for an answer on ntfy, or lume answer " id))))
   (let [q (:queue @replies)]
     (loop [last-error nil]
       (swap! codes select-keys (open-ask-ids session))
@@ -251,10 +250,7 @@
             ;; was sent, so it is the human answering, whoever runs the drive.
             (vector? ok) (do (swap! codes dissoc id)
                              (when (binding [kernel/*actor* "human"]
-                                     (kernel/append! session (fn [events]
-                                                               (when (= :open (get-in (kernel/project events) [:asks id :state]))
-                                                                 {:type :ask/answered :ask/id id :answer answer
-                                                                  :via :ntfy}))))
+                                     (kernel/append! session #(ask/answered-event % id answer :via :ntfy)))
                                (say (str id " answered from ntfy"))))
             message (do (say (str "ignored a reply on ntfy: " ok)) (recur last-error))
             :else (recur last-error)))))))
@@ -265,5 +261,5 @@
   {:name "ntfy"
    :events {:notify/sent {:req #{:on :text}}
             :notify/failed {:req #{:on :text :error}}}
-   :reactions [{:on :ask/opened :run (fn [session e] (notify-ask! session e))}
+   :reactions [{:on :ask/opened :run (fn [session e] (notify-ask! session (get-in (kernel/state session) [:asks (:ask/id e)])))}
                {:on :drive/stopped :run (fn [session e] (notify! session e "lume: drive stopped" (:why e)))}]})
