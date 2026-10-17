@@ -113,50 +113,88 @@
     {:exit exit :steps steps
      :summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))}))
 
-(defn- run-spawn [session root id agent]
-  (let [agent (keyword (or agent *default-agent*))
-        events (kernel/read-events session)
+(defn- start-spawn!
+  "Log the spawn of agent on open item id, hook its exit in case lume is
+  interrupted, and take the item's before row if it has one. Returns
+  {:sid :out :events :item :finished! :before-row}."
+  [session id agent]
+  (let [events (kernel/read-events session)
         item (open-item events id)
-        started (kernel/append! session (fn [events]
-                                          (let [sid (next-id "s" :spawn/started events)]
-                                            {:type :spawn/started :spawn/id sid :item/id id :agent agent
-                                             :out (str (fs/path session "spawns" (str sid ".out")))})))
-        {sid :spawn/id out :out} started
+        {sid :spawn/id out :out} (kernel/append! session (fn [events]
+                                                           (let [sid (next-id "s" :spawn/started events)]
+                                                             {:type :spawn/started :spawn/id sid :item/id id :agent agent
+                                                              :out (str (fs/path session "spawns" (str sid ".out")))})))
         finished! (kernel/exit-hook! session {:type :spawn/exited :spawn/id sid :interrupted true})]
     (fs/create-dirs (fs/parent out))
-    (let [;; A before row is taken once the spawn has started, before the
-          ;; worker runs, so every row after it compares with it.
-          before-row (when (and (:measure item) (:before item))
-                       (str (measure/measure-row session (measure/run-measure session item :before-spawn sid)) "\n"))
-          before (worktree-fingerprint root)
-          [{:keys [exit steps summary]} ms] (timed #(run-worker session root agent sid events item out))
-          exited (kernel/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit :ms ms}
-                                                                    summary)
-                                                       steps (assoc :steps steps))))]
-      (finished!)
-      (kernel/react-for! session sid)
-      (str before-row sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
-           (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))
-           "\n" out
-           ;; Measure what the worker left, then: the worker may have closed the
-           ;; item itself; if it asked or changed nothing, a passing gate says
-           ;; nothing about its work, so the item stays open. A measured item
-           ;; stays open too: its gate runs, but keeping or rolling back the
-           ;; change is the human's or driver's call. Otherwise its gate decides.
-           (let [item (get-in (kernel/state session) [:items id])]
-             (when (:measure item)
-               (str "\n" (measure/measure-row session (measure/run-measure session item)))))
-           (let [item (get-in (kernel/state session) [:items id])
-                 why (when (and (= :open (:state item)) (or (:gate item) (:measure item)))
-                       (idle-why session sid before (worktree-fingerprint root)))]
-             (cond
-               (not= :open (:state item)) nil
-               why (str "\n" id " left open: " why " · " (note/note session [(str id " left open, not gated: " why)]))
-               (:measure item) (str "\n" id " left open to decide"
-                                    (when (:gate item) (str " · " (item/gate-summary (item/run-gate session item))))
-                                    " · lume item close " id " done|dropped \"<why>\"")
-               (:gate item) (str "\n" (try (item/item-close session [id "done" (str "gate passed after " sid)])
-                                           (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
+    ;; A before row is taken once the spawn has started, before the worker
+    ;; runs, so every row after it compares with it.
+    {:sid sid :out out :events events :item item :finished! finished!
+     :before-row (when (and (:measure item) (:before item))
+                   (str (measure/measure-row session (measure/run-measure session item :before-spawn sid)) "\n"))}))
+
+(defn- work!
+  "Run the started spawn's worker until it exits, log :spawn/exited, run the
+  reactions to what the worker logged, and return the exited event."
+  [session root agent {:keys [sid out events item finished!]}]
+  (let [[{:keys [exit steps summary]} ms] (timed #(run-worker session root agent sid events item out))
+        exited (kernel/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit :ms ms}
+                                                                  summary)
+                                                     steps (assoc :steps steps))))]
+    (finished!)
+    (kernel/react-for! session sid)
+    exited))
+
+(defn- exited-line [id out {sid :spawn/id :keys [exit ms result]}]
+  (str sid " " id " exit " exit " in " (quot ms 1000) "s"
+       (when result (str " · " (str/replace (str result) #"\s+" " ")))
+       "\n" out))
+
+;; After the worker exits, its item is measured, then: the worker may have
+;; closed it itself; if it asked or changed nothing, a passing gate says
+;; nothing about its work, so the item stays open. A measured item stays open
+;; too: its gate runs, but keeping or rolling back the change is the human's
+;; or driver's call. Otherwise its gate decides.
+
+(defn- gated?
+  "Whether the item is open with a gate or a measure to decide it."
+  [item]
+  (and (= :open (:state item)) (or (:gate item) (:measure item))))
+
+(defn- after-spawn
+  "What follows a spawn on item, given its idle-why: nil (closed, or nothing
+  decides it), [:left-open why], [:decide] or [:gate]."
+  [item why]
+  (cond
+    (not= :open (:state item)) nil
+    why [:left-open why]
+    (:measure item) [:decide]
+    (:gate item) [:gate]))
+
+(defn- follow-up!
+  "Act on after-spawn's step for item and return its line, or nil."
+  [session sid {:keys [id] :as item} [step why]]
+  (case step
+    nil nil
+    :left-open (str "\n" id " left open: " why " · " (note/note session [(str id " left open, not gated: " why)]))
+    :decide (str "\n" id " left open to decide"
+                 (when (:gate item) (str " · " (item/gate-summary (item/run-gate session item))))
+                 " · lume item close " id " done|dropped \"<why>\"")
+    :gate (str "\n" (try (item/item-close session [id "done" (str "gate passed after " sid)])
+                         (catch clojure.lang.ExceptionInfo e (ex-message e))))))
+
+(defn- run-spawn [session root id agent]
+  (let [agent (keyword (or agent *default-agent*))
+        {:keys [sid out before-row] :as started} (start-spawn! session id agent)
+        before (worktree-fingerprint root)
+        exited (work! session root agent started)
+        ;; A :measure/ran row changes no item's state, gate or measure, so
+        ;; one projection serves the measure and the decision after it.
+        item (get-in (kernel/state session) [:items id])
+        after-row (when (:measure item)
+                    (str "\n" (measure/measure-row session (measure/run-measure session item))))
+        why (when (gated? item) (idle-why session sid before (worktree-fingerprint root)))]
+    (str before-row (exited-line id out exited) after-row
+         (follow-up! session sid item (after-spawn item why)))))
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
 ;; The cadence's batch is how many requests a turn may make (its guard).
