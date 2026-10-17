@@ -30,6 +30,18 @@ Delimiter errors in `.clj` edits are repaired by hooks in `.claude/settings.json
 - Vendor-specific code lives only in `lume.agents`.
 - Build what's needed now; the pitch's later milestones are not a spec.
 
+## Code style
+
+Write so Stephen can read a namespace top to bottom and follow it.
+
+- Pure fns in, effects at the edges. Folds, guards, status lines and decisions take data and return data. `append!`, shell, http, printing and reading the log happen in a thin command fn that calls them.
+- Small named steps. A defn that parses args, decides and acts is three fns. Parse args into a map first, then validate it, then act; don't hide `(fail! ..)` in `_` let bindings.
+- Name the decision. When a loop or command branches on state, put the branching in a pure fn that returns a keyword or a vector (`[:stop why]`), and keep the effects in the loop.
+- Folds over hand-threaded state. Use `reduce`, `->`/`cond->`, `update-in` before you reach for `loop` or an atom; an atom is for real concurrency.
+- Pass arguments, not dynamic vars. A dynamic var is for test seams and cross-cutting context (`*features*`, `*color*`), not for handing a value to a callee.
+- One fn per shape. Before writing a second copy of a helper (clip, find an event, run a shell command, "+N more" footers), use or extract the shared one in `lume.kernel`.
+- Names and docstrings say what comes back: `-why` returns refusal text or nil, `?` returns a boolean, `!` has effects. Feature-map lambdas stay one-liners; anything longer gets a name.
+
 ## Working here
 
 - Version control is jj (colocated with git): `jj st`, `jj commit -m`.
