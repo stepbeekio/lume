@@ -1182,10 +1182,10 @@
             (is (= {:type :notify/sent :on :ask/opened :ask/id "a2" :text "which db?\nlume answer a2" :by "human"}
                    (select-keys (last (notices s)) [:type :on :ask/id :item/id :text :by])))
             (is (not (str/includes? (slurp (str (fs/path s "log.edn"))) "secret-topic"))))
-          (testing "a worker's ask names its item: LUME_NTFY reaches the spawn"
+          (testing "a worker's ask names its item: lume sends it, since LUME_NTFY doesn't reach the spawn"
             (cli/spawn s *root* [id "--agent" "asker"])
             (is (= "lume: ask a3 on i1 from s1" (first (last @got))))
-            (is (= {:ask/id "a3" :item/id "i1" :by "s1"} (select-keys (last (notices s)) [:ask/id :item/id :by]))))
+            (is (= {:ask/id "a3" :item/id "i1" :by "human"} (select-keys (last (notices s)) [:ask/id :item/id :by]))))
           (testing "a failed send is logged and never fails the command"
             (reset! status 500)
             (is (= "a4" (cli/ask s ["still there?"])))
@@ -1203,6 +1203,84 @@
           (is (re-find #"^lume: drive stopped$" (first (last @got))))
           (is (= {:type :notify/sent :on :drive/stopped :text "d2 logged no events"}
                  (select-keys (last (notices s)) [:type :on :text])))))
+      (finally (httpkit/server-stop! server)))))
+
+(defmethod agents/command :env-peek [_ _prompt _opts]
+  ["sh" "-c" "echo \"ntfy=[$LUME_NTFY$LUME_NTFY_REPLY$LUME_NTFY_OTHER]\""])
+
+;; i74: a stub ntfy server. POSTs to /notify are recorded; GET /reply/json
+;; streams whatever replies the test queues, a poll at a time.
+(deftest asks-are-answered-from-the-phone
+  (let [got (atom [])
+        gets (atom [])
+        replies (java.util.concurrent.LinkedBlockingQueue.)
+        server (httpkit/run-server
+                (fn [r]
+                  (if (= :post (:request-method r))
+                    (do (swap! got conj {:title (get-in r [:headers "title"]) :actions (get-in r [:headers "actions"])
+                                         :body (slurp (:body r))})
+                        {:status 200})
+                    (do (swap! gets conj (str (:uri r) "?" (:query-string r)))
+                        {:status 200
+                         :body (str/join "\n" (cons "{\"event\":\"open\"}"
+                                                    (for [m (remove nil? [(.poll replies 300 java.util.concurrent.TimeUnit/MILLISECONDS)])]
+                                                      (json/generate-string {:id (str (random-uuid)) :event "message" :message m}))))})))
+                {:port 0 :legacy-return-value? false})
+        base (str "http://localhost:" (httpkit/server-port server))
+        reply-url (str base "/reply?auth=tok")
+        sent (fn [n] (loop [i 0] (cond (>= (count @got) n) (nth @got (dec n))
+                                       (< i 200) (do (Thread/sleep 100) (recur (inc i))))))
+        code-of #(second (re-find #"\ncode (\w+)\n" (:body %)))
+        log #(slurp (str (fs/path % "log.edn")))]
+    (try
+      (binding [cli/*ntfy* (str base "/notify") cli/*ntfy-reply* reply-url cli/*reconnect-ms* 50]
+        (testing "a spawn's env has no LUME_NTFY*"
+          (let [s (new-session "goal")]
+            (cli/item-add s ["peek"])
+            (cli/spawn s *root* ["i1" "--agent" "env-peek"])
+            (is (str/includes? (slurp (:out (first (filter #(= :spawn/started (:type %)) (store/read-events s)))))
+                               "ntfy=[]"))))
+        (testing "a reply that names the ask and quotes its code answers it, and the drive carries on"
+          (let [s (new-session "goal")
+                _ (cli/item-add s ["do it"])
+                drive (future (reset! *driver-turns* [(lume-cmd "ask" "ship it? (y/n)")])
+                              (binding [*out* (java.io.StringWriter.)]
+                                (cli/drive s *root* ["--agent" "driver" "--turns" "3" "--wait-on-ask"])))
+                {:keys [title actions] :as n} (sent 1)
+                code (code-of n)]
+            (is (= "lume: ask a1 from d1" title) "sent once, by the drive, with a code")
+            (is (re-matches #"[a-z2-9]{8}" code))
+            (is (= (str "http, Yes, " reply-url ", method=POST, body=a1 " code " yes, clear=true; "
+                        "http, No, " reply-url ", method=POST, body=a1 " code " no, clear=true")
+                   actions))
+            (doseq [m ["a1 wrong yes" (str "a2 " code " yes") "just yes" (str " A1 " (str/upper-case code) "  yes, ship it\n")]]
+              (.put replies m))
+            (is (= "drive stopped: d2 logged no events" (deref drive 30000 "timed out")))
+            (is (= [{:ask/id "a1" :answer "yes, ship it" :by "human" :via :ntfy}]
+                   (map #(select-keys % [:ask/id :answer :by :via]) (filter #(= :ask/answered (:type %)) (store/read-events s)))))
+            (is (re-find #"^/reply/json\?auth=tok&since=\d+$" (first @gets)) "the token stays in the query")
+            (testing "the code and the URLs are never logged"
+              (is (not-any? #(str/includes? (log s) %) [code "tok" "/reply" "/notify"])))))
+        (testing "an answer at the terminal ends the wait, and spends the code"
+          (let [s (new-session "goal")
+                _ (cli/item-add s ["do it"])
+                before (count @got)
+                drive (future (reset! *driver-turns* [(lume-cmd "ask" "which db?")])
+                              (binding [*out* (java.io.StringWriter.)]
+                                (cli/drive s *root* ["--agent" "driver" "--turns" "3" "--wait-on-ask"])))
+                n (sent (inc before))
+                code (code-of n)]
+            (is (nil? (:actions n)) "free text: no buttons")
+            (cli/answer s ["a1" "postgres"])
+            (is (= "drive stopped: d2 logged no events" (deref drive 30000 "timed out")))
+            (.put replies (str "a1 " code " sqlite"))
+            (Thread/sleep 500)
+            (is (= ["postgres"] (keep #(when (= :ask/answered (:type %)) (:answer %)) (store/read-events s)))))))
+      (testing "--wait-on-ask needs both URLs"
+        (let [s (new-session "goal")]
+          (binding [cli/*ntfy* "http://localhost:1/x"]
+            (is (thrown-with-msg? Exception #"needs LUME_NTFY .* and LUME_NTFY_REPLY"
+                                  (cli/drive s *root* ["--wait-on-ask"]))))))
       (finally (httpkit/server-stop! server)))))
 
 (deftest drive-runs-driver-turns

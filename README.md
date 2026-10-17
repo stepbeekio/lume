@@ -114,6 +114,17 @@ Status is coloured at a terminal (set `NO_COLOR` to turn that off). `watch` isn'
 
 Or don't watch at all: set `LUME_NTFY` to an [ntfy](https://ntfy.sh) topic URL (`export LUME_NTFY=https://ntfy.sh/<secret-topic>`) and subscribe to it on your phone. Each ask that opens (an agent's `lume ask`, a plateau's) and each drive that stops sends a short message with the ask id, question, item and session. Each send is logged as `:notify/sent`, or `:notify/failed` with why; a failed send never fails the command. The URL is never logged, since anyone who knows the topic can read it. Unset, nothing is sent.
 
+Or answer from the phone: `lume drive --wait-on-ask` doesn't hand back on an open ask. It sends the ask with a one-time code and waits for a reply on a second topic, `LUME_NTFY_REPLY`, of the form `a12 <code> <answer>`. The code is random, held only in the drive's memory and never logged, so a reply counts only if it names an open ask and quotes that ask's code: a leaked URL can't answer, and a stale reply can't land on a newer ask. A good reply is logged as `:ask/answered :by human :via :ntfy` and the drive carries on; `lume answer` at the terminal works too, and spends the code. A question ending `(y/n)` gets Yes and No buttons on the notification that post the reply for you; answer anything else by publishing to the reply topic from the ntfy app or web app.
+
+Set it up so the reply topic really is yours, since anything that can publish to it answers as you:
+
+- Reserve both topics on ntfy (or your own server) with deny-all access for everyone else, under random names, and make an access token for lume. The phone app is logged in as you.
+- Put the token in the URLs, as ntfy's `?auth=` param or as user info: `export LUME_NTFY='https://:tk_…@ntfy.sh/<topic>'`, `export LUME_NTFY_REPLY='https://:tk_…@ntfy.sh/<reply-topic>'`. lume takes only URLs, so a self-hosted server works the same.
+- Never point `LUME_NTFY_REPLY` at an open topic: anyone who can write it can answer an ask (they'd still need its code, which is in the notification, so keep that topic closed too). The Yes/No buttons carry the reply URL, token included, in the notification.
+- Keep secrets out of questions: ntfy messages aren't end-to-end encrypted.
+
+Neither URL reaches the processes lume starts (workers, drivers, gates): `LUME_NTFY*` is emptied in their env, so a worker can't read a code or post its own answer. lume sends its workers' asks itself.
+
 When it stops on a question:
 
 ```
