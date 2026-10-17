@@ -310,7 +310,7 @@
             (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
           (if (zero? n)
             "--turns 0: not driving; lume drive, or drive by hand from lume status"
-            (drive/drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
+            (drive/drive session root {:turns n :agent agent})))))))
 
 (def feature
   {:name "spec"

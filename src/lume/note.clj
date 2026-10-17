@@ -8,6 +8,19 @@
 
 (def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
 
+(defn add!
+  "Log a note (pinned with :pin) and return its :note/added event."
+  [session text & {:keys [pin]}]
+  (kernel/append! session (fn [events]
+                            (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
+                                     :text text}
+                              pin (assoc :pinned true)))))
+
+(defn added-line
+  "The line that answers a note: \"noted n1\", or \"pinned n1\"."
+  [e]
+  (str (if (:pinned e) "pinned " "noted ") (:note/id e)))
+
 (defn note [session [a b]]
   (let [usage note-usage]
     (case a
@@ -22,11 +35,7 @@
       (let [pin (= "--pin" a)
             text (if pin b a)]
         (when (str/blank? text) (fail! usage))
-        (let [e (kernel/append! session (fn [events]
-                                          (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
-                                                   :text text}
-                                            pin (assoc :pinned true))))]
-          (str (if pin "pinned " "noted ") (:note/id e)))))))
+        (added-line (add! session text :pin pin))))))
 
 ;; Note show: what status clips. The text in full, who noted it and when, and
 ;; whether it's pinned.

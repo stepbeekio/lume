@@ -62,7 +62,7 @@
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])
-  (with-out-str (is (string? (drive/drive s *root* ["--agent" "policy-driver" "--turns" "3"]))))
+  (with-out-str (is (string? (drive/drive s *root* {:agent "policy-driver" :turns 3}))))
   (last (keep :why (store/read-events s))))
 
 (defn- result-line [usd]

@@ -175,11 +175,11 @@
   [session sid {:keys [id] :as item} [step why]]
   (case step
     nil nil
-    :left-open (str "\n" id " left open: " why " · " (note/note session [(str id " left open, not gated: " why)]))
+    :left-open (str "\n" id " left open: " why " · " (note/added-line (note/add! session (str id " left open, not gated: " why))))
     :decide (str "\n" id " left open to decide"
                  (when (:gate item) (str " · " (item/gate-summary (item/run-gate session item))))
                  " · lume item close " id " done|dropped \"<why>\"")
-    :gate (str "\n" (try (item/item-close session [id "done" (str "gate passed after " sid)])
+    :gate (str "\n" (try (item/close-line (item/close! session id :done (str "gate passed after " sid)))
                          (catch clojure.lang.ExceptionInfo e (ex-message e))))))
 
 (defn- run-spawn [session root id agent]

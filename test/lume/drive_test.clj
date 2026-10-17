@@ -56,7 +56,7 @@
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])
-  (with-out-str (is (string? (drive/drive s *root* ["--agent" "drive-driver" "--turns" "3"]))))
+  (with-out-str (is (string? (drive/drive s *root* {:agent "drive-driver" :turns 3}))))
   (last (keep :why (store/read-events s))))
 
 (deftest drive-runs-driver-turns
@@ -86,7 +86,7 @@
     (let [s (new-session "goal")]
       (item/item-add s ["do it" "--gate" "true"])
       (reset! *driver-turns* [(lume-cmd "spawn" "i1" "--agent" "drive-worker")])
-      (with-out-str (drive/drive s *root* ["--agent" "drive-driver" "--turns" "1"]))
+      (with-out-str (drive/drive s *root* {:agent "drive-driver" :turns 1}))
       (is (= "no open items, and no turn left to review s1's changes: they're uncommitted"
              (last (keep :why (store/read-events s)))))))
   (testing "a request that names no agent runs the drive's"
@@ -112,9 +112,9 @@
         cli-file (str (fs/path src "lume" "cli.clj"))
         write-cli (fn [code] (str "printf '" code "' > " cli-file))
         execs (atom [])
-        drive (fn [& opts]
+        drive (fn [& [opts]]
                 (with-out-str (drive/drive (store/current-session *root*) *root*
-                                           (into ["--agent" "drive-driver" "--turns" "3"] opts))))
+                                           (merge {:agent "drive-driver" :turns 3} opts))))
         s (new-session "goal")]
     (spit cli-file "(ns lume.cli)")
     (item/item-add s ["never done"])
@@ -128,7 +128,7 @@
         (is (= 1 (count @*driver-calls*)) "turn 2 runs in the new process"))
       (testing "the new process carries on from that turn, without starting another drive"
         (reset! *driver-turns* ["true"])
-        (drive "--from" "2")
+        (drive {:from 2})
         (let [events (store/read-events s)]
           (is (= 1 (count (filter #(= :drive/started (:type %)) events))))
           (is (= 2 (:n (last (filter #(= :drive/turn (:type %)) events)))))))

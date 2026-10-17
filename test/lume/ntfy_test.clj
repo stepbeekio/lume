@@ -51,7 +51,7 @@
 
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
-  (with-out-str (is (string? (drive/drive s *root* ["--agent" "ntfy-driver" "--turns" "3"]))))
+  (with-out-str (is (string? (drive/drive s *root* {:agent "ntfy-driver" :turns 3}))))
   (last (keep :why (store/read-events s))))
 
 (defmethod agents/command :ntfy-asker [_ _prompt _opts]
@@ -150,7 +150,7 @@
                 out (java.io.StringWriter.)
                 drive (future (reset! *driver-turns* [(lume-cmd "ask" "ship it? (y/n)")])
                               (binding [*out* out]
-                                (drive/drive s *root* ["--agent" "ntfy-driver" "--turns" "3" "--wait-on-ask"])))
+                                (drive/drive s *root* {:agent "ntfy-driver" :turns 3 :wait true})))
                 {:keys [title actions] :as n} (sent 1)
                 code (code-of n)]
             (is (= "lume: ask a1 from d1" title) "sent once, by the drive, with a code")
@@ -179,7 +179,7 @@
                   gets-before (count @gets)
                   drive (future (reset! *driver-turns* [(lume-cmd "ask" "which db: (a) postgres, (b) sqlite, or (c) one \"ünusual\"; I pick a")])
                                 (binding [*out* (java.io.StringWriter.)]
-                                  (drive/drive s *root* ["--agent" "ntfy-driver" "--turns" "3" "--wait-on-ask"])))
+                                  (drive/drive s *root* {:agent "ntfy-driver" :turns 3 :wait true})))
                   n (sent (inc before))
                   code (code-of n)]
               (is (= (str/join "; " (for [[label l] [["a: postgres" "a"] ["b: sqlite" "b"] ["c: one nusual" "c"]]]
@@ -196,7 +196,7 @@
         (let [s (new-session "goal")]
           (binding [ntfy/*ntfy* nil ntfy/*ntfy-reply* "http://localhost:1/x"]
             (is (thrown-with-msg? Exception #"needs LUME_NTFY "
-                                  (drive/drive s *root* ["--wait-on-ask"]))))))
+                                  (#'drive/drive-args ["--wait-on-ask"]))))))
       (finally (httpkit/server-stop! server)))))
 
 (deftest lettered-asks-have-options

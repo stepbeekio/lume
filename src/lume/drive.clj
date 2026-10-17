@@ -140,7 +140,7 @@
     (when-not (and (empty? pos) turns (pos? turns) from (pos? from)) (fail! drive-usage))
     (when (and wait (not ntfy/*ntfy*))
       (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent, and answers read unless LUME_NTFY_REPLY is set)"))
-    {:turns turns :agent (or agent kernel/*default-agent*) :from from :wait (boolean wait)}))
+    {:turns turns :agent agent :from from :wait (boolean wait)}))
 
 (defn- source-changed?
   "Whether the lume source changed since the drive loaded it and the new code
@@ -151,8 +151,8 @@
         broken (when (not= now @loaded) (load-error src))]
     (when broken
       (reset! loaded now)
-      (note/note session [(str "drive: lume source changed but doesn't load, so turn " n
-                               " runs the code the drive started with: " broken)]))
+      (note/add! session (str "drive: lume source changed but doesn't load, so turn " n
+                              " runs the code the drive started with: " broken)))
     (and (not= now @loaded) (not broken))))
 
 (defn- next-step
@@ -201,10 +201,13 @@
           nil))))
 
 (defn drive
-  "Run up to --turns driver turns, each followed by the spawns it requested,
-  printing a line per turn and spawn. Returns why it stopped."
-  [session root args]
-  (let [{:keys [turns agent from wait] :as opts} (drive-args args)
+  "Run up to :turns (10) driver turns from turn :from (1), each followed by
+  the spawns it requested, with :agent (the default agent) and, on :wait, an
+  open ask waited on rather than stopped at. Prints a line per turn and spawn
+  and returns why it stopped."
+  [session root opts]
+  (let [{:keys [turns agent from wait] :as opts} (merge {:turns 10 :from 1 :wait false} opts
+                                                        {:agent (or (:agent opts) kernel/*default-agent*)})
         codes (atom {})
         replies (delay (ntfy/subscribe! (ntfy/reply-url)))
         src *source*
@@ -246,7 +249,7 @@
             :drive/handed-back {:req #{:drive/id :why}}
             :drive/reloaded {:req #{:n}}}
    :commands [{:path ["drive"] :needs #{:session :root} :usage drive-usage
-               :run (fn [{:keys [session root]} args] (drive session root args))
+               :run (fn [{:keys [session root]} args] (drive session root (drive-args args)))
                :help "lume drive [--turns N] [--agent A] [--wait-on-ask]
                                             driver turns until an ask is open, a budget is reached, no items are open, or N (10) run;
                                             workers run the drive's agent. LUME_NTFY=<ntfy topic URL>: each

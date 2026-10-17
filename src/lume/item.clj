@@ -53,29 +53,45 @@
 ;; dropped --revert restores the working copy to the item's before row (lume.measure).
 (def ^:private item-close-usage "usage: lume item close <id> done|dropped [--revert] \"<why>\"")
 
-(defn item-close [session args]
+(defn- item-close-args
+  "item close's args as {:id :disposition :why :revert}, or a usage error."
+  [args]
   (let [usage item-close-usage
-        [[id disposition why] {revert "--revert"}] (kernel/take-flags args #{} #{"--revert"} usage)
-        revert (boolean revert)]
+        [[id disposition why] {revert "--revert"}] (kernel/take-flags args #{} #{"--revert"} usage)]
     (when-not (#{"done" "dropped"} disposition) (fail! usage))
     (when (and revert (not= "dropped" disposition)) (fail! "--revert goes with dropped;" usage))
-    (let [events (kernel/read-events session)
-          item (open-item events id)
-          ran (when (and (= "done" disposition) (:gate item)) (run-gate session item))
-          _ (when (and ran (not (zero? (:exit ran))))
-              (fail! id "not done: gate" (gate-summary ran)))
-          restored (when revert
-                     (measure/revert! (:repo (kernel/project events)) id (get-in (kernel/project events) [:items id])))]
+    {:id id :disposition (keyword disposition) :why why :revert (boolean revert)}))
+
+(defn close!
+  "Close item id as disposition (:done or :dropped) for why. Done runs the
+  item's gate first and fails if it fails; :revert restores the working copy
+  to the item's before row. Returns {:id :disposition :ran :restored}: the
+  :gate/ran event and what was restored, either nil."
+  [session id disposition why & {:keys [revert]}]
+  (let [events (kernel/read-events session)
+        item (open-item events id)
+        ran (when (and (= :done disposition) (:gate item)) (run-gate session item))]
+    (when (and ran (not (zero? (:exit ran))))
+      (fail! id "not done: gate" (gate-summary ran)))
+    (let [restored (when revert (measure/revert! (:repo (kernel/project events)) id item))]
       (kernel/append! session (fn [events]
                                 (open-item events id)
-                                (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
-                                         :why why}
+                                (cond-> {:type :item/closed :item/id id :disposition disposition :why why}
                                   ran (assoc :gate/id (:gate/id ran))
                                   restored (merge restored))))
-      (str id " " disposition (when ran (str " · " (gate-summary ran)))
-           (when restored
-             (str " · restored " (if (:jj-commit restored) (str "jj " (:jj-commit restored)) (str "git " (:commit restored)))
-                  " from " (:measure/id restored)))))))
+      {:id id :disposition disposition :ran ran :restored restored})))
+
+(defn close-line
+  "close!'s result as one line: the disposition, the gate run, what was restored."
+  [{:keys [id disposition ran restored]}]
+  (str id " " (name disposition) (when ran (str " · " (gate-summary ran)))
+       (when restored
+         (str " · restored " (if (:jj-commit restored) (str "jj " (:jj-commit restored)) (str "git " (:commit restored)))
+              " from " (:measure/id restored)))))
+
+(defn item-close [session args]
+  (let [{:keys [id disposition why revert]} (item-close-args args)]
+    (close-line (close! session id disposition why :revert revert))))
 
 ;; Item show: what status clips. The intent and gate in full, then the item's
 ;; events: its own, its spawns' (bar progress), and notes and asks naming it.
