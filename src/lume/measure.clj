@@ -194,24 +194,29 @@
                                                           (str/split #" "))]
                          {:change change :jj-commit commit}))))))
 
+(defn- plateau-question
+  "Under cadence on plateau K, the question for the row mid that makes K (2K,
+  …) rows without a new best on item id, or nil: the item is closed, an ask
+  about it is already open, or the row didn't count (failed, or no numbers)."
+  [state id mid]
+  (let [k (:plateau (:cadence state))
+        {:keys [stale best-id higher counted]} (get-in state [:items id :plateau])]
+    (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
+               (= :open (get-in state [:items id :state]))
+               (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks state))))
+      (str id " plateaued: " stale " measurement rows without a new best"
+           (when best-id (str " (best " best-id ", " (direction-text (sort higher)) ")"))
+           "; keep going, change approach, or stop?"))))
+
 (defn- plateau-ask!
-  "Under cadence on plateau K, the row that makes K (2K, …) rows without a new
-  best on its item hands back to the human: an ask is opened and returned,
-  unless the item is closed or an ask about it is already open. A row that
-  didn't count (failed, or no numbers) never asks."
+  "Hand a plateaued item back to the human: open the plateau-question ask
+  for row mid and return it, or nil when there is no question."
   [session {id :item/id mid :measure/id}]
   (kernel/append! session
                   (fn [events]
-                    (let [s (kernel/project events)
-                          k (:plateau (:cadence s))
-                          {:keys [stale best-id higher counted]} (get-in s [:items id :plateau])]
-                      (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
-                                 (= :open (get-in s [:items id :state]))
-                                 (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
-                        {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
-                         :question (str id " plateaued: " stale " measurement rows without a new best"
-                                        (when best-id (str " (best " best-id ", " (direction-text (sort higher)) ")"))
-                                        "; keep going, change approach, or stop?")})))))
+                    (when-let [q (plateau-question (kernel/project events) id mid)]
+                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
+                       :question q}))))
 
 (defn- measure-fields
   "A row's fields from its runs: the kept runs summarized, the spec, and which
@@ -341,6 +346,44 @@
     (when (and id (not (items id))) (fail! "no such item:" id))
     (ledger-text ledger id n sid)))
 
+;; Each row carries the row it's compared with: the latest earlier one of the
+;; same spec (command, runs and drop) that passed with numbers and shares a
+;; number's name with it, so a misparsed row isn't the baseline for a good one.
+;; One good row is kept per set of names. Once a spawn has started on the item,
+;; that is the latest such row before the spawn (its before row, :before-rows),
+;; so every row after it compares with the code as it was, not with the row
+;; before. A row a spawn took before its edits (:before-spawn) is the new before
+;; row, and isn't counted towards a plateau: no change was tried.
+
+(defn- value-names [row] (set (keys (:values row))))
+
+(defn- row-base
+  "The row that row e on item is compared with, or nil."
+  [item e]
+  (let [spec (measure-spec e)]
+    (last (filter #(some (value-names %) (keys (:values e)))
+                  (or (get-in item [:before-rows spec]) (get-in item [:good-measures spec]))))))
+
+(defn- item-after-row
+  "The projected item once row e is folded in: its latest row (with its
+  base), its plateau, its good rows, and its before rows if e is one."
+  [item e]
+  (let [spec (measure-spec e)
+        base (row-base item e)
+        p (plateau (get-in item [:plateaus spec]) e)]
+    (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
+      (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus spec] p))
+      (and (zero? (:exit e)) (seq (:values e)))
+      (update-in [:good-measures spec] (fn [rows] (conj (filterv #(not= (value-names %) (value-names e)) rows) e)))
+      (:before-spawn e) (#(assoc % :before-rows (:good-measures %))))))
+
+(defn- fold-ran
+  "Fold a :measure/ran row into its item, then append the row as compared
+  when it was taken to the ledger (every row, newest last: lume ledger)."
+  [s e]
+  (let [s (update-in s [:items (:item/id e)] item-after-row e)]
+    (update s :ledger conj (get-in s [:items (:item/id e) :last-measure]))))
+
 (def feature
   {:name "measure"
    :events {:item/measuring {:req #{:item/id :measure}}
@@ -349,31 +392,7 @@
    :fold {:item/measuring (fn [s e]
                             (update-in s [:items (:item/id e)]
                                        #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before]))))
-          ;; Each row carries the row it's compared with: the latest earlier one
-          ;; of the same spec (command, runs and drop) that passed with numbers
-          ;; and shares a number's name with it, so a misparsed row isn't the
-          ;; baseline for a good one. One good row is kept per set of names.
-          ;; Once a spawn has started on the item, that is the latest such row
-          ;; before the spawn (its before row, :before-rows), so every row after
-          ;; it compares with the code as it was, not with the row before. A row
-          ;; a spawn took before its edits (:before-spawn) is the new before row,
-          ;; and isn't counted towards a plateau: no change was tried.
-          :measure/ran (fn [s e]
-                         (let [s (update-in s [:items (:item/id e)]
-                                            (fn [item]
-                                              (let [names #(set (keys (:values %)))
-                                                    base (last (filter #(some (names %) (keys (:values e)))
-                                                                       (or (get-in item [:before-rows (measure-spec e)])
-                                                                           (get-in item [:good-measures (measure-spec e)]))))
-                                                    p (plateau (get-in item [:plateaus (measure-spec e)]) e)]
-                                                (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
-                                                  (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (measure-spec e)] p))
-                                                  (and (zero? (:exit e)) (seq (:values e)))
-                                                  (update-in [:good-measures (measure-spec e)]
-                                                             (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
-                                                  (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
-                           ;; Every row, newest last, as compared when it was taken: lume ledger.
-                           (update s :ledger conj (get-in s [:items (:item/id e) :last-measure]))))
+          :measure/ran fold-ran
           :spawn/started (fn [s e] (update-in s [:items (:item/id e)] #(assoc % :before-rows (:good-measures %))))}
    :item-lines (fn [_ item now] (when (:measure item) [(measure-line now item)]))
    :commands [{:path ["item" "measure"] :needs :session :usage item-measure-usage
