@@ -297,6 +297,13 @@
                (for [k (keys (System/getenv)) :when (str/starts-with? k "LUME_NTFY")] [k ""]))
          env))
 
+(defn sh-out
+  "cmd's trimmed stdout, run in root, or nil when it fails or prints nothing."
+  [root & cmd]
+  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
+         (when (zero? exit) (not-empty (str/trim out))))
+       (catch Exception _ nil)))
+
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session.
 

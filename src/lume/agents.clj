@@ -11,7 +11,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.kernel :as kernel]
-            [lume.status :as status]
+            [lume.features :as features]
             [lume.store :as store]))
 
 (defmulti command
@@ -366,7 +366,7 @@
 
 (defn -main [& [cmd opts prompt]]
   (case cmd
-    "acp" (System/exit (binding [kernel/*features* status/features]
+    "acp" (System/exit (binding [kernel/*features* features/all]
                          (acp-bridge (assoc (edn/read-string opts)
                                             :session (not-empty (System/getenv "LUME_SESSION"))
                                             :spawn (System/getenv "LUME_SPAWNED_AS"))

@@ -3,10 +3,12 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.agents :as agents]
-            [lume.cli :as cli]
             [lume.drive :as drive]
+            [lume.features :as features]
+            [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.ntfy :as ntfy]
+            [lume.session :as session]
             [lume.status :as status]
             [lume.store :as store]))
 
@@ -22,7 +24,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
-                  kernel/*features* cli/features
+                  kernel/*features* features/all
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   drive/*source* nil ntfy/*ntfy* nil drive/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])]
@@ -30,7 +32,7 @@
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
-  (cli/init *root* [goal])
+  (session/init *root* [goal])
   (store/current-session *root*))
 
 (defn- lume-cmd [& args]
@@ -59,7 +61,7 @@
 (deftest drive-runs-driver-turns
   (testing "a driver's spawn is a request, run after its turn"
     (let [s (new-session "goal")]
-      (cli/item-add s ["do it" "--gate" "true"])
+      (item/item-add s ["do it" "--gate" "true"])
       ;; LUME_ACTOR=claude is what Claude Code's settings.json env does to the
       ;; driver's commands (i46): the drive's id must still win.
       (is (= "no open items"
@@ -81,20 +83,20 @@
         (is (= 2 (count @*driver-calls*))))))
   (testing "with no turn left for the closing turn, the stop line says the diff is uncommitted"
     (let [s (new-session "goal")]
-      (cli/item-add s ["do it" "--gate" "true"])
+      (item/item-add s ["do it" "--gate" "true"])
       (reset! *driver-turns* [(lume-cmd "spawn" "i1" "--agent" "drive-worker")])
       (with-out-str (drive/drive s *root* ["--agent" "drive-driver" "--turns" "1"]))
       (is (= "no open items, and no turn left to review s1's changes: they're uncommitted"
              (last (keep :why (store/read-events s)))))))
   (testing "a request that names no agent runs the drive's"
     (let [s (new-session "goal")]
-      (cli/item-add s ["do it" "--gate" "true"])
+      (item/item-add s ["do it" "--gate" "true"])
       (drive! s (lume-cmd "spawn" "i1") "echo worked")
       (is (= :drive-driver (:agent (first (filter #(= :spawn/started (:type %)) (store/read-events s))))))
       (is (= [:driver nil] (take 2 (map :role @*driver-calls*))) "the worker ran the drive's agent, as a worker")))
   (testing "it stops when a turn logs nothing, when turns run out, and when an ask is open"
     (let [s (new-session "goal")]
-      (cli/item-add s ["never done"])
+      (item/item-add s ["never done"])
       (is (= "d1 logged no events" (drive! s "true")))
       (is (= "3 turns run" (drive! s (lume-cmd "note" "a") (lume-cmd "note" "b") (lume-cmd "note" "c"))))
       (is (= ["d2" "d3" "d4"] (map :by (:notes (status/project (store/read-events s)))))
@@ -114,7 +116,7 @@
                                            (into ["--agent" "drive-driver" "--turns" "3"] opts))))
         s (new-session "goal")]
     (spit cli-file "(ns lume.cli)")
-    (cli/item-add s ["never done"])
+    (item/item-add s ["never done"])
     (binding [drive/*source* src
               drive/*reexec* (fn [src args] (swap! execs conj [src args]) "re-exec'd")]
       (testing "when the source changes under it and loads, the drive re-execs on it from the next turn"

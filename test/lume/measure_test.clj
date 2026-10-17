@@ -3,12 +3,16 @@
             [babashka.process :as p]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [lume.agent :as agent]
             [lume.agents :as agents]
-            [lume.cli :as cli]
+            [lume.ask :as ask]
+            [lume.features :as features]
+            [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.measure :as measure]
             [lume.ntfy :as ntfy]
             [lume.policy :as policy]
+            [lume.session :as session]
             [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store])
@@ -22,14 +26,14 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
-                  kernel/*features* cli/features
+                  kernel/*features* features/all
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   ntfy/*ntfy* nil]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
-  (cli/init *root* [goal])
+  (session/init *root* [goal])
   (store/current-session *root*))
 
 ;; Workers for spawns on measured items: one that fails, one that adds a line to made.
@@ -51,14 +55,14 @@
     (is (= {"value" -0.5} (measure/measure-values "delta -.5")))
     (is (= {"value" 5.0} (measure/measure-values "done in 5."))))
   (let [s (new-session "goal")
-        id (cli/item-add s ["bc" "--gate" "false"])]
+        id (item/item-add s ["bc" "--gate" "false"])]
     (measure/item-measure s [id "echo secs=.915 915454175"])
     (testing "a bc-style row logs secs, not the trailing number as value"
       (is (re-matches #"m1 i1 secs=0\.915 · \d+\.\ds" (measure/measure s [id])))
       (is (= {"secs" 0.915}
              (:values (get-in (status/project (store/read-events s)) [:items id :last-measure]))))))
   (let [s (new-session "goal")
-        id (cli/item-add s ["faster" "--gate" "false"])]
+        id (item/item-add s ["faster" "--gate" "false"])]
     (is (thrown-with-msg? Exception #"no measurement" (measure/measure s [id])))
     (is (thrown-with-msg? Exception #"usage" (measure/item-measure s [id])))
     (measure/item-measure s [id "pwd; echo build_s=12.5 hits=3"])
@@ -69,7 +73,7 @@
         (is (= {"build_s" 12.5 "hits" 3} (:values last-measure)))
         (is (str/includes? (slurp (:out last-measure)) (str (fs/file-name *root*))))))
     (testing "a spawn measures what its worker left, before the gate"
-      (let [out (cli/spawn s *root* [id "--agent" "fails"])]
+      (let [out (agent/spawn s *root* [id "--agent" "fails"])]
         (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds · vs m1\ni1 left open to decide · g1 fail exit 1" out) out)))
     (testing "a failing measurement is still a row, with where its output is"
       (measure/item-measure s [id "echo oops; exit 2"])
@@ -79,7 +83,7 @@
     (testing "status shows the latest row on the item; item show has them all"
       (let [st (status/render "sess" (store/read-events s) (Instant/now))]
         (is (re-find #"(?m)^            gate false .*\n            measure echo oops; exit 2 · m3 exit 2 · no numbers · " st) st))
-      (let [shown (cli/item-show s [id])]
+      (let [shown (item/item-show s [id])]
         (is (str/includes? shown "measure echo oops; exit 2"))
         (is (re-find #"measure/ran m1 build_s=12\.5 hits=3 · " shown))
         (is (re-find #"measure/ran m3 no numbers · \d+\.\ds · fail exit 2" shown))))
@@ -122,10 +126,10 @@
     (testing "lume measure --help prints usage"
       (is (= "usage: lume measure <id>" (kernel/run ["measure" "--help"]))))
     (testing "a closed item can still be measured"
-      (cli/item-close s [id "dropped" "x"])
+      (item/item-close s [id "dropped" "x"])
       (is (str/starts-with? (measure/measure s [id]) "m11 i1 ")))
     (testing "lume ledger: every row, closed items' too, each against its base, newest last"
-      (let [other (cli/item-add s ["other" "--gate" "true"])]
+      (let [other (item/item-add s ["other" "--gate" "true"])]
         (is (= "i2 has no measurement rows" (measure/ledger *root* [other])))
         (measure/item-measure s [other "echo q=4"])
         (measure/measure s [other])
@@ -157,7 +161,7 @@
            (measure/summarize-runs [{:ms 10 :output "a=1 b=0.1"} {:ms 30 :output "a=3 b=0.2"}
                                     {:ms 20 :output "a=2"}]))))
   (let [s (new-session "goal")
-        id (cli/item-add s ["faster" "--gate" "true"])
+        id (item/item-add s ["faster" "--gate" "true"])
         f (str (fs/create-temp-file))
         n (str (fs/create-temp-file))
         ;; Each run reads and bumps a counter, so runs differ: the first is a slow warm-up.
@@ -199,7 +203,7 @@
                        (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
         (is (re-find #"measure sh .*… ×10 drop 1 · m7 t=1 · " line) line)
         (is (<= (count line) 110) line))
-      (let [shown (cli/item-show s [id])
+      (let [shown (item/item-show s [id])
             {:keys [env]} (last (store/read-events s))]
         (is (string? (:host env)))
         (is (number? (:load env)))
@@ -213,18 +217,18 @@
       (let [head (str/trim (:out (p/shell {:dir *root* :out :string} "git" "rev-parse" "--short" "HEAD")))]
         (rows 1)
         (is (= head (:commit (:env (last (store/read-events s))))))
-        (is (str/includes? (cli/item-show s [id]) (str " at " head " [human]")))))))
+        (is (str/includes? (item/item-show s [id]) (str " at " head " [human]")))))))
 
 (deftest a-spawn-has-a-before-row
   (let [s (new-session "goal")
-        id (cli/item-add s ["fewer lines" "--gate" "true"])
+        id (item/item-add s ["fewer lines" "--gate" "true"])
         item #(get-in (status/project (store/read-events s)) [:items id])]
     (spit (str (fs/path *root* "made")) "start\n")
     (is (= "i1 measure echo t=$(wc -l < made) before" (measure/item-measure s [id "echo t=$(wc -l < made)" "--before"])))
     (is (re-matches #"m1 i1 t=1 · \d+\.\ds" (measure/measure s [id])))
     (is (re-matches #"m2 i1 t=1 · \d+\.\ds · vs m1" (measure/measure s [id])) "before any spawn, the row before is the base")
     (testing "--before: a spawn measures first, then after, a pair"
-      (let [out (cli/spawn s *root* [id "--agent" "appends"])]
+      (let [out (agent/spawn s *root* [id "--agent" "appends"])]
         (is (re-find #"^m3 i1 t=1 · \d+\.\ds · vs m2 · before s1\ns1 i1 exit 0" out) out)
         (is (re-find #"\nm4 i1 t=2\(\+1\) · \d+\.\ds · vs m3\ni1 left open to decide · g1 pass" out) out))
       (is (= "s1" (:before-spawn (first (filter #(= "m3" (:measure/id %)) (store/read-events s)))))))
@@ -236,7 +240,7 @@
       (is (= 3 (:stale (:plateau (item)))) "m2, m4 and m5 after the best, m1"))
     (testing "without --before, the base is the latest row before the spawn"
       (is (= "i1 measure echo t=$(wc -l < made)" (measure/item-measure s [id "echo t=$(wc -l < made)"])))
-      (let [out (cli/spawn s *root* [id "--agent" "appends"])]
+      (let [out (agent/spawn s *root* [id "--agent" "appends"])]
         (is (re-find #"^s2 i1 exit 0" out) out)
         (is (re-find #"\nm6 i1 t=4\(\+1\) · \d+\.\ds · vs m5\n" out) out))
       (is (re-matches #"m7 i1 t=4\(\+1\) · \d+\.\ds · vs m5" (measure/measure s [id]))))
@@ -266,10 +270,10 @@
 (defn- measured-spawn
   "An item measured once, then a spawn that appends to made: its before row is m1."
   [s]
-  (let [id (cli/item-add s ["fewer lines" "--gate" "true"])]
+  (let [id (item/item-add s ["fewer lines" "--gate" "true"])]
     (measure/item-measure s [id "echo t=$(wc -l < made)"])
     (measure/measure s [id])
-    (cli/spawn s *root* [id "--agent" "appends"])
+    (agent/spawn s *root* [id "--agent" "appends"])
     id))
 
 (deftest dropped-revert-restores-the-jj-commit
@@ -278,17 +282,17 @@
   (vcs! "jj" "commit" "-m" "start")
   (let [s (new-session "goal")]
     (testing "refused without a before row, and only with dropped"
-      (let [id (cli/item-add s ["unspawned" "--gate" "true"])]
+      (let [id (item/item-add s ["unspawned" "--gate" "true"])]
         (measure/item-measure s [id "echo t=1"])
         (measure/measure s [id])
-        (is (thrown-with-msg? Exception #"i1 has no before row" (cli/item-close s [id "dropped" "--revert" "no"])))
-        (is (thrown-with-msg? Exception #"--revert goes with dropped" (cli/item-close s [id "done" "--revert" "no"])))
+        (is (thrown-with-msg? Exception #"i1 has no before row" (item/item-close s [id "dropped" "--revert" "no"])))
+        (is (thrown-with-msg? Exception #"--revert goes with dropped" (item/item-close s [id "done" "--revert" "no"])))
         (is (= :open (get-in (status/project (store/read-events s)) [:items id :state])))))
     (let [id (measured-spawn s)
           c (:jj-commit (:env (first (filter #(= "m2" (:measure/id %)) (store/read-events s)))))]
       (is (= "start\nmore\n" (made)))
       (is (re-matches #"[0-9a-f]{12}" (str c)))
-      (is (= (str id " dropped · restored jj " c " from m2") (cli/item-close s [id "dropped" "--revert" "slower"])))
+      (is (= (str id " dropped · restored jj " c " from m2") (item/item-close s [id "dropped" "--revert" "slower"])))
       (is (= "start\n" (made)))
       (is (= {:disposition :dropped :why "slower" :measure/id "m2" :jj-commit c}
              (select-keys (closed s id) [:disposition :why :measure/id :jj-commit]))))))
@@ -302,28 +306,28 @@
         head (str/trim (:out (vcs! "git" "rev-parse" "--short" "HEAD")))]
     (testing "without --revert, dropped changes nothing"
       (let [id (measured-spawn s)]
-        (is (= (str id " dropped") (cli/item-close s [id "dropped" "slower"])))
+        (is (= (str id " dropped") (item/item-close s [id "dropped" "slower"])))
         (is (= "start\nmore\n" (made)))
         (is (nil? (:commit (closed s id))))))
     (testing "--revert restores the before row's commit, a committed change too"
       (let [id (measured-spawn s)]
         (vcs! "git" "commit" "-qam" "more")
         (is (= "start\nmore\nmore\n" (made)))
-        (is (= (str id " dropped · restored git " head " from m3") (cli/item-close s [id "dropped" "--revert" "slower"])))
+        (is (= (str id " dropped · restored git " head " from m3") (item/item-close s [id "dropped" "--revert" "slower"])))
         (is (= "start\n" (made)))
         (is (= ["m3" head] ((juxt :measure/id :commit) (closed s id))))))
     (testing "a failed restore is refused and the item stays open"
       (let [id (measured-spawn s)]
         (fs/delete-tree (fs/path *root* ".git"))
         (vcs! "git" "init" "-q")
-        (is (thrown-with-msg? Exception #"not reverted: git restore .* failed" (cli/item-close s [id "dropped" "--revert" "x"])))
+        (is (thrown-with-msg? Exception #"not reverted: git restore .* failed" (item/item-close s [id "dropped" "--revert" "x"])))
         (is (= :open (get-in (status/project (store/read-events s)) [:items id :state])))))))
 
 ;; Plateaus: under cadence on plateau K, K rows without a new best ask the human.
 (defn- plateau-session []
   (let [s (new-session "goal")]
     (policy/cadence-cmd s ["batch 5 on plateau 2"])
-    (cli/item-add s ["work" "--gate" "false"])
+    (item/item-add s ["work" "--gate" "false"])
     s))
 
 (deftest plateau-counts-only-evidence
@@ -350,12 +354,12 @@
       (testing "the row that makes K asks, but a failed row after it doesn't ask again"
         (row)
         (is (str/includes? (row) "\nask a1 i1 plateaued: 2 measurement rows"))
-        (cli/answer s ["a1" "keep going"])
+        (ask/answer s ["a1" "keep going"])
         (fs/delete (fs/path *root* "t"))
         (is (not (str/includes? (row) "ask"))))
       (testing "a closed item opens no plateau ask"
         (t "secs=9") (row)
-        (cli/item-close s ["i1" "dropped" "enough"])
+        (item/item-close s ["i1" "dropped" "enough"])
         (is (not (str/includes? (row) "ask")))
         (is (= {:stale 4 :best-id "m7"} (plateau)))))))
 

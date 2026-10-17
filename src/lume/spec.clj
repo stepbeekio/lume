@@ -15,9 +15,14 @@
 
   Only :goal is required. `problems` is the schema, `from-state` folds a
   session back into a spec, and `events` are the log events a spec starts a
-  session with."
+  session with. lume check, lume spec and lume run are its commands."
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [lume.drive :as drive]
+            [lume.kernel :as kernel :refer [actor clip-to fail! human-only! take-flags]]
+            [lume.measure :as measure]
+            [lume.policy :as policy]
+            [lume.store :as store]))
 
 ;; The schema: each key's check returns a problem (without its path) or nil.
 
@@ -25,22 +30,22 @@
 (defn- whole? [v] (and (int? v) (not (neg? v))))
 (defn- positive? [v] (and (int? v) (pos? v)))
 
-(defn- check [pred what] (fn [v] (when-not (pred v) (str "must be " what ", got " (pr-str v)))))
+(defn- must [pred what] (fn [v] (when-not (pred v) (str "must be " what ", got " (pr-str v)))))
 
-(def ^:private command (check text? "a command (non-blank string)"))
+(def ^:private command (must text? "a command (non-blank string)"))
 
 (def ^:private item-keys
-  {:intent (check text? "a non-blank string")
+  {:intent (must text? "a non-blank string")
    :gate command
    :measure command
-   :runs (check positive? "a positive whole number")
-   :drop (check whole? "a whole number")
-   :higher (check #(and (sequential? %) (seq %) (every? text? %)) "a vector of number names")
-   :before (check boolean? "true or false")
+   :runs (must positive? "a positive whole number")
+   :drop (must whole? "a whole number")
+   :higher (must #(and (sequential? %) (seq %) (every? text? %)) "a vector of number names")
+   :before (must boolean? "true or false")
    :items nil})
 
 (def ^:private spec-keys
-  {:goal (check text? "a non-blank string")
+  {:goal (must text? "a non-blank string")
    :gate command
    :allow nil
    :budget nil
@@ -99,17 +104,17 @@
           (if-not (map? budget)
             [[[:budget] (str "must be a map of :usd :minutes :spawns, got " (pr-str budget))]]
             (keys-problems [:budget] budget
-                           {:usd (check #(and (number? %) (not (neg? %))) "a non-negative number")
-                            :minutes (check #(and (number? %) (not (neg? %))) "a non-negative number")
-                            :spawns (check whole? "a whole number")}
+                           {:usd (must #(and (number? %) (not (neg? %))) "a non-negative number")
+                            :minutes (must #(and (number? %) (not (neg? %))) "a non-negative number")
+                            :spawns (must whole? "a whole number")}
                            [])))
         (when (contains? spec :cadence)
           (if-not (map? cadence)
             [[[:cadence] (str "must be a map of :batch :gate-fail :plateau, got " (pr-str cadence))]]
             (keys-problems [:cadence] cadence
-                           {:batch (check positive? "a positive whole number")
-                            :gate-fail (check boolean? "true or false")
-                            :plateau (check positive? "a positive whole number")}
+                           {:batch (must positive? "a positive whole number")
+                            :gate-fail (must boolean? "true or false")
+                            :plateau (must positive? "a positive whole number")}
                            [])))
         (when (contains? spec :items)
           (items-problems [:items] items)))))))
@@ -220,3 +225,105 @@
         item-lines (when (seq items)
                      [(str ":items [" (items-str 9 items) "]")])]
     (str "{" (str/join "\n " (concat top item-lines)) "}")))
+
+;; Commands: check validates a file; spec prints the current session's
+;; harness, folded from the log, so it can be saved and reused.
+
+(def ^:private check-usage "usage: lume check <spec.edn>")
+
+(defn- checked-spec
+  "The spec in the file at path, or a failure listing every problem with it."
+  [path]
+  (let [[s unreadable] (read-spec path)
+        ps (if unreadable [unreadable] (problems s))
+        shown (take 20 ps)]
+    (when (seq ps)
+      (fail! (str/join "\n" (concat [(str path ": " (count ps) (if (= 1 (count ps)) " problem" " problems"))]
+                                   (map #(str "  " (clip-to 200 (problem-text %))) shown)
+                                   (when (> (count ps) (count shown))
+                                     [(str "  +" (- (count ps) (count shown)) " more")])))))
+    s))
+
+(defn- items-text [items]
+  (let [items (rest (tree-seq map? :items {:items items}))]
+    (str (count items) (if (= 1 (count items)) " item" " items")
+         (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured")))))
+
+(defn check [[path & extra]]
+  (when (or (str/blank? path) (seq extra)) (fail! check-usage))
+  (str path ": ok · " (items-text (:items (checked-spec path)))))
+
+(def ^:private spec-usage "usage: lume spec [--all]")
+
+(defn show-spec [session args]
+  (when (seq (remove #{"--all"} args)) (fail! spec-usage))
+  (let [all (boolean (some #{"--all"} args))
+        state (kernel/project (kernel/read-events session))
+        closed (count (remove #(= :open (:state %)) (vals (:items state))))]
+    (str (pretty (from-state state :all all))
+         (when (and (not all) (pos? closed))
+           (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all")))))
+
+;; Run: a spec starts a session, as the events its commands would log, then
+;; baselines each measurement and drives. The harness is the same whoever runs
+;; it; --turns 0 stops after the baselines, for a human to drive by hand. A
+;; spec's policy is the human's as on the command line: its allow, and a
+;; cadence above the default ceiling. A fresh session has no limits, so a
+;; budget only adds them, which anyone may.
+
+(def ^:private run-usage "usage: lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude|claude-acp|devin]")
+
+(defn- spec-policy
+  "The human-only parts of a spec, as text for the confirmation, or nil."
+  [{:keys [allow cadence]}]
+  (let [raises (when cadence
+                 (policy/cadence-raises policy/default-cadence (merge policy/default-cadence cadence)))]
+    (not-empty (str/join "; " (cond-> []
+                                (seq allow) (conj (str "workers may run " (str/join " · " (distinct allow))))
+                                raises (conj (str "the cadence ceiling is raised: " raises)))))))
+
+(defn run-spec [root args]
+  (let [[[path goal & extra] {[turns & ts] "--turns" [agent & as] "--agent"}]
+        (take-flags args #{"--turns" "--agent"} run-usage)
+        n (if turns (parse-long turns) 10)]
+    (when (or (str/blank? path) (and goal (str/blank? goal)) (seq extra) (seq ts) (seq as)
+              (not (and n (<= 0 n))))
+      (fail! run-usage))
+    (let [sp (cond-> (checked-spec path) goal (assoc :goal goal))
+          say #(do (println %) (flush))]
+      (when-let [policy (spec-policy sp)]
+        (human-only! (str "only the human runs a spec that sets policy (" policy "); remove it from the spec,"
+                          " or ask with lume ask \"<question>\"")
+                     (str "Start a session where " policy ".") "yes"))
+      ;; Run from inside a session (a worker or driver), the new one starts
+      ;; alongside it: the repo's current session stays the human's.
+      (let [within store/*session*
+            session (store/new-session! root :current (not within))]
+        (doseq [e (events sp root)]
+          (kernel/append! session (constantly (assoc e :by (actor)))))
+        (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
+        (when within
+          (say (str "not made current: run inside " (store/session-id within)
+                    "; lume status " (store/session-id session) " reads it")))
+        (binding [store/*session* (when within session)]
+          (doseq [item (->> (vals (:items (kernel/project (kernel/read-events session)))) (filter :measure) (sort-by :order))]
+            (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
+          (if (zero? n)
+            "--turns 0: not driving; lume drive, or drive by hand from lume status"
+            (drive/drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
+
+(def feature
+  {:name "spec"
+   :commands [{:path ["check"] :needs :none :usage check-usage
+               :run (fn [_ args] (check args))
+               :help "lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any"}
+              {:path ["spec"] :needs :session :usage spec-usage
+               :run (fn [{:keys [session]} args] (show-spec session args))
+               :help "lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)"}
+              {:path ["run"] :needs :root :usage run-usage
+               :run (fn [{:keys [root]} args] (run-spec root args))
+               :help "lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]
+                                            check a spec, start a session from it, baseline its measurements,
+                                            then drive (--turns 0: don't). A spec's allow, or a cadence above
+                                            every-spawn, is the human's. Run by a worker or driver, the new
+                                            session starts alongside; the current one stays"}]})

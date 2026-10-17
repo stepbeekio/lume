@@ -3,13 +3,17 @@
             [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [lume.agent :as agent]
             [lume.agents :as agents]
-            [lume.cli :as cli]
+            [lume.ask :as ask]
             [lume.drive :as drive]
+            [lume.features :as features]
+            [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.measure :as measure]
             [lume.ntfy :as ntfy]
             [lume.policy :as policy]
+            [lume.session :as session]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -26,7 +30,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
-                  kernel/*features* cli/features
+                  kernel/*features* features/all
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   drive/*source* nil ntfy/*ntfy* nil drive/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])]
@@ -34,7 +38,7 @@
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
-  (cli/init *root* [goal])
+  (session/init *root* [goal])
   (store/current-session *root*))
 
 ;; A worker that does nothing and fails, and a driver that runs the next of
@@ -67,7 +71,7 @@
 (deftest budgets-bound-spend
   (let [s (new-session "goal")
         spent #(:spent (status/project (store/read-events s)))]
-    (cli/item-add s ["work" "--gate" "false"])
+    (item/item-add s ["work" "--gate" "false"])
     (testing "with no flags it prints spent against limits"
       (is (= "budget $0.00 · 0 spawns · 0 min" (policy/budget s []))))
     (testing "bad values are usage errors"
@@ -87,7 +91,7 @@
       (policy/budget s ["--spawns" "4"])
       (is (= 4 (:spawns (:budget (status/project (store/read-events s)))))))
     (testing "spawns and drive turns are spent: count, dollars and minutes"
-      (cli/spawn s *root* ["i1" "--agent" "policy-worker"])
+      (agent/spawn s *root* ["i1" "--agent" "policy-worker"])
       (store/append! s (constantly {:type :spawn/exited :spawn/id "s9" :cost-usd 1.25 :ms 90000}))
       (is (= "d2 logged no events" (drive! s (str (lume-cmd "note" "a") "; " (result-line 0.5)))))
       (let [{:keys [ms cost-usd]} (first (filter #(= :drive/exited (:type %)) (store/read-events s)))]
@@ -100,11 +104,11 @@
                    (status/render "sess" (store/read-events s) (Instant/now)))))
     (testing "past a limit, spawns are refused and drive stops with the reason"
       (policy/budget s ["--spawns" "1"])
-      (cli/item-add s ["more" "--gate" "true"])
+      (item/item-add s ["more" "--gate" "true"])
       (is (thrown-with-msg? Exception #"^budget reached: 1 of 1 spawns — only the human raises it, with lume budget --spawns N$"
-                            (cli/spawn s *root* ["i2" "--agent" "policy-worker"])))
+                            (agent/spawn s *root* ["i2" "--agent" "policy-worker"])))
       (binding [kernel/*actor* "d9"]
-        (is (thrown-with-msg? Exception #"budget reached" (cli/spawn s *root* ["i2"])) "a driver's request too"))
+        (is (thrown-with-msg? Exception #"budget reached" (agent/spawn s *root* ["i2"])) "a driver's request too"))
       (is (re-find #"^budget reached: 1 of 1 spawns" (drive! s (lume-cmd "note" "never"))))
       (is (empty? @*driver-calls*) "no turn starts past a limit")
       (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "reached: no new spawns or turns")))
@@ -124,7 +128,7 @@
 (defn- cadence-session [cadence & gates]
   (let [s (new-session "goal")]
     (when cadence (policy/cadence-cmd s [cadence]))
-    (doseq [g gates] (cli/item-add s ["work" "--gate" g]))
+    (doseq [g gates] (item/item-add s ["work" "--gate" g]))
     s))
 
 (deftest cadence-rules-are-data
@@ -162,13 +166,13 @@
       (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2"))))
       (is (= ["i1"] (started s)))
       (binding [kernel/*actor* "d9"]
-        (cli/spawn s *root* ["i2"])
+        (agent/spawn s *root* ["i2"])
         (is (thrown-with-msg? Exception #"^cadence every-spawn allows 1 spawn request\(s\) a turn, and this turn has made them"
-                              (cli/spawn s *root* ["i2"]))))))
+                              (agent/spawn s *root* ["i2"]))))))
   (testing "batch N: up to N requests a turn, run in order, failed gates and all"
     (let [s (cadence-session "batch 3" "false" "false" "false" "false")]
       (binding [kernel/*actor* "d9"]
-        (is (re-find #"\(1 of 3 this turn\)" (cli/spawn s *root* ["i1"]))))
+        (is (re-find #"\(1 of 3 this turn\)" (agent/spawn s *root* ["i1"]))))
       (is (= "d2 logged no events" (drive! s (spawn-cmds "i3" "i2" "i1" "i4"))))
       (is (= ["i3" "i2" "i1"] (started s)))
       (is (nil? (handed-back s))))))
@@ -195,10 +199,10 @@
       (testing "one ask at a time per item, and a new best resets the count"
         (measure/measure s ["i1"])
         (is (not (str/includes? (measure/measure s ["i1"]) "ask")) "m5 is 4 rows on, but a1 is open")
-        (cli/answer s ["a1" "keep going"])
+        (ask/answer s ["a1" "keep going"])
         (measure/measure s ["i1"])
         (is (str/includes? (measure/measure s ["i1"]) "\nask a2 i1 plateaued: 6 measurement rows"))
-        (cli/answer s ["a2" "keep going"])
+        (ask/answer s ["a2" "keep going"])
         (spit (str (fs/path *root* "t")) "t=4")
         (is (re-find #"^m8 i1 t=4\(-1\)" (measure/measure s ["i1"])))
         (is (= {:stale 0 :best-id "m8"}

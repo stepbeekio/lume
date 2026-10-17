@@ -3,11 +3,15 @@
             [cheshire.core :as json]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [lume.agent :as agent]
             [lume.agents :as agents]
-            [lume.cli :as cli]
+            [lume.ask :as ask]
             [lume.drive :as drive]
+            [lume.features :as features]
+            [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.ntfy :as ntfy]
+            [lume.session :as session]
             [lume.store :as store]
             [org.httpkit.server :as httpkit]))
 
@@ -22,7 +26,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
-                  kernel/*features* cli/features
+                  kernel/*features* features/all
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   drive/*source* nil ntfy/*ntfy* nil drive/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom [])]
@@ -30,7 +34,7 @@
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
-  (cli/init *root* [goal])
+  (session/init *root* [goal])
   (store/current-session *root*))
 
 (defn- lume-cmd [& args]
@@ -64,34 +68,34 @@
         notices (fn [s] (filter #(#{:notify/sent :notify/failed} (:type %)) (store/read-events s)))]
     (try
       (let [s (new-session "goal")
-            id (cli/item-add s ["ask from a worker"])]
+            id (item/item-add s ["ask from a worker"])]
         (testing "unset LUME_NTFY sends and logs nothing"
-          (cli/ask s ["quiet?"])
+          (ask/ask s ["quiet?"])
           (is (empty? @got))
           (is (empty? (notices s))))
         (binding [ntfy/*ntfy* url]
           (testing "an ask is sent and logged, without the URL"
-            (is (= "a2" (cli/ask s ["which db?"])))
+            (is (= "a2" (ask/ask s ["which db?"])))
             (is (= [["lume: ask a2 from human" (str "which db?\nlume answer a2\n" (store/session-id s))]] @got))
             (is (= {:type :notify/sent :on :ask/opened :ask/id "a2" :text "which db?\nlume answer a2" :by "human"}
                    (select-keys (last (notices s)) [:type :on :ask/id :item/id :text :by])))
             (is (not (str/includes? (slurp (str (fs/path s "log.edn"))) "secret-topic"))))
           (testing "a worker's ask names its item: lume sends it, since LUME_NTFY doesn't reach the spawn"
-            (cli/spawn s *root* [id "--agent" "ntfy-asker"])
+            (agent/spawn s *root* [id "--agent" "ntfy-asker"])
             (is (= "lume: ask a3 on i1 from s1" (first (last @got))))
             (is (= {:ask/id "a3" :item/id "i1" :by "human"} (select-keys (last (notices s)) [:ask/id :item/id :by]))))
           (testing "a failed send is logged and never fails the command"
             (reset! status 500)
-            (is (= "a4" (cli/ask s ["still there?"])))
+            (is (= "a4" (ask/ask s ["still there?"])))
             (is (= {:type :notify/failed :ask/id "a4" :error "HTTP 500"}
                    (select-keys (last (notices s)) [:type :ask/id :error])))
             (binding [ntfy/*ntfy* "http://localhost:1/nothing-listens"]
-              (is (= "a5" (cli/ask s ["anyone?"])))
+              (is (= "a5" (ask/ask s ["anyone?"])))
               (is (= :notify/failed (:type (last (notices s)))))))))
       (testing "a drive's stop is sent"
         (reset! status 200)
         (let [s (new-session "goal")]
-          (cli/item-add s ["do it" "--gate" "false"])
+          (item/item-add s ["do it" "--gate" "false"])
           (binding [ntfy/*ntfy* url]
             (drive! s (lume-cmd "note" "looked")))
           (is (re-find #"^lume: drive stopped$" (first (last @got))))
@@ -136,13 +140,13 @@
       (binding [ntfy/*ntfy* topic-url ntfy/*ntfy-reply* nil ntfy/*reconnect-ms* 50]
         (testing "a spawn's env has no LUME_NTFY*"
           (let [s (new-session "goal")]
-            (cli/item-add s ["peek"])
-            (cli/spawn s *root* ["i1" "--agent" "ntfy-peek"])
+            (item/item-add s ["peek"])
+            (agent/spawn s *root* ["i1" "--agent" "ntfy-peek"])
             (is (str/includes? (slurp (:out (first (filter #(= :spawn/started (:type %)) (store/read-events s)))))
                                "ntfy=[]"))))
         (testing "on one topic, a reply that names the ask and quotes its code answers it, and the drive carries on"
           (let [s (new-session "goal")
-                _ (cli/item-add s ["do it"])
+                _ (item/item-add s ["do it"])
                 out (java.io.StringWriter.)
                 drive (future (reset! *driver-turns* [(lume-cmd "ask" "ship it? (y/n)")])
                               (binding [*out* out]
@@ -170,7 +174,7 @@
         (testing "with LUME_NTFY_REPLY, answers come from that topic; an answer at the terminal ends the wait, and spends the code"
           (binding [ntfy/*ntfy* (str base "/notify") ntfy/*ntfy-reply* (str base "/reply")]
             (let [s (new-session "goal")
-                  _ (cli/item-add s ["do it"])
+                  _ (item/item-add s ["do it"])
                   before (count @got)
                   gets-before (count @gets)
                   drive (future (reset! *driver-turns* [(lume-cmd "ask" "which db: (a) postgres, (b) sqlite, or (c) one \"ünusual\"; I pick a")])
@@ -182,7 +186,7 @@
                                       (str "http, " label ", " base "/reply, method=POST, body=a1 " code " " l ", clear=true")))
                      (:actions n))
                   "lettered options: a button each, posting the letter")
-              (cli/answer s ["a1" "postgres"])
+              (ask/answer s ["a1" "postgres"])
               (is (= "drive stopped: d2 logged no events" (deref drive 30000 "timed out")))
               (is (re-find #"^/reply/json\?since=\d+$" (nth @gets gets-before)))
               (.put replies (str "a1 " code " sqlite"))

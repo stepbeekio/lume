@@ -2,9 +2,11 @@
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [lume.cli :as cli]
+            [lume.features :as features]
+            [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.note :as note]
+            [lume.session :as session]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -17,13 +19,13 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
-                  kernel/*features* cli/features
+                  kernel/*features* features/all
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
 (defn- new-session [goal]
-  (cli/init *root* [goal])
+  (session/init *root* [goal])
   (store/current-session *root*))
 
 (deftest note-show-reads-a-note-in-full
@@ -46,7 +48,7 @@
 
 (deftest pinned-notes-outlive-the-window
   (let [s (new-session "goal")
-        id (cli/item-add s ["read the notes"])]
+        id (item/item-add s ["read the notes"])]
     (is (= "pinned n1" (note/note s ["--pin" "run bb test before done"])))
     (dotimes [n 12] (note/note s [(str "chatter " n)]))
     (is (= "noted n14" (note/note s ["latest"])))

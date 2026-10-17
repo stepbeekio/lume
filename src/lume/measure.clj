@@ -2,13 +2,13 @@
   "Measurements: an item's numbers as ledger rows. lume item measure, lume
   measure, lume ledger, dropped --revert's restore, the plateau ask, the
   :item/measuring and :measure/ran folds, and the measure line under an item.
-  A measurement runs after every spawn on its item too; lume.cli's spawn calls
-  run-measure and measure-row for that."
+  A measurement runs after every spawn on its item too; lume.agent's spawn
+  calls run-measure and measure-row for that."
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [actor ago clip-to fail! next-id open-item paint
-                                            run-in-repo! run-repeated secs take-flags]]))
+                                            run-in-repo! run-repeated secs sh-out take-flags]]))
 
 ;; A measurement spec is its command and how it repeats; rows compare only
 ;; with rows of the same spec. One run, none dropped, is the default.
@@ -174,11 +174,6 @@
     (cond-> {:ms (long (median (map :ms kept)))}
       (seq values) (assoc :values values)
       (seq spread) (assoc :spread spread))))
-
-(defn- sh-out [root & cmd]
-  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
-         (when (zero? exit) (not-empty (str/trim out))))
-       (catch Exception _ nil)))
 
 (defn- environment
   "Where a row was taken, so a noisy one can be explained: host, 1-minute
