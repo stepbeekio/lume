@@ -173,6 +173,9 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 ## The human
 
 - When only the human can decide, `lume ask \"<question>\"` and stop that line of work.
+  Keep the question to one or two lines: the question, lettered options, and your
+  recommendation, e.g. `lume ask \"i45 plateaued: (a) keep going (b) try X (c) stop? I'd pick c; see n120\"`.
+  Put the context in a `lume note` first and name it (n120) in the question.
 - Never run `lume allow` or `lume answer`: permissions and answers are the human's,
   and lume refuses them from agents anyway: they need a terminal and a typed confirmation.
 - Never push. Commit locally; pushing is up to the human.

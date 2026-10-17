@@ -35,16 +35,38 @@
 ;; Human-only commands need more than LUME_ACTOR, which an agent running as your
 ;; uid can forge (a1): an interactive stdin and a typed confirmation. Spawns and
 ;; drives run with no tty, so they can't pass.
+(defn- tty? []
+  (zero? (:exit (p/shell {:in :inherit :out :string :err :string :continue true} "test" "-t" "0"))))
+
 (defn- tty-confirm
   "True if stdin is a terminal and the user types `expected` at the prompt."
   [prompt expected]
-  (and (zero? (:exit (p/shell {:in :inherit :out :string :err :string :continue true} "test" "-t" "0")))
+  (and (tty?)
        (do (binding [*out* *err*] (print (str prompt " Type " expected " to confirm: ")) (flush))
            (= expected (some-> (read-line) str/trim)))))
 
 (def ^:dynamic *confirm*
   "(fn [prompt expected]) → true when a human at a terminal confirmed. Tests bind it."
   tty-confirm)
+
+(defn- tty-read
+  "What the user types after printing `shown` and `prompt`, or nil with no terminal."
+  [shown prompt]
+  (when (tty?)
+    (binding [*out* *err*] (println shown) (print prompt) (flush))
+    (read-line)))
+
+(def ^:dynamic *read-line*
+  "(fn [shown prompt]) → a line typed at a terminal, or nil without one. Tests bind it."
+  tty-read)
+
+(defn- columns
+  "The terminal's width, for text a human reads in full: stty, then COLUMNS, then 100."
+  []
+  (or (some->> (p/shell {:in :inherit :out :string :err :string :continue true} "stty" "size")
+               :out (re-find #"^\d+ (\d+)") second parse-long (max 40))
+      (some-> (System/getenv "COLUMNS") parse-long)
+      100))
 
 (defn- human-only!
   "Refuse unless the actor is the human and a human at a terminal confirms."
@@ -411,22 +433,65 @@
 
 ;; Questions for the human. Anyone may ask; only the human answers, and the
 ;; answer reaches status and workers alongside the notes.
-(defn ask [session [question]]
-  (when (str/blank? question) (fail! "usage: lume ask \"<question>\""))
-  (:ask/id (store/append! session (fn [events]
-                                    {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
-                                     :question question :by (actor)}))))
+(defn- ask-item
+  "The item an ask concerns: a plateau's, or the asking worker's."
+  [events opened]
+  (or (:item/id opened)
+      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
 
+;; With no question: what status clips, for the human to read and answer. Open
+;; asks in full, oldest first, wrapped to the terminal.
+(defn- open-asks [session width]
+  (let [events (store/read-events session)
+        open (->> (vals (:asks (status/project events)))
+                  (filter #(= :open (:state %)))
+                  (sort-by #(parse-long (subs (:id %) 1))))
+        opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) events))]
+    (if (empty? open)
+      "no open asks"
+      (str/join "\n\n"
+                (for [{:keys [id question]} open
+                      :let [e (opened id)
+                            item (ask-item events e)]]
+                  (str/join "\n"
+                            (concat
+                             [(str id " · asked " (subs (:t e) 0 16) " by " (:by e)
+                                   (when item (str " · item " item (when (:measure/id e) (str " at " (:measure/id e))))))]
+                             (map #(str "  " %) (status/wrap question (- width 2)))
+                             [(str "  → lume answer " id "   (or lume answer " id " \"<text>\")")])))))))
+
+(defn ask [session [question & extra]]
+  (cond (and (nil? question) (nil? extra)) (open-asks session (columns))
+        (or (str/blank? question) (seq extra)) (fail! "usage: lume ask \"<question>\"")
+        :else (:ask/id (store/append! session (fn [events]
+                                                {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
+                                                 :question question :by (actor)})))))
+
+;; With no text, at a terminal, the human reads the question in full and types
+;; the answer at the prompt; the typed-id confirmation still follows.
 (defn answer [session [id text]]
-  (when (or (str/blank? id) (str/blank? text)) (fail! "usage: lume answer <id> \"<text>\""))
-  (human-only! "only the human answers asks; record what you think with lume note"
-               (str "Answer " id ": " text) id)
-  (store/append! session (fn [events]
-                           (case (get-in (status/project events) [:asks id :state])
-                             nil (fail! "no such ask:" id)
-                             :answered (fail! id "is already answered")
-                             :open {:type :ask/answered :ask/id id :answer text :by (actor)})))
-  (str id " answered"))
+  (when (str/blank? id) (fail! "usage: lume answer <id> [\"<text>\"]"))
+  (when-not (= "human" (actor)) (fail! "only the human answers asks; record what you think with lume note"))
+  (let [open-ask (fn [events]
+                   (let [{:keys [state] :as a} (get-in (status/project events) [:asks id])]
+                     (case state
+                       nil (fail! "no such ask:" id)
+                       :answered (fail! id "is already answered")
+                       :open a)))
+        text (or text
+                 (let [{:keys [question]} (open-ask (store/read-events session))]
+                   (or (some-> (*read-line* (str/join "\n" (cons (str id ":") (map #(str "  " %) (status/wrap question (- (columns) 2)))))
+                                            "Answer: ")
+                               str/trim)
+                       (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
+                              "agents ask with lume ask \"<question>\""))))]
+    (when (str/blank? text) (fail! "usage: lume answer <id> [\"<text>\"]"))
+    (human-only! "only the human answers asks; record what you think with lume note"
+                 (str "Answer " id ": " text) id)
+    (store/append! session (fn [events]
+                             (open-ask events)
+                             {:type :ask/answered :ask/id id :answer text :by (actor)}))
+    (str id " answered")))
 
 ;; Ask show: what status clips. The question in full, who asked and when, the
 ;; item it concerns (a plateau's, or the asking worker's), and the answer.
@@ -436,8 +501,7 @@
         opened (or (some #(when (and (= :ask/opened (:type %)) (= id (:ask/id %))) %) events)
                    (fail! "no such ask:" id))
         answered (some #(when (and (= :ask/answered (:type %)) (= id (:ask/id %))) %) events)
-        item (or (:item/id opened)
-                 (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events))
+        item (ask-item events opened)
         at #(str (subs (:t %) 0 16) " by " (:by %))]
     (str/join "\n"
               (concat
@@ -447,7 +511,7 @@
                (when item [(str "item     " item (when (:measure/id opened) (str " at " (:measure/id opened))))])
                (if answered
                  [(str "answer   " (:answer answered)) (str "answered " (at answered))]
-                 [(str "answer   none yet; only the human answers: lume answer " id " \"<text>\"")])))))
+                 [(str "answer   none yet; only the human answers: lume answer " id)])))))
 
 (defn- worker-prompt [events item]
   (let [{:keys [goal notes]} (status/project events)
@@ -575,7 +639,8 @@
              "wrong with `lume note` or `lume item add`. A turn that logs nothing stops the drive."
              "Otherwise pick one: add, gate or close items; `lume spawn <id>` to put a worker on an"
              "open item (it runs after you exit); `lume note` a lesson; or `lume ask \"<question>\"`"
-             "when only the human can decide (the loop stops until they answer)."
+             "when only the human can decide (the loop stops until they answer). Keep an ask to one or two"
+             "lines: question, lettered options, your pick; put the context in a note and name it (n12)."
              "The cadence says how many spawns a turn may request (every-spawn: one; batch N: N, run"
              "in order). Set your own within the human's ceiling, e.g. `lume cadence batch 3 on gate-fail`."
              ""
@@ -975,8 +1040,10 @@ lume item show <id>                         one item in full: intent, gate, disp
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
 lume ask \"<question>\"                       put a question to the human; open asks top status
+lume ask                                    open asks in full, wrapped to the terminal, each with its answer command
 lume ask show <id>                          one ask in full: question, who asked and when, its item, its answer
-lume answer <id> \"<text>\"                   answer an ask (human at a tty: retype the id); answers join the notes
+lume answer <id> [\"<text>\"]                 answer an ask (human at a tty: retype the id); no text: prompt for it
+                                            after the full question. Answers join the notes
 lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)
 lume budget [--usd N] [--spawns N] [--minutes N]
                                             limit the session's agent spend (spawns and drive turns); with no

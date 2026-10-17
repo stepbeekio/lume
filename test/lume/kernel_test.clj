@@ -24,7 +24,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
-                  cli/*confirm* (constantly true)
+                  cli/*confirm* (constantly true) cli/*read-line* (constantly nil)
                   cli/*source* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
                   agents/*claude-home* (str (fs/path home "claude"))]
@@ -511,8 +511,8 @@
         (is (every? #(<= (count %) 110) lines) out)
         (doseq [section ["goal" "asks" "allow" "budget" "pinned" "open" "closed" "notes" "recent" "next"]]
           (is (re-find (re-pattern (str "(?m)^" section " ")) out) section))
-        (is (str/includes? out "+5 more") "8 open asks, 3 shown")
-        (is (str/includes? out "+14 more") "20 pinned, 6 shown")
+        (is (str/includes? out "+6 more asks — lume ask") "8 open asks of 3 lines each, 2 whole asks shown")
+        (is (str/includes? out "+17 more") "20 pinned, 3 shown: long asks take the room of 3")
         (is (str/includes? out "+49 more") "50 notes and 2 answers, 3 shown beside pinned")
         (is (str/includes? out "+16 more") "20 closed, 4 shown")
         (is (str/includes? out "+176 more items") "180 open with gates, 4 whole items shown")
@@ -587,14 +587,22 @@
 (deftest ask-show-reads-an-ask-in-full
   (let [s (new-session "goal")
         id (cli/item-add s ["pick a db"])
-        long-q (str "which db? " (apply str (repeat 100 "q")) " the end")]
+        long-q (str "which db? " (str/join " " (repeat 60 "word")) " the end")]
     (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id id}))
     (binding [cli/*actor* "s1"] (cli/ask s [long-q]))
     (cli/ask s ["short?"])
-    (testing "status clips a long question and points at ask show"
+    (testing "status wraps a long question to 3 lines, clips the rest and points at ask show"
       (let [out (status/render "sess" (store/read-events s) (Instant/now))]
-        (is (re-find #"(?m)^asks    a1 which db\? q+… — lume ask show a1$" out))
+        (is (re-find #"(?m)^asks    a1 which db\? (word ?)+\n {11}(word ?)+\n {11}(word ?)+… — lume ask show a1$" out) out)
         (is (re-find #"(?m)^        a2 short\?$" out) "a question that fits has no hint")))
+    (testing "lume ask with no question: open asks in full, each with its answer command"
+      (let [out (cli/ask s [])]
+        (is (str/includes? (str/replace out #"\s+" " ") long-q) "the whole question, unclipped")
+        (is (re-find #"(?m)^a1 · asked \S+ by s1 · item i1$" out))
+        (is (re-find #"(?m)^  → lume answer a1 " out))
+        (is (re-find #"(?m)^a2 · asked \S+ by human$" out))
+        (is (every? #(<= (count %) 100) (str/split-lines out)) "wrapped to the terminal (100 without one)"))
+      (is (thrown-with-msg? Exception #"usage: lume ask" (cli/ask s ["a" "b"]))))
     (testing "the question in full, who asked and when, the asking worker's item"
       (let [out (cli/ask-show s ["a1"])]
         (is (str/includes? out (str "question " long-q)))
@@ -612,7 +620,37 @@
       (binding [store/*session* s]
         (is (str/starts-with? (cli/run ["ask" "show" "a2"]) "a2 answered")))
       (is (thrown-with-msg? Exception #"no such ask: a9" (cli/ask-show s ["a9"])))
-      (is (thrown-with-msg? Exception #"usage: lume ask show <id>" (cli/ask-show s []))))))
+      (is (thrown-with-msg? Exception #"usage: lume ask show <id>" (cli/ask-show s []))))
+    (testing "no open asks"
+      (cli/answer s ["a1" "postgres"])
+      (is (= "no open asks" (cli/ask s []))))))
+
+(deftest answer-prompts-at-a-terminal
+  (let [s (new-session "goal")
+        shown (atom nil)]
+    (cli/ask s [(str "which db? " (str/join " " (repeat 40 "word")) " END")])
+    (testing "no text and no terminal: refused, and the ask stays open"
+      (is (thrown-with-msg? Exception #"need an interactive terminal" (cli/answer s ["a1"])))
+      (is (= :open (get-in (status/project (store/read-events s)) [:asks "a1" :state]))))
+    (testing "an agent is refused before any prompt"
+      (binding [cli/*actor* "d1" cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+        (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1"])))))
+    (testing "an unknown or answered ask is refused before any prompt"
+      (binding [cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+        (is (thrown-with-msg? Exception #"no such ask: a9" (cli/answer s ["a9"])))))
+    (testing "at a terminal: the full question, then the typed answer, then the typed id"
+      (binding [cli/*read-line* (fn [q prompt] (reset! shown [q prompt]) "  postgres ")
+                cli/*confirm* (fn [prompt expected] (and (= "Answer a1: postgres" prompt) (= "a1" expected)))]
+        (is (= "a1 answered" (cli/answer s ["a1"]))))
+      (is (str/includes? (str/replace (first @shown) #"\s+" " ") "which db? word"))
+      (is (str/includes? (first @shown) "END") "unclipped")
+      (is (= "postgres" (get-in (status/project (store/read-events s)) [:notes 0 :answer])))
+      (binding [cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+        (is (thrown-with-msg? Exception #"a1 is already answered" (cli/answer s ["a1"])))))
+    (testing "an empty typed answer is refused"
+      (cli/ask s ["again?"])
+      (binding [cli/*read-line* (constantly "")]
+        (is (thrown-with-msg? Exception #"usage: lume answer" (cli/answer s ["a2"])))))))
 
 ;; A fake driver: each turn runs the next shell script, which can call lume.
 (defmethod agents/command :driver [_ prompt opts]

@@ -181,6 +181,26 @@
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
+(defn wrap
+  "Lines of at most n, broken at spaces (a word longer than n is cut). With
+  max-lines, the last line kept is clipped and ends in tail when there is more."
+  ([s n] (wrap s n nil nil))
+  ([s n max-lines tail]
+   (let [lines (loop [words (str/split (str/trim (str/replace (str s) #"\s+" " ")) #" ")
+                      line nil, out []]
+                 (if-let [[w & more] (seq words)]
+                   (cond (nil? line) (if (> (count w) n)
+                                       (recur (cons (subs w n) more) nil (conj out (subs w 0 n)))
+                                       (recur more w out))
+                         (<= (+ (count line) 1 (count w)) n) (recur more (str line " " w) out)
+                         :else (recur words nil (conj out line)))
+                   (cond-> out line (conj line))))]
+     (if (and max-lines (> (count lines) max-lines))
+       (let [last-n (- n (count tail))]
+         (conj (vec (take (dec max-lines) lines))
+               (str (clip (str/join " " (drop (dec max-lines) lines)) last-n) tail)))
+       lines))))
+
 (defn- ago [now t]
   (let [secs (.getSeconds (Duration/between (Instant/parse t) now))]
     (cond (< secs 60) (str secs "s ago")
@@ -270,15 +290,15 @@
 
 (defn- capped-items
   "Like capped, for items that each take several lines: whole items only, as
-  many as fit in n lines, and the hint counts items."
-  [n more-hint groups]
+  many as fit in n lines, and the hint counts them as nouns."
+  [n nouns more-hint groups]
   (if (<= (reduce + (map count groups)) n)
     (apply concat groups)
     (let [shown (->> (reductions + (map count groups))
                      (take-while #(< % n))
                      count)]
       (concat (apply concat (take shown groups))
-              [(str "+" (- (count groups) shown) " more items — " more-hint)]))))
+              [(str "+" (- (count groups) shown) " more " nouns " — " more-hint)]))))
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
@@ -293,25 +313,27 @@
         items (sort-by :order (vals items))
         {open true closed false} (group-by #(= :open (:state %)) items)
         ;; Pinned notes are the lasting ones; when there are any, recent notes give up room.
-        pinned (filter :pinned notes)]
+        pinned (filter :pinned notes)
+        ;; Questions waiting on the human come first: they're what blocks. Each
+        ;; wraps to 3 lines before it's clipped; a clipped one says where the rest is.
+        ask-lines (capped-items 7 "asks" "lume ask"
+                                (->> (vals asks)
+                                     (filter #(= :open (:state %)))
+                                     (sort-by #(parse-long (subs (:id %) 1)))
+                                     (map (fn [{:keys [id question]}]
+                                            (let [indent (apply str (repeat (inc (count id)) " "))
+                                                  [l & more] (wrap question (- width 8 (count indent)) 3
+                                                                   (str " — lume ask show " id))]
+                                              (map #(paint :yellow %)
+                                                   (cons (str id " " l) (map #(str indent %) more))))))))
+        ;; Asks past 4 lines take their room from the pinned notes, so status stays one screen.
+        pinned-cap (- 6 (max 0 (- (count ask-lines) 4)))]
     (str/join
      "\n"
      (concat
       [(str "lume status · " session-id (when past " (not current)") (when repo (str " · " repo)))]
       (section "goal" [(clip goal (- width 8))])
-      ;; Questions waiting on the human come first: they're what blocks.
-      (section "asks" (capped 3 "lume log"
-                              (->> (vals asks)
-                                   (filter #(= :open (:state %)))
-                                   (sort-by #(parse-long (subs (:id %) 1)))
-                                   ;; A clipped question says where the rest is.
-                                   (map (fn [{:keys [id question]}]
-                                          (let [line (str id " " question)
-                                                n (- width 8)]
-                                            (paint :yellow (if (str/ends-with? (clip line n) "…")
-                                                             (let [hint (str " — lume ask show " id)]
-                                                               (str (clip line (- n (count hint))) hint))
-                                                             (clip line n)))))))))
+      (section "asks" ask-lines)
       (when (or (seq allow) default-gate cadence-line)
         (section "allow" [(clip (str/join " · " (cond->> allow
                                                   default-gate (cons (str "default gate " default-gate))
@@ -322,10 +344,10 @@
                                  line (clip (str (budget-text state) (when over " · reached: no new spawns or turns"))
                                             (- width 8))]
                              (if over (paint :red line) line))]))
-      (section "pinned" (capped 6 "lume log"
+      (section "pinned" (capped pinned-cap "lume log"
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
-               (capped-items 10 "lume log"
+               (capped-items 10 "items" "lume log"
                             (map (fn [{:keys [id intent] :as item}]
                                    (concat [(str id "  " (clip intent 80))]
                                            (when (:gate item)
@@ -347,7 +369,7 @@
       (section "recent" (map event-line (take-last 3 (remove #(= :spawn/progress (:type %)) events))))
       (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                        "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
-                       "lume ask \"<question>\" · lume answer <id> \"<text>\" (human only) · lume allow \"<cmd>\" · lume log"])))))
+                       "lume ask \"<question>\" · lume ask (read open asks) · lume answer <id> (human only) · lume log"])))))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
