@@ -126,16 +126,21 @@
 (defn- flag [opts name]
   (second (drop-while #(not= name %) opts)))
 
+;; --parent files work that emerged while on an open item under it. The tree
+;; only makes that work visible: nothing is inherited and nothing orders spawns.
 (defn item-add [session args]
-  (let [usage "usage: lume item add \"<intent>\" [--gate \"<cmd>\"]"
-        [[intent & extra] {[gate & gates] "--gate"}] (take-flags args #{"--gate"} usage)]
-    (when (or (str/blank? intent) (seq extra) (seq gates)) (fail! usage))
+  (let [usage "usage: lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]"
+        [[intent & extra] {[gate & gates] "--gate" [parent & parents] "--parent"}]
+        (take-flags args #{"--gate" "--parent"} usage)]
+    (when (or (str/blank? intent) (seq extra) (seq gates) (seq parents)) (fail! usage))
     ;; Without --gate the item gets the session's default gate, written on the event.
     (let [e (store/append! session (fn [events]
+                                     (when parent (open-item events parent))
                                      (let [gate (or gate (:default-gate (status/project events)))]
                                        (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
                                                 :intent intent :by (actor)}
-                                         gate (assoc :gate gate)))))]
+                                         gate (assoc :gate gate)
+                                         parent (assoc :parent parent)))))]
       (:item/id e))))
 
 (defn item-gate [session [id gate]]
@@ -718,7 +723,8 @@
                (bullets "Pinned notes:" (filter :pinned notes))
                (bullets "Recent notes from the session:" (take-last 10 (remove :pinned notes)))
                ["Work in the current directory. Record findings with `lume note \"<text>\"`"
-                "and follow-up work with `lume item add \"<intent>\"`."
+                (str "and follow-up work with `lume item add \"<intent>\"` (add `--parent " (:id item)
+                     "` if it emerged from this item).")
                 "When you finish, end with a short summary"
                 "of what you did and anything left undone."]))))
 
@@ -1400,8 +1406,9 @@
     s))
 
 (defn- items-text [items]
-  (str (count items) (if (= 1 (count items)) " item" " items")
-       (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured"))))
+  (let [items (rest (tree-seq map? :items {:items items}))]
+    (str (count items) (if (= 1 (count items)) " item" " items")
+         (when-let [m (seq (filter :measure items))] (str " · " (count m) " measured")))))
 
 (defn check [[path & extra]]
   (when (or (str/blank? path) (seq extra)) (fail! check-usage))
@@ -1611,7 +1618,10 @@ lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
                                             start a session; items added without --gate get its --gate
 lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);
                                             a past session's by id (lume ls)
-lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
+lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]
+                                            add a work item; the gate's exit code decides done;
+                                            --parent files work that emerged on an open item under it
+                                            (status indents it there; nothing else follows from it)
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
 lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]
                                             measure an item after each spawn: output's name=number pairs

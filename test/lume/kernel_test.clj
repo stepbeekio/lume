@@ -64,6 +64,29 @@
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["--gate" "bb test"])))
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["one" "two"]))))))
 
+(deftest subitems-show-under-their-parent
+  (let [s (new-session "tree")]
+    (cli/item-add s ["parent"])
+    (cli/item-add s ["sibling"])
+    (is (= "i3" (cli/item-add s ["emerged" "--parent" "i1"])))
+    (cli/item-add s ["--parent" "i3" "deeper"])
+    (is (= "i1" (get-in (status/project (store/read-events s)) [:items "i3" :parent])))
+    (testing "open children are indented under their parent"
+      (is (= ["open    i1  parent" "          i3  emerged" "            i4  deeper" "        i2  sibling"]
+             (->> (str/split-lines (status/render "sess" (store/read-events s) (Instant/now)))
+                  (drop-while #(not (str/starts-with? % "open")))
+                  (take 4)))))
+    (testing "lume spec nests them; a child of a closed item stands alone"
+      (is (= [{:intent "parent" :items [{:intent "emerged" :items [{:intent "deeper"}]}]} {:intent "sibling"}]
+             (:items (edn/read-string (cli/show-spec s [])))))
+      (cli/item-close s ["i1" "dropped" "x"])
+      (is (= [{:intent "sibling"} {:intent "emerged" :items [{:intent "deeper"}]}]
+             (:items (edn/read-string (cli/show-spec s []))))))
+    (testing "the parent must be an open item"
+      (is (thrown-with-msg? Exception #"already dropped" (cli/item-add s ["x" "--parent" "i1"])))
+      (is (thrown-with-msg? Exception #"no such item" (cli/item-add s ["x" "--parent" "i9"])))
+      (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["x" "--parent"]))))))
+
 (deftest init-sets-a-default-gate-and-allows
   (let [before (set (fs/list-dir *root*))
         out (cli/init *root* ["ship it" "--gate" "bb test" "--allow" "jj" "--allow" "make" "--allow" "jj"])
@@ -1612,20 +1635,20 @@
             :budget {:usd 20 :spawns 30 :minutes 120}
             :cadence {:batch 3 :gate-fail true :plateau 4}
             :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
-                    {:intent "document the cache" :gate "bb lint"}
+                    {:intent "document the cache" :gate "bb lint" :items [{:intent "note eviction"}]}
                     {:intent "just measured" :measure "bb size" :higher ["hits"]}]}]
     (is (empty? (spec/problems sp)))
     (testing "spec -> session -> spec"
       (let [s (session-from-spec sp)
             state (status/project (store/read-events s))]
         (is (= sp (edn/read-string (cli/show-spec s []))))
-        (is (= ["bb test" "bb lint" "bb test"] (map :gate (sort-by :order (vals (:items state)))))
+        (is (= ["bb test" "bb lint" "bb test" "bb test"] (map :gate (sort-by :order (vals (:items state)))))
             "items without a gate get the default")
         (is (= {:measure "bb bench" :runs 10 :drop 1} (select-keys (get-in state [:items "i1"]) [:measure :runs :drop])))
         (testing "closed items are left out unless --all"
           (cli/item-close s ["i2" "dropped" "not needed"])
           (let [out (cli/show-spec s [])]
-            (is (= ["cut cold build time" "just measured"] (map :intent (:items (edn/read-string out)))))
+            (is (= ["cut cold build time" "note eviction" "just measured"] (map :intent (:items (edn/read-string out)))))
             (is (str/ends-with? out ";; 1 closed item left out — lume spec --all")))
           (is (= sp (edn/read-string (cli/show-spec s ["--all"])))))))
     (testing "a cadence comes back as written: the default :batch 1 isn't added"
@@ -1653,15 +1676,23 @@
           (is (= "ok" (re-find #"ok" (cli/check [(spec-file (cli/show-spec s []))]))))
           (is (= sp (edn/read-string (cli/show-spec (session-from-spec sp) [])))))))
     (testing "a spec prints one key and one item per line"
-      (is (= 8 (count (str/split-lines (spec/pretty sp))))))
+      (is (= 9 (count (str/split-lines (spec/pretty sp)))))
+      (is (= ["{:items [{:intent \"a\"}"
+              "         {:intent \"b\" :items"
+              "          [{:intent \"c\" :items"
+              "            [{:intent \"d\"}"
+              "             {:intent \"e\"}]}]}]}"]
+             (str/split-lines (spec/pretty {:items [{:intent "a"}
+                                                    {:intent "b" :items [{:intent "c" :items [{:intent "d"} {:intent "e"}]}]}]})))))
     (testing "lume check prints ok with a count"
-      (let [f (spec-file sp)] (is (= (str f ": ok · 3 items · 2 measured") (cli/check [f])))))
+      (let [f (spec-file sp)] (is (= (str f ": ok · 4 items · 2 measured") (cli/check [f])))))
     (testing "lume check lists every problem, with where it is"
       (let [f (spec-file '{:alow [] :gate 3 :budget {:usd -1 :tokens 3}
                            :cadence {:batch 0 :gate-fail "yes"}
-                           :items [{:intent "x" :runs 3 :drop 3} "y" {:measure "bb bench" :drop 2 :higher "score"}]})
+                           :items [{:intent "x" :runs 3 :drop 3} "y" {:measure "bb bench" :drop 2 :higher "score"}
+                                   {:intent "z" :items [{:runs 2}]}]})
             msg (try (cli/check [f]) nil (catch clojure.lang.ExceptionInfo e (ex-message e)))]
-        (is (= [(str f ": 13 problems")
+        (is (= [(str f ": 15 problems")
                 "  [:alow] unknown key; expected one of :allow :budget :cadence :gate :goal :items"
                 "  [:goal] is required"
                 "  [:gate] must be a command (non-blank string), got 3"
@@ -1674,7 +1705,9 @@
                 "  [:items 1] must be a map with :intent, got \"y\""
                 "  [:items 2 :intent] is required"
                 "  [:items 2 :higher] must be a vector of number names, got \"score\""
-                "  [:items 2 :drop] must be less than :runs (1), got 2"]
+                "  [:items 2 :drop] must be less than :runs (1), got 2"
+                "  [:items 3 :items 0 :intent] is required"
+                "  [:items 3 :items 0] :runs, :drop, :higher and :before need a :measure"]
                (str/split-lines msg)))))
     (testing "the list is bounded"
       (let [f (spec-file {:goal "g" :items (vec (repeat 30 {}))})

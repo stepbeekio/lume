@@ -105,7 +105,8 @@
        :session/disallowed (update s :allow #(vec (remove #{(:command e)} %)))
        :item/added      (update s :items assoc (:item/id e)
                                 (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
-                                  (:gate e) (assoc :gate (:gate e))))
+                                  (:gate e) (assoc :gate (:gate e))
+                                  (:parent e) (assoc :parent (:parent e))))
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
        :item/measuring  (update-in s [:items (:item/id e)]
@@ -337,6 +338,16 @@
   (str (or (:drive/id e) (:spawn/id e)) " " (if (:interrupted e) "interrupted" (str "exit " (:exit e)))
        (when-let [r (:result e)] (str " · " r))))
 
+(defn tree
+  "Items in order, each followed by its children (:parent), as [item depth]
+  pairs. An item whose parent isn't among them is a root."
+  [items]
+  (let [ids (set (map :id items))
+        kids (group-by #(when (ids (:parent %)) (:parent %)) (sort-by :order items))
+        walk (fn walk [depth item]
+               (cons [item depth] (mapcat (partial walk (inc depth)) (kids (:id item)))))]
+    (mapcat (partial walk 0) (kids nil))))
+
 (defn- render* [session-id events now past replay]
   (let [{:keys [goal repo items notes spawns allow asks default-gate budget spent] :as state} (project events)
         cadence-line (when (:cadence state)
@@ -384,15 +395,17 @@
                                 (map #(clip (str (:note/id %) " " (:text %)) (- width 8)) pinned)))
       (section "open"
                (capped-items 10 "items" "lume log"
-                            (map (fn [{:keys [id intent] :as item}]
-                                   (concat [(str id "  " (clip intent 80))]
-                                           (when (:gate item)
-                                             [(str "    " (gate-line now item))])
-                                           (when (:measure item)
-                                             [(str "    " (measure-line now item))])
-                                           (when-let [sp (get spawns (peek (:spawns item)))]
-                                             [(str "    " (spawn-line now sp))])))
-                                 open)))
+                            (map (fn [[{:keys [id intent] :as item} depth]]
+                                   (let [in (apply str (repeat (* 2 depth) " "))]
+                                     (map #(str in %)
+                                          (concat [(str id "  " (clip intent (- 80 (count in))))]
+                                                  (when (:gate item)
+                                                    [(str "    " (gate-line now item))])
+                                                  (when (:measure item)
+                                                    [(str "    " (measure-line now item))])
+                                                  (when-let [sp (get spawns (peek (:spawns item)))]
+                                                    [(str "    " (spawn-line now sp))])))))
+                                 (tree open))))
       (section "closed"
                (capped 4 "lume log"
                        (map (fn [{:keys [id state intent why]}]

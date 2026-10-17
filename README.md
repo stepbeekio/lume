@@ -96,11 +96,12 @@ A session's harness (goal, default gate, allow, budget, cadence, and its items w
  :budget {:usd 20 :spawns 30 :minutes 120}
  :cadence {:batch 3 :gate-fail true :plateau 4}
  :items [{:intent "cut cold build time" :measure "bb bench" :runs 10 :drop 1}
-         {:intent "document the cache" :gate "bb lint"}
+         {:intent "document the cache" :gate "bb lint" :items
+          [{:intent "note the eviction rule"}]}
          {:intent "raise the cache hit rate" :measure "bb cache-stats" :higher ["hit_rate"]}]}
 ```
 
-Only `:goal` is required; an item without `:gate` gets the spec's. `lume check <spec.edn>` validates one, whoever wrote it, and lists every problem with where it is (e.g. `[:items 0 :drop] must be less than :runs (3), got 3`), exiting 1 on any.
+Only `:goal` is required; an item without `:gate` gets the spec's. An item's `:items` are its subitems (`--parent`), items like any other. `lume check <spec.edn>` validates one, whoever wrote it, and lists every problem with where it is (e.g. `[:items 0 :drop] must be less than :runs (3), got 3`), exiting 1 on any.
 
 `lume run <spec.edn> ["<goal>"]` runs one in one command: it checks the spec and refuses on any problem, starts a session from it (the same events `init`, `item add`, `budget` and so on would log; a goal given here replaces the spec's), takes a baseline row for each measured item, then drives (`--turns N`, `--agent`). The harness is the same whoever drives it: `--turns 0` stops after the baselines, so you can drive by hand or `lume drive` later. A spec's `:allow`, and a `:cadence` above every-spawn, are yours as they are on the command line: you confirm them at a terminal, and an agent's `lume run` of such a spec is refused. A budget only adds limits to a fresh session, so anyone may set one.
 
@@ -145,7 +146,11 @@ lume init "<goal>" [--gate "<cmd>"] [--allow "<cmd>"]...
 lume status [<session>] [--color]
                                one screen: goal, asks, pinned notes, items, recent events
                                (a past session's, by id from lume ls)
-lume item add "<intent>" --gate "<cmd>"
+lume item add "<intent>" --gate "<cmd>" [--parent <id>]
+                               --parent: work that emerged on an open item; status shows it
+                               indented under it and lume spec nests it in the item's :items.
+                               Nothing is inherited and nothing orders spawns: you choose
+                               what runs next
 lume item close <id> done|dropped "<why>"
 lume item close <id> dropped --revert "<why>"
                                also restore the working copy to the jj commit (git without jj)

@@ -10,7 +10,8 @@
                 :measure \"bb bench\" :runs 10 :drop 1 ; :gate too, if not the default
                 :higher [\"hit_rate\"]               ; numbers where higher is better
                 :before true}                      ; each spawn measures first too
-               {:intent \"document the cache\"}]}
+               {:intent \"document the cache\"
+                :items [{:intent \"note the eviction rule\"}]}]} ; emerged while on it
 
   Only :goal is required. `problems` is the schema, `from-state` folds a
   session back into a spec, and `events` are the log events a spec starts a
@@ -35,7 +36,8 @@
    :runs (check positive? "a positive whole number")
    :drop (check whole? "a whole number")
    :higher (check #(and (sequential? %) (seq %) (every? text? %)) "a vector of number names")
-   :before (check boolean? "true or false")})
+   :before (check boolean? "true or false")
+   :items nil})
 
 (def ^:private spec-keys
   {:goal (check text? "a non-blank string")
@@ -59,16 +61,25 @@
          :let [p (f v)] :when p]
      [(conj path k) p])))
 
-(defn- item-problems [i item]
-  (let [path [:items i]]
-    (if-not (map? item)
-      [[path (str "must be a map with :intent, got " (pr-str item))]]
-      (concat (keys-problems path item item-keys [:intent])
-              (when (and (some #(contains? item %) [:runs :drop :higher :before]) (not (contains? item :measure)))
-                [[path ":runs, :drop, :higher and :before need a :measure"]])
-              (let [{:keys [runs drop] :or {runs 1 drop 0}} item]
-                (when (and (positive? runs) (whole? drop) (>= drop runs))
-                  [[(conj path :drop) (str "must be less than :runs (" runs "), got " drop)]]))))))
+(declare items-problems)
+
+(defn- item-problems [path item]
+  (if-not (map? item)
+    [[path (str "must be a map with :intent, got " (pr-str item))]]
+    (concat (keys-problems path item item-keys [:intent])
+            (when (and (some #(contains? item %) [:runs :drop :higher :before]) (not (contains? item :measure)))
+              [[path ":runs, :drop, :higher and :before need a :measure"]])
+            (let [{:keys [runs drop] :or {runs 1 drop 0}} item]
+              (when (and (positive? runs) (whole? drop) (>= drop runs))
+                [[(conj path :drop) (str "must be less than :runs (" runs "), got " drop)]]))
+            (when (contains? item :items)
+              (items-problems (conj path :items) (:items item))))))
+
+;; An item's :items are items too, as the spec's are.
+(defn- items-problems [path items]
+  (if-not (sequential? items)
+    [[path (str "must be a vector of items, got " (pr-str items))]]
+    (apply concat (map-indexed (fn [i item] (item-problems (conj path i) item)) items))))
 
 (defn problems
   "Every problem with a spec, as [path message] pairs, in a stable order; empty
@@ -101,9 +112,7 @@
                             :plateau (check positive? "a positive whole number")}
                            [])))
         (when (contains? spec :items)
-          (if-not (sequential? items)
-            [[[:items] (str "must be a vector of items, got " (pr-str items))]]
-            (apply concat (map-indexed item-problems items)))))))))
+          (items-problems [:items] items)))))))
 
 (defn problem-text [[path message]]
   (if (seq path) (str (pr-str path) " " message) message))
@@ -135,21 +144,38 @@
 (defn from-state
   "The harness of a projected session (lume.status/project) as a spec: its
   goal, default gate, allow, budget, cadence and items in order, open ones
-  only unless :all. Defaults are left out, so it reads as written."
+  only unless :all, each with its children (:parent) as its :items; a child
+  whose parent is left out stands alone. Defaults are left out, so it reads
+  as written."
   [{:keys [goal default-gate allow budget cadence items]} & {:keys [all]}]
-  (let [items (->> (vals items) (sort-by :order) (filter #(or all (= :open (:state %)))))]
+  (let [items (->> (vals items) (sort-by :order) (filter #(or all (= :open (:state %)))))
+        ids (set (map :id items))
+        kids (group-by #(when (ids (:parent %)) (:parent %)) items)
+        nest (fn nest [item]
+               (cond-> (item-spec default-gate item)
+                 (kids (:id item)) (assoc :items (mapv nest (kids (:id item))))))
+        items (kids nil)]
     (cond-> {:goal goal}
       default-gate (assoc :gate default-gate)
       (seq allow) (assoc :allow allow)
       (seq budget) (assoc :budget budget)
       cadence (assoc :cadence (cond-> (select-keys cadence [:batch :plateau])
                                 (:gate-fail cadence) (assoc :gate-fail true)))
-      (seq items) (assoc :items (mapv (partial item-spec default-gate) items)))))
+      (seq items) (assoc :items (mapv nest items)))))
+
+(defn- flat
+  "Items with their :items after each, depth first, as [item parent] pairs,
+  where parent is the index of the item's parent in the result, or nil."
+  ([items] (flat [] nil items))
+  ([out parent items]
+   (reduce (fn [out item] (flat (conj out [(dissoc item :items) parent]) (count out) (:items item)))
+           out items)))
 
 (defn events
   "The log events (without :t or :by) that start a session from a valid spec,
   in order: started, gated, allowed, budgeted, cadence, then each item with its
-  gate (the default unless its own) and measurement."
+  gate (the default unless its own) and measurement. Nested items follow their
+  parent, numbered depth first, with :parent on their :item/added."
   [{:keys [goal gate allow budget cadence items] :as spec} repo]
   (concat
    [{:type :session/started :goal goal :repo repo}]
@@ -159,25 +185,38 @@
    (when cadence [(assoc (select-keys cadence [:batch :gate-fail :plateau]) :type :session/cadence)])
    (apply concat
           (map-indexed
-           (fn [i {:keys [intent measure runs drop higher before] :as item}]
+           (fn [i [{:keys [intent measure runs drop higher before] :as item} parent]]
              (let [id (str "i" (inc i))
                    gate (or (:gate item) (:gate spec))]
                (concat [(cond-> {:type :item/added :item/id id :intent intent}
-                          gate (assoc :gate gate))]
+                          gate (assoc :gate gate)
+                          parent (assoc :parent (str "i" (inc parent))))]
                        (when measure
                          [(cond-> {:type :item/measuring :item/id id :measure measure}
                             (and runs (> runs 1)) (assoc :runs runs)
                             (and drop (pos? drop)) (assoc :drop drop)
                             (seq higher) (assoc :higher (vec (sort (distinct higher))))
                             before (assoc :before true))]))))
-           items))))
+           (flat items)))))
 
 (defn pretty
-  "A spec as EDN, one top-level key and one item per line, so it reads as a page."
+  "A spec as EDN, one top-level key and one item per line, nested items too, so
+  it reads as a page."
   [{:keys [items] :as spec}]
   (let [order [:goal :gate :allow :budget :cadence :items]
         line (fn [k v] (str (pr-str k) " " (pr-str v)))
         top (for [k order :when (and (contains? spec k) (not= :items k))] (line k (get spec k)))
+        ;; Items at column col; an item's own :items start on the next line,
+        ;; one step in.
+        pad #(apply str "\n" (repeat % " "))
+        items-str (fn items-str [col items]
+                    (str/join (pad col)
+                              (for [{kids :items :as item} items
+                                    :let [s (pr-str (dissoc item :items))]]
+                                (if-not (seq kids)
+                                  s
+                                  (str (subs s 0 (dec (count s))) " :items" (pad (inc col))
+                                       "[" (items-str (+ 2 col) kids) "]}")))))
         item-lines (when (seq items)
-                     [(str ":items [" (str/join "\n         " (map pr-str items)) "]")])]
+                     [(str ":items [" (items-str 9 items) "]")])]
     (str "{" (str/join "\n " (concat top item-lines)) "}")))
