@@ -5,8 +5,10 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.agents :as agents]
             [lume.cli :as cli]
+            [lume.drive :as drive]
             [lume.kernel :as kernel]
             [lume.measure :as measure]
+            [lume.ntfy :as ntfy]
             [lume.policy :as policy]
             [lume.status :as status]
             [lume.store :as store])
@@ -26,7 +28,7 @@
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
                   kernel/*features* cli/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
-                  cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
+                  drive/*source* nil ntfy/*ntfy* nil drive/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
@@ -56,7 +58,7 @@
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])
-  (with-out-str (is (string? (cli/drive s *root* ["--agent" "policy-driver" "--turns" "3"]))))
+  (with-out-str (is (string? (drive/drive s *root* ["--agent" "policy-driver" "--turns" "3"]))))
   (last (keep :why (store/read-events s))))
 
 (defn- result-line [usd]

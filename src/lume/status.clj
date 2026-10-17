@@ -7,6 +7,7 @@
             [lume.kernel :as kernel :refer [ago clock paint]]
             [lume.measure :as measure]
             [lume.note :as note]
+            [lume.ntfy :as ntfy]
             [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]))
 
 ;; Rendering
@@ -192,21 +193,6 @@
           :spawn/exited (fn [s e] (update-in s [:spawns (:spawn/id e)] merge e))}
    :item-lines (fn [s item now] (when-let [sp (get (:spawns s) (peek (:spawns item)))] [(spawn-line now sp)]))})
 
-(def drive-feature
-  {:name "drive"
-   :events {:spawn/requested {:req #{:item/id}}
-            :drive/started {:req #{:turns :agent}}
-            :drive/turn {:req #{:drive/id :n}}
-            :drive/exited {:req #{:drive/id}}
-            :drive/stopped {:req #{:why}}
-            :drive/handed-back {:req #{:drive/id :why}}
-            :drive/reloaded {:req #{:n}}}})
-
-(def ntfy-feature
-  {:name "ntfy"
-   :events {:notify/sent {:req #{:on :text}}
-            :notify/failed {:req #{:on :text :error}}}})
-
 (def inspect-feature
   {:name "inspect"
    :events {:repl/opened {:req #{:port}}}
@@ -215,9 +201,12 @@
              :lines (fn [_ events _] (map event-line (take-last 3 (remove #(= :spawn/progress (:type %)) events))))}]})
 
 (def features
-  "The built-in features, in fold order. lume.cli binds kernel/*features* to these."
+  "The built-in features, in fold order, but for lume.drive, which renders
+  status for its prompt and so requires this namespace: lume.cli adds it, and
+  binds kernel/*features* to them all. drive folds nothing, so a projection
+  here (the unbound fallback below) is the same without it."
   [session-feature item-feature ask-feature note/feature measure/feature spawn-feature
-   policy/budget-feature policy/cadence-feature drive-feature ntfy-feature inspect-feature])
+   policy/budget-feature policy/cadence-feature ntfy/feature inspect-feature])
 
 (defn project
   "Fold the log into the current state of the session (kernel/project), with

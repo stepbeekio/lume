@@ -27,6 +27,11 @@
 
 (defn actor [] *actor*)
 
+(def ^:dynamic *default-agent*
+  "The agent spawn, drive, run and install use without --agent: LUME_AGENT, else
+  claude. Set it once on a machine whose agent CLI isn't claude. Tests bind it."
+  (or (not-empty (System/getenv "LUME_AGENT")) "claude"))
+
 (defn driver? [] (boolean (re-matches #"d\d+" (actor))))
 
 ;; Human-only commands need more than LUME_ACTOR, which an agent running as your
@@ -100,6 +105,8 @@
   "The session's log, oldest first."
   [session]
   (store/read-events session))
+
+(defn session-id [session] (store/session-id session))
 
 (defn project
   "Fold the log into the current state of the session: each event through the

@@ -4,10 +4,12 @@
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [*read-line* actor child-env clip-to columns driver? fail! flag
+            [lume.drive :as drive]
+            [lume.kernel :as kernel :refer [*default-agent* *read-line* actor child-env clip-to columns driver? fail! flag
                                             human-only! next-id open-item run-in-repo! session-by-id take-flags]]
             [lume.measure :as measure]
             [lume.note :as note]
+            [lume.ntfy :as ntfy :refer [ask-item]]
             [lume.policy :as policy]
             [lume.status :as status]
             [lume.store :as store])
@@ -16,11 +18,6 @@
 ;; lume.agents and lume.spec load on first use, via requiring-resolve: most
 ;; lume calls (note, item, ask, a driver's spawn request) are short processes
 ;; that need neither, and loading code is most of what they cost.
-
-(def ^:dynamic *default-agent*
-  "The agent spawn, drive, run and install use without --agent: LUME_AGENT, else
-  claude. Set it once on a machine whose agent CLI isn't claude. Tests bind it."
-  (or (not-empty (System/getenv "LUME_AGENT")) "claude"))
 
 ;; Commands. Each takes the session dir (or repo root, for init) and its args,
 ;; and returns the text to print.
@@ -75,132 +72,6 @@
                             (open-item events id)
                             {:type :item/gated :item/id id :gate gate :by (actor)}))
   (str id " gate " gate))
-
-;; Hand-backs reach the human remotely: when an ask opens or a drive stops,
-;; lume POSTs a short message to the ntfy topic URL in LUME_NTFY and logs
-;; :notify/sent or :notify/failed. Unset is a no-op, and a failed send never
-;; fails the command. The URL is a secret, so it's never logged.
-
-(def ^:dynamic *ntfy*
-  "The ntfy topic URL hand-backs are POSTed to: LUME_NTFY, else nil (no
-  notifications). Tests bind it."
-  (not-empty (System/getenv "LUME_NTFY")))
-
-(def ^:dynamic *ntfy-reply*
-  "The ntfy topic URL a drive --wait-on-ask reads answers from:
-  LUME_NTFY_REPLY, else nil (LUME_NTFY's topic). Tests bind it."
-  (not-empty (System/getenv "LUME_NTFY_REPLY")))
-
-(def ^:dynamic *sent*
-  "nil, or an atom of the ids ntfy gave the messages this process POSTed: a
-  drive reading replies on the topic it notifies skips its own posts."
-  nil)
-
-(defn- reply-url
-  "Where answers come from: LUME_NTFY_REPLY, else LUME_NTFY's own topic."
-  []
-  (or *ntfy-reply* *ntfy*))
-
-(defn- ntfy-target
-  "[url headers] for an ntfy topic URL: a token rides in it as ntfy's ?auth=
-  param, or as user info (https://:<token>@host/topic), sent as basic auth."
-  [url]
-  (let [uri (java.net.URI. url)]
-    (if-let [info (.getRawUserInfo uri)]
-      [(str (java.net.URI. (.getScheme uri) nil (.getHost uri) (.getPort uri) (.getPath uri) (.getQuery uri) nil))
-       {"Authorization" (str "Basic " (.encodeToString (java.util.Base64/getEncoder)
-                                                       (.getBytes (java.net.URLDecoder/decode info "UTF-8"))))}]
-      [url {}])))
-
-(defn- ntfy-post
-  "POST message to an ntfy topic, titled title (ASCII: it's a header), with
-  any other headers. nil when it was accepted, else why not."
-  [url title message & [headers]]
-  (try (let [[url auth] (ntfy-target url)
-             {:keys [status body]} ((requiring-resolve 'babashka.http-client/post)
-                                    url {:headers (merge {"Title" title} headers auth) :body message
-                                         :timeout 5000 :throw false})]
-         (if (<= 200 status 299)
-           (when-let [id (and *sent* (:id (try ((requiring-resolve 'cheshire.core/parse-string) (str body) true)
-                                               (catch Exception _ nil))))]
-             (swap! *sent* conj id)
-             nil)
-           (str "HTTP " status)))
-       (catch Exception e (str (.getSimpleName (class e)) (some->> (ex-message e) (str ": "))))))
-
-(defn- notify!
-  "Tell the human about event e (an :ask/opened or :drive/stopped) if
-  LUME_NTFY is set, and log the send. The message is text, then secret (a
-  reply code: sent, never logged), then the session; headers go with it.
-  Never throws."
-  [session e title text & {:keys [secret headers]}]
-  (when-let [url *ntfy*]
-    (try (let [why (ntfy-post url title (str/join "\n" (remove nil? [text secret (store/session-id session)])) headers)]
-           (kernel/append! session (constantly (merge {:type (if why :notify/failed :notify/sent) :on (:type e)}
-                                                      (select-keys e [:ask/id :item/id :drive/id])
-                                                      {:text text}
-                                                      (when why {:error why})
-                                                      {:by (actor)}))))
-         (catch Exception _ nil))))
-
-(defn- ask-item
-  "The item an ask concerns: a plateau's, or the asking worker's."
-  [events opened]
-  (or (:item/id opened)
-      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
-
-(def ^:dynamic *ask-notices*
-  "False inside a drive --wait-on-ask, which sends each ask itself, with its
-  reply code."
-  true)
-
-(defn- yes-no?
-  "An ask whose question ends (y/n) or (yes/no) gets Yes and No buttons."
-  [question]
-  (boolean (re-find #"(?i)\((?:y/n|yes/no)\)\W*$" question)))
-
-(defn- lettered
-  "The options of a question that lists (a), (b) and maybe (c), as
-  [[letter text] ...]: each text runs to the next option or the first ?;.!
-  and loses the characters ntfy's Actions header can't carry (separators,
-  quotes, non-ASCII). nil unless the letters are a, b[, c] in order (ntfy
-  allows three buttons)."
-  [question]
-  (let [os (for [[_ l t] (re-seq #"\(([a-z])\)\s*([^()]*)" question)]
-             [l (-> t (str/split #"[?;.!]" 2) first (str/replace #"\s+" " ") (str/replace #"[,=\"'\x00-\x1f\x7f-￿]" "")
-                    (str/replace #"\s+or\s*$" "") str/trim)])]
-    (when (and (<= 2 (count os) 3) (= (map first os) (take (count os) ["a" "b" "c"])))
-      os)))
-
-(defn- notify-ask!
-  "Send an ask, unless a waiting drive will. With a reply code, the message
-  says how to answer it and a yes/no or (a)/(b)/(c) ask carries buttons
-  that post the answer to the reply topic; the code and that URL are never logged."
-  [session {id :ask/id :keys [question] :as opened} & [code]]
-  (when (or code *ask-notices*)
-    (let [item (ask-item (store/read-events session) opened)
-          [reply auth] (when code (ntfy-target (reply-url)))
-          button (fn [label answer]
-                   (str/join ", " (concat ["http" label reply "method=POST"]
-                                          (for [[k v] auth] (str "headers." k "=" v))
-                                          [(str "body=" id " " code " " answer) "clear=true"])))]
-      (notify! session (cond-> opened item (assoc :item/id item))
-               (str "lume: ask " id (when item (str " on " item)) " from " (:by opened))
-               (str question "\n" (if code (str "reply " id " <code> <answer>, or lume answer " id) (str "lume answer " id)))
-               :secret (when code (str "code " code))
-               :headers (when-let [buttons (and code
-                                                (seq (if (yes-no? question)
-                                                       [["Yes" "yes"] ["No" "no"]]
-                                                       (for [[l t] (lettered question)
-                                                             :let [label (str/trim (str l ": " t))]]
-                                                         [(subs label 0 (min 30 (count label))) l]))))]
-                          {"Actions" (str/join "; " (map #(apply button %) buttons))})))))
-
-(def ^:private ntfy-reactions
-  "ntfy's :reactions: send each ask opened and each drive stop. A worker's or
-  driver's events react when it exits, in the lume that started it."
-  [{:on :ask/opened :run (fn [e] (notify-ask! kernel/*session* e))}
-   {:on :drive/stopped :run (fn [e] (notify! kernel/*session* e "lume: drive stopped" (:why e)))}])
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
@@ -502,328 +373,6 @@
           (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
     (run-spawn session root id opts)))
 
-;; Drive: a loop of fresh driver agents, each making one decision from status.
-
-(defn- driver-prompt [session did closing]
-  (str/join "\n"
-            [(str "You are the driver of a lume session, turn " did ". Make ONE decision, carry it out with")
-             "lume commands, and exit. A fresh driver takes the next turn from `lume status`, so"
-             "anything the next one must know goes in the log (`lume note`, `lume note --pin`)."
-             ""
-             "First run `jj st`. Changes in the working copy are a finished worker's: review them"
-             "(`jj diff`) before anything else. If they're good, `jj commit -m \"<what and why>\"` and"
-             "record it with `lume note \"committed <item>: <change id> <what>\"`; if not, say what's"
-             "wrong with `lume note` or `lume item add`. A turn that logs nothing stops the drive."
-             "Otherwise pick one: add, gate or close items; `lume spawn <id>` to put a worker on an"
-             "open item (it runs after you exit); `lume note` a lesson; or `lume ask \"<question>\"`"
-             "when only the human can decide (the loop stops until they answer). Keep an ask to one or two"
-             "lines: question, lettered options, your pick; put the context in a note and name it (n12)."
-             "The cadence says how many spawns a turn may request (every-spawn: one; batch N: N, run"
-             "in order). Set your own within the human's ceiling, e.g. `lume cadence batch 3 on gate-fail`."
-             ""
-             "Rules: never push. Don't edit files; workers do that. Add items with --gate \"bb test\"."
-             "End with one line: what you decided and why."
-             (if closing
-               (str "\nNo item is open, but " closing " exited after the last driver turn, so this is the closing\n"
-                    "turn: review its changes and commit them, or say what's wrong.\n")
-               "")
-             (status/render (store/session-id session) (store/read-events session) (Instant/now))]))
-
-(defn- drive-turn
-  "Run one driver agent until it exits, and return its summary."
-  [session root agent did allow closing]
-  (let [out (fs/path session "drives" (str did ".out"))]
-    (fs/create-dirs (fs/parent out))
-    (let [t0 (System/currentTimeMillis)
-          {:keys [exit]} @(p/process ((requiring-resolve 'lume.agents/command) agent (driver-prompt session did closing) {:allow allow :role :driver})
-                                     {:dir root :in ""
-                                      :out :write :out-file (fs/file out)
-                                      :err :write :err-file (fs/file (str out ".err"))
-                                      :extra-env (child-env {"LUME_SESSION" session "LUME_ACTOR" did "LUME_SPAWNED_AS" did})})]
-      (assoc ((requiring-resolve 'lume.agents/summarize) agent (slurp (fs/file out)))
-             :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
-
-(defn- hand-back-early
-  "Why a batch stops before its next spawn, from the events since the last
-  one started: an ask is open (a plateau's, say), the budget is reached, or
-  under on gate-fail, the spawn's gate failed. nil to carry on."
-  [events since id]
-  (let [state (status/project events)
-        gate (->> (drop since events) (filter #(and (= :gate/ran (:type %)) (= id (:item/id %)))) last)]
-    (cond (some #(= :open (:state %)) (vals (:asks state))) "an ask is open"
-          (policy/over-budget state) "the budget is reached"
-          (and (:gate-fail (policy/cadence state)) gate (not (zero? (:exit gate))))
-          (str "on gate-fail: " id " gate " (:gate/id gate) " failed"))))
-
-(defn- run-requests
-  "Run a turn's spawn requests in order until the cadence hands back early; a
-  cut batch logs :drive/handed-back with the items it skipped. A request that
-  names no agent runs the drive's."
-  [session root agent did say requests]
-  (loop [[{id :item/id a :agent} & more] requests]
-    (when id
-      (let [since (count (store/read-events session))]
-        (say (try (run-spawn session root id ["--agent" (name (or a agent))])
-                  (catch clojure.lang.ExceptionInfo e (ex-message e))))
-        (let [why (when (seq more) (hand-back-early (store/read-events session) since id))]
-          (if why
-            (let [skipped (mapv :item/id more)]
-              (kernel/append! session (constantly {:type :drive/handed-back :drive/id did :why why
-                                                   :skipped skipped :by (actor)}))
-              (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
-            (recur more)))))))
-
-;; A spawn that closes the last item leaves its diff in the working copy, and
-;; "no open items" would end the drive before any driver reviewed it. So a
-;; spawn that exited after the last driver turn earns one closing turn.
-
-(defn- unreviewed-spawn
-  "The id of the last spawn that exited after the last driver turn, or nil."
-  [events]
-  (->> (reverse events) (take-while #(not= :drive/turn (:type %)))
-       (filter #(= :spawn/exited (:type %))) first :spawn/id))
-
-;; A drive outlives the commits its turns make, so before each turn it checks
-;; the lume source it loaded. When that changed and the new code loads, the
-;; drive logs :drive/reloaded and re-execs itself on it, carrying on from the
-;; same turn (--from); when the new code doesn't load, it notes so and keeps
-;; running the old.
-
-(def ^:dynamic *source*
-  "The src directory this lume runs from."
-  (some-> (io/resource "lume/cli.clj") io/file fs/parent fs/parent str))
-
-(defn- fingerprint [src]
-  (when src
-    (into (sorted-map) (map (juxt str #(fs/file-time->millis (fs/last-modified-time %))))
-          (fs/glob src "**.clj"))))
-
-(defn- load-error
-  "nil if src's lume.cli loads in a fresh bb, else its first error line."
-  [src]
-  (let [{:keys [exit err]} @(p/process ["bb" "-cp" src "-e" "(require 'lume.cli)"] {:out :string :err :string})]
-    (when-not (zero? exit)
-      (or (first (remove str/blank? (str/split-lines err))) (str "exit " exit)))))
-
-(def ^:dynamic *reexec*
-  "Replace this process with lume from src, run with args."
-  (fn [src args] (p/exec (into ["bb" "-cp" src "-m" "lume.cli"] args))))
-
-;; Answers from the phone: a drive --wait-on-ask doesn't hand back on an open
-;; ask. It sends the ask with a one-time code, held only in its memory, and
-;; reads the reply topic (LUME_NTFY_REPLY, else LUME_NTFY's) until a reply
-;; names the ask and quotes its code ("a12 <code> <answer>"), so a leaked URL
-;; can't answer and a stale reply can't land on a newer ask. A good reply is
-;; the human's answer. On a shared topic the drive skips its own posts.
-
-(def ^:dynamic *reconnect-ms*
-  "How long the reply subscriber waits before reconnecting. Tests bind it."
-  5000)
-
-(def ^:dynamic *idle-ms*
-  "How long the reply stream may go silent before the subscriber drops it and
-  reconnects. ntfy sends a keepalive every ~45s, so two missed ones mean a
-  half-dead connection. Tests bind it."
-  100000)
-
-(defn- reply-code
-  "8 characters a phone types easily, from a secure random source."
-  []
-  (let [rnd (java.security.SecureRandom.)
-        abc "abcdefghjkmnpqrstuvwxyz23456789"]
-    (apply str (repeatedly 8 #(nth abc (.nextInt rnd (count abc)))))))
-
-(defn- ntfy-json-url
-  "The streaming JSON endpoint of the topic at url, from since (a unix time
-  or message id) on, keeping its query (?auth=)."
-  [url since]
-  (let [[base query] (str/split url #"\?" 2)]
-    (str (str/replace base #"/+$" "") "/json?" (when query (str query "&")) "since=" since)))
-
-(defn- ntfy-subscribe!
-  "Stream the ntfy topic at url, from now on, into :queue: each message as
-  {:id id :message text}, each failure as {:error why}. It runs on a daemon thread,
-  reconnecting after a dropped stream from the last message it saw, until
-  (:stop) is called. A stream silent for *idle-ms* (no message, no
-  keepalive) is dropped by a watchdog, so a half-dead connection can't block
-  it forever."
-  [url]
-  (let [q (java.util.concurrent.LinkedBlockingQueue.)
-        [url auth] (ntfy-target url)
-        since (atom (str (quot (System/currentTimeMillis) 1000)))
-        running (atom true)
-        stream (atom nil)
-        heard (atom (System/currentTimeMillis))
-        dropped (atom false)
-        idle-ms (long *idle-ms*)
-        http-get (requiring-resolve 'babashka.http-client/get)
-        parse (requiring-resolve 'cheshire.core/parse-string)
-        run (bound-fn []
-              (while @running
-                (try (let [{:keys [status body]} (http-get (ntfy-json-url url @since)
-                                                           {:headers auth :as :stream :throw false :timeout idle-ms})]
-                       (reset! heard (System/currentTimeMillis))
-                       (reset! dropped false)
-                       (reset! stream body)
-                       (with-open [r (io/reader body)]
-                         (if (<= 200 status 299)
-                           (doseq [line (line-seq r)
-                                   :let [_ (reset! heard (System/currentTimeMillis))
-                                         m (try (parse line true) (catch Exception _ nil))]
-                                   :when (= "message" (:event m))]
-                             (reset! since (:id m))
-                             (.put q {:id (:id m) :message (str (:message m))}))
-                           (.put q {:error (str "HTTP " status)}))))
-                     (catch Exception e
-                       (when (and @running (not @dropped))
-                         (.put q {:error (str (.getSimpleName (class e)) (some->> (ex-message e) (str ": ")))}))))
-                (reset! stream nil)
-                (when @running (Thread/sleep (long *reconnect-ms*)))))
-        ;; Closing the stream ends the blocked read; run then reconnects
-        ;; from the last message it saw.
-        watch (fn []
-                (while @running
-                  (Thread/sleep (max 10 (quot idle-ms 4)))
-                  (when-let [s @stream]
-                    (when (> (- (System/currentTimeMillis) @heard) idle-ms)
-                      (reset! heard (System/currentTimeMillis))
-                      (reset! dropped true)
-                      (.put q {:error (str "no data for " (quot idle-ms 1000) "s, reconnecting")})
-                      (try (.close ^java.io.InputStream s) (catch Exception _ nil))))))]
-    (doto (Thread. ^Runnable run) (.setDaemon true) (.start))
-    (doto (Thread. ^Runnable watch) (.setDaemon true) (.start))
-    {:queue q
-     :stop #(do (reset! running false)
-                (some-> ^java.io.InputStream @stream (.close)))}))
-
-(defn- open-ask-ids [session]
-  (->> (vals (:asks (status/project (store/read-events session))))
-       (filter #(= :open (:state %))) (map :id) (sort-by #(parse-long (subs % 1)))))
-
-(defn- reply-answer
-  "[ask-id answer] if message answers an ask in codes ({id code}), else why not."
-  [codes message]
-  (if-let [[_ id code answer] (re-matches #"(?s)\s*([aA]\d+)\s+(\S+)\s+(.*\S)\s*" message)]
-    (let [id (str/lower-case id)
-          want (codes id)]
-      (cond (nil? want) (str "no ask waiting with id " id)
-            (not (java.security.MessageDigest/isEqual (.getBytes ^String want) (.getBytes (str/lower-case code))))
-            (str "wrong code for " id)
-            :else [id answer]))
-    "not '<ask id> <code> <answer>'"))
-
-(defn- wait-for-answer!
-  "Send every open ask that has no code yet its own, then wait until a reply
-  answers one (logged :ask/answered :by human :via :ntfy) or they're answered
-  some other way (lume answer at a terminal). codes is an atom, {id code};
-  replies delivers the reply subscriber. Messages whose id is in *sent* are
-  the drive's own, echoed on a shared topic, and skipped."
-  [session codes replies say]
-  (let [opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) (store/read-events session)))]
-    (doseq [id (open-ask-ids session) :when (not (@codes id))]
-      (let [code (reply-code)]
-        (swap! codes assoc id code)
-        (notify-ask! session (opened id) code)
-        (say (str "waiting on " id " for an answer on ntfy, or lume answer " id)))))
-  (let [q (:queue @replies)]
-    (loop [last-error nil]
-      (swap! codes select-keys (open-ask-ids session))
-      (when (seq @codes)
-        (let [{:keys [message error] :as m} (.poll ^java.util.concurrent.LinkedBlockingQueue q 1 java.util.concurrent.TimeUnit/SECONDS)
-              message (when-not (contains? @*sent* (:id m)) message)
-              [id answer :as ok] (when message (reply-answer @codes message))]
-          (cond
-            error (do (when (not= error last-error) (say (str "ntfy replies: " error "; retrying")))
-                      (recur error))
-            ;; The reply carried the ask's one-time code, which only the human
-            ;; was sent, so it is the human answering, whoever runs the drive.
-            (vector? ok) (do (swap! codes dissoc id)
-                             (when (binding [kernel/*actor* "human"]
-                                     (kernel/append! session (fn [events]
-                                                               (when (= :open (get-in (status/project events) [:asks id :state]))
-                                                                 {:type :ask/answered :ask/id id :answer answer
-                                                                  :via :ntfy}))))
-                               (say (str id " answered from ntfy"))))
-            message (do (say (str "ignored a reply on ntfy: " ok)) (recur last-error))
-            :else (recur last-error)))))))
-
-(def ^:private drive-usage "usage: lume drive [--turns N] [--agent claude|claude-acp|devin] [--wait-on-ask]")
-
-(defn drive
-  "Run up to --turns driver turns, each followed by the spawns it requested,
-  printing a line per turn and spawn. Returns why it stopped."
-  [session root opts]
-  (let [wait (boolean (some #{"--wait-on-ask"} opts))
-        opts (remove #{"--wait-on-ask"} opts)
-        turns (parse-long (or (flag opts "--turns") "10"))
-        agent (or (flag opts "--agent") *default-agent*)
-        from (parse-long (or (flag opts "--from") "1"))
-        _ (when-not (and turns (pos? turns) from (pos? from)) (fail! drive-usage))
-        _ (when (and wait (not *ntfy*))
-            (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent, and answers read unless LUME_NTFY_REPLY is set)"))
-        codes (atom {})
-        replies (delay (ntfy-subscribe! (reply-url)))
-        src *source*
-        loaded (atom (fingerprint src))
-        say #(do (println %) (flush))
-        done (promise)
-        stop! (fn [why]
-                (deliver done true)
-                (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
-                (str "drive stopped: " why))
-        hook (Thread. ^Runnable (bound-fn []
-                                  (when-not (realized? done)
-                                    (kernel/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)})))))]
-    (when (= 1 from)
-      (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
-    (.addShutdownHook (Runtime/getRuntime) hook)
-    ;; Waiting, the drive sends asks itself, with their codes.
-    (push-thread-bindings {#'*ask-notices* (not wait) #'*sent* (atom #{})})
-    (try
-      (loop [n from]
-        (let [events (store/read-events session)
-              {:keys [items asks allow] :as state} (status/project events)
-              idle (not-any? #(= :open (:state %)) (vals items))
-              closing (when idle (unreviewed-spawn events))
-              ask (->> (vals asks) (filter #(= :open (:state %))) (sort-by #(parse-long (subs (:id %) 1))) first)
-              over (policy/over-budget state)
-              now (when (> n from) (fingerprint src))
-              changed (and now (not= now @loaded))
-              broken (when changed (load-error src))]
-          (when broken
-            (reset! loaded now)
-            (note/note session [(str "drive: lume source changed but doesn't load, so turn " n
-                                " runs the code the drive started with: " broken)]))
-          (cond
-            (and ask wait) (do (wait-for-answer! session codes replies say) (recur n))
-            ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
-            over (stop! over)
-            (and idle (not closing)) (stop! "no open items")
-            (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
-            (> n turns) (stop! (str turns " turns run"))
-            (and changed (not broken))
-            (do (kernel/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
-                (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
-                                wait (conj "--wait-on-ask"))))
-            :else
-            (let [{did :drive/id} (kernel/append! session (fn [events]
-                                                            {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
-                                                             :n n :by (actor)}))
-                  {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
-                  logged (rest (drop-while #(not= did (:drive/id %)) (store/read-events session)))]
-              ;; Logged after reading what the turn did, so it never counts as the turn's work.
-              (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
-                                                         turn)))
-              (kernel/react-for! session did)
-              (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
-              (if (and (empty? logged) (not closing))
-                (stop! (str did " logged no events"))
-                (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))
-                    (recur (inc n))))))))
-      (finally (pop-thread-bindings)
-               (when (realized? replies) ((:stop @replies)))
-               (.removeShutdownHook (Runtime/getRuntime) hook)))))
-
 ;; Item show: what status clips. The intent and gate in full, then the item's
 ;; events: its own, its spawns' (bar progress), and notes and asks naming it.
 
@@ -1068,7 +617,7 @@
             (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
           (if (zero? n)
             "--turns 0: not driving; lume drive, or drive by hand from lume status"
-            (drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
+            (drive/drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
 
 (defn- terminal? []
   ;; Java 22+ Console.isTerminal; before that, a console meant a terminal.
@@ -1269,16 +818,6 @@ lume ask                                    open asks in full, wrapped to the te
     {:path ["allow"] :needs :session :usage allow-usage
      :run (fn [{:keys [session]} args] (allow session args))
      :help "lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}]
-   "drive"
-   [{:path ["drive"] :needs #{:session :root} :usage drive-usage
-     :run (fn [{:keys [session root]} args] (drive session root args))
-     :help "lume drive [--turns N] [--agent A] [--wait-on-ask]
-                                            driver turns until an ask is open, a budget is reached, no items are open, or N (10) run;
-                                            workers run the drive's agent. LUME_NTFY=<ntfy topic URL>: each
-                                            ask opened and each drive stop is POSTed there (logged :notify/*).
-                                            --wait-on-ask: on an open ask, send it with a one-time code and wait
-                                            for 'aN <code> <answer>' on that topic (LUME_NTFY_REPLY, if set,
-                                            is a separate reply topic) or lume answer, then go on"}]
    "spec"
    [{:path ["check"] :needs :none :usage check-usage
      :run (fn [_ args] (check args))
@@ -1322,13 +861,12 @@ lume ask                                    open asks in full, wrapped to the te
 (def features
   "The built-in features with their commands, in order: lume help lists the
   commands in this order. -main binds kernel/*features* to these."
-  (let [named (into {} (map (juxt :name identity)) status/features)
+  (let [named (into {} (map (juxt :name identity)) (conj status/features drive/feature))
         order ["install" "session" "item" "ask" "note" "measure" "spawn" "budget" "cadence" "drive"
                "ntfy" "spec" "inspect" "clean"]]
     (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
     (mapv #(-> (get named % {:name %})
-               (update :commands (fn [own] (or own (get commands % []))))
-               (cond-> (= "ntfy" %) (assoc :reactions ntfy-reactions)))
+               (update :commands (fn [own] (or own (get commands % [])))))
           order)))
 
 (defn -main [& args]

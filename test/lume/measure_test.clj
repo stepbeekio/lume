@@ -7,6 +7,7 @@
             [lume.cli :as cli]
             [lume.kernel :as kernel]
             [lume.measure :as measure]
+            [lume.ntfy :as ntfy]
             [lume.policy :as policy]
             [lume.spec :as spec]
             [lume.status :as status]
@@ -23,7 +24,7 @@
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
                   kernel/*features* cli/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
-                  cli/*ntfy* nil]
+                  ntfy/*ntfy* nil]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
