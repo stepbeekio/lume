@@ -668,16 +668,23 @@
            "\n" out
            ;; Measure what the worker left, then: the worker may have closed the
            ;; item itself; if it asked or changed nothing, a passing gate says
-           ;; nothing about its work, so the item stays open; otherwise its gate decides.
+           ;; nothing about its work, so the item stays open. A measured item
+           ;; stays open too: its gate runs, but keeping or rolling back the
+           ;; change is the human's or driver's call. Otherwise its gate decides.
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (:measure item)
                (str "\n" (measure-row session (run-measure session item)))))
-           (let [item (get-in (status/project (store/read-events session)) [:items id])]
-             (when (and (:gate item) (= :open (:state item)))
-               (str "\n" (if-let [why (idle-why session sid before (worktree-fingerprint root))]
-                           (str id " left open: " why " · " (note session [(str id " left open, not gated: " why)]))
-                           (try (item-close session [id "done" (str "gate passed after " sid)])
-                                (catch clojure.lang.ExceptionInfo e (ex-message e)))))))))))
+           (let [item (get-in (status/project (store/read-events session)) [:items id])
+                 why (when (and (= :open (:state item)) (or (:gate item) (:measure item)))
+                       (idle-why session sid before (worktree-fingerprint root)))]
+             (cond
+               (not= :open (:state item)) nil
+               why (str "\n" id " left open: " why " · " (note session [(str id " left open, not gated: " why)]))
+               (:measure item) (str "\n" id " left open to decide"
+                                    (when (:gate item) (str " · " (gate-summary (run-gate session item))))
+                                    " · lume item close " id " done|dropped \"<why>\"")
+               (:gate item) (str "\n" (try (item-close session [id "done" (str "gate passed after " sid)])
+                                           (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
 ;; The cadence's batch is how many requests a turn may make.

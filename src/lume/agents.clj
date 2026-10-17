@@ -397,7 +397,9 @@ Run `lume status` first. It is one screen:
 - pinned notes: standing lessons; follow them
 - open items: the backlog, each with the gate that decides done, and its latest
   measurement row if it has one (`lume measure <id>` runs it again; `lume ledger [<id>]`
-  lists every row, closed items' too, each against the row it was compared with)
+  lists every row, closed items' too, each against the row it was compared with).
+  A measured item stays open after a spawn, gate passed or not: compare the row
+  with the one it names (vs mN) and close it done to keep the change, dropped to roll back
 - recent notes and events: what the last session did
 
 `lume item show <id>` prints an item's full intent, gate and history when status clips it;

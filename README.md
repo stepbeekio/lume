@@ -63,13 +63,13 @@ lume item measure i1 'make clean; /usr/bin/time -f "build_s=%e" make 2>&1 | tail
 lume measure i1                                       # m1 i1 build_s=41.2 · 41.3s
 ```
 
-The command's `name=number` (or `name: number`) pairs become the row; with none, its last number is `value`. Wall time is always recorded. Every spawn on the item measures again before its gate runs, and status shows the latest row; `lume item show` has them all. A row shows each number's change against the latest earlier passing row of the same command, e.g. `m2 i1 build_s=38.9(-2.3) · 39.0s · vs m1`, so the baseline is the row before; changing the command starts a new baseline.
+The command's `name=number` (or `name: number`) pairs become the row; with none, its last number is `value`. Wall time is always recorded. Every spawn on the item measures again before its gate runs, and status shows the latest row; `lume item show` has them all. A row shows each number's change against the latest earlier passing row of the same command, e.g. `m2 i1 build_s=38.9(-2.3) · 39.0s · vs m1`, so the baseline is the row before; changing the command starts a new baseline. A spawn on a measured item runs its gate but leaves the item open: keeping the change (`lume item close <id> done`) or rolling it back (`dropped`) is a decision for you or the driver, made from the row.
 
 Noisy numbers want repeats: `lume item measure i1 'bb bench' --runs 10 --drop 1` runs the command ten times, drops the first (a warm-up), and records one row of each number's median with its min..max across the kept runs, e.g. `m3 i1 build_s=38.9(-2.3)[38.1..40.2] · 39.0s · 9 of 10 runs · vs m2`. A failing run ends the measurement (`fail exit 1 in run 4 of 10`), and all runs' output is in one file. Runs and drop are part of the measurement's spec, so changing them starts a new baseline, as changing the command does. Each row also records where it was taken (host, load average, git HEAD and jj change), which `lume item show` prints, so a noisy row can be explained.
 
 Lower is better by default. For a number where higher is better (a score, a hit rate), name it: `lume item measure i1 'bb eval' --higher score` (repeat `--higher` for more). Rows mark it `score↑=0.82(+0.03)`, and the plateau count (below) treats a higher one as a new best. Changing the direction starts the plateau count over.
 
-`lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
+`lume drive` runs one fresh driver agent per turn. Each driver makes one decision: add an item, spawn a worker, review and commit a worker's diff, or ask you something. A worker's item closes only when its gate exits 0, and a measured one only when the driver closes it. The drive stops when it has a question for you, when no items are open, or when its turn budget runs out (10 by default).
 
 Bound what agents spend with a budget:
 

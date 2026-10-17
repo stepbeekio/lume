@@ -370,7 +370,7 @@
         (is (str/includes? (slurp (:out last-measure)) (str (fs/file-name *root*))))))
     (testing "a spawn measures what its worker left, before the gate"
       (let [out (cli/spawn s *root* [id "--agent" "test"])]
-        (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds · vs m1\ni1 not done: gate g1" out) out)))
+        (is (re-find #"\nm2 i1 build_s=12\.5 hits=3 · \d+\.\ds · vs m1\ni1 left open to decide · g1 fail exit 1" out) out)))
     (testing "a failing measurement is still a row, with where its output is"
       (cli/item-measure s [id "echo oops; exit 2"])
       (let [out (cli/measure s [id])]
@@ -1020,7 +1020,14 @@
     (testing "a commit is a change"
       (sh "add" "-A")
       (let [id (cli/item-add s ["commit" "--gate" "true"])]
-        (is (str/ends-with? (cli/spawn s *root* [id "--agent" "commits"]) "i4 done · g2 pass"))))))
+        (is (str/ends-with? (cli/spawn s *root* [id "--agent" "commits"]) "i4 done · g2 pass"))))
+    (testing "a measured item stays open after a passing gate, for the human or driver to decide"
+      (let [id (cli/item-add s ["faster" "--gate" "true"])]
+        (cli/item-measure s [id "echo t=2"])
+        (cli/measure s [id])
+        (let [out (cli/spawn s *root* [id "--agent" "writes"])]
+          (is (re-find #"\nm2 i5 t=2 · \d+\.\ds · vs m1\ni5 left open to decide · g3 pass · lume item close i5 done\|dropped \"<why>\"$" out) out))
+        (is (= :open (state id)))))))
 
 (deftest the-default-agent-is-lume-agent
   (let [s (new-session "goal")]
@@ -1435,7 +1442,8 @@
         (is (re-find #"^usage: lume run" (apply refused args)) (pr-str args)))
       (is (re-find #"^usage: lume run" (cli/run ["run" "--help"]))))
     (testing "it starts the session, baselines measurements, then drives"
-      (reset! *driver-turns* [(str (lume-cmd "spawn" "i1" "--agent" "test")) (lume-cmd "item" "close" "i2" "done" "written")])
+      (reset! *driver-turns* [(str (lume-cmd "spawn" "i1" "--agent" "test")) (lume-cmd "item" "close" "i2" "done" "written")
+                              (lume-cmd "item" "close" "i1" "done" "t is smaller")])
       (let [[ret out] (run! (spec-file sp) "--agent" "driver" "--turns" "3")
             s (store/current-session *root*)
             events (store/read-events s)
@@ -1448,7 +1456,8 @@
         (is (= sp (edn/read-string (cli/show-spec s ["--all"]))) "the session's harness is the spec")
         (is (= {:batch 1 :gate-fail true :plateau 3} (:cadence-ceiling (status/project events)))
             "the human's cadence is the ceiling")
-        (is (= ["d1" "d2"] (keep :drive/id (filter #(= :drive/turn (:type %)) events))))
+        (is (= ["d1" "d2" "d3"] (keep :drive/id (filter #(= :drive/turn (:type %)) events))))
+        (is (= :done (get-in (status/project events) [:items "i1" :state])) "the measured item was the driver's to close")
         (is (= ["m1" "m2"] (keep :measure/id events)) "the spawn on i1 was measured against the baseline")))
     (testing "the goal on the command line replaces the spec's; --turns 0 doesn't drive"
       (let [[ret out] (run! (spec-file sp) "cut t further" "--turns" "0")
