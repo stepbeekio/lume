@@ -122,7 +122,9 @@
         (is (str/includes? st "first goal")))
       (is (not (str/includes? (cli/show-status *root* []) "(not current)")))
       (is (not (str/includes? (cli/show-status *root* [new-id]) "(not current)")))
-      (is (= (pr-str (last old-events)) (cli/show-log *root* ["--session" old-id "-n" "1"])))
+      (is (= (str ";; +" (dec (count old-events)) " earlier events — -n " (count old-events) "\n"
+                  (pr-str (last old-events)))
+             (cli/show-log *root* ["--session" old-id "-n" "1"])))
       (is (= (last (store/read-events new)) (edn/read-string (cli/show-log *root* ["-n" "1"])))))
     (testing "reading writes nothing, and the current session stays current"
       (is (= old-events (store/read-events old)))
@@ -683,6 +685,59 @@
       (let [prompt (slurp (get-in (status/project (store/read-events s)) [:spawns "s1" :out]))]
         (is (str/includes? prompt "- a1 ship on fridays? → never\n"))
         (is (not (str/includes? prompt "which db")))))))
+
+(deftest log-queries-filter-then-bound
+  (let [s (new-session "goal")
+        root *root*
+        i1 (cli/item-add s ["first"])
+        i2 (cli/item-add s ["second"])
+        run #(->> (str/split-lines (cli/show-log root %))
+                  (remove (fn [l] (or (str/blank? l) (str/starts-with? l ";;"))))
+                  (mapv edn/read-string))]
+    (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id i1 :by "human"}))
+    (store/append! s (constantly {:type :spawn/progress :spawn/id "s1" :text "editing"}))
+    (binding [cli/*actor* "s1"]
+      (cli/note s ["about i1: done soon"])
+      (cli/note s ["unrelated (i10)"]))
+    (cli/note s ["see i2"])
+    (testing "--type takes a prefix of ns/name"
+      (is (= [:note/added :note/added :note/added] (map :type (run ["--type" "note"]))))
+      (is (= [:spawn/started :spawn/progress] (map :type (run ["--type" "spawn/"]))))
+      (is (= [:item/added :item/added] (map :type (run ["--type" "item/added"])))))
+    (testing "--item: its events, its spawns' (progress too), notes naming it"
+      (is (= [:item/added :spawn/started :spawn/progress :note/added]
+             (map :type (run ["--item" i1]))))
+      (is (= ["see i2"] (keep :text (run ["--item" i2]))))
+      (is (thrown-with-msg? Exception #"no such item: i9" (cli/show-log root ["--item" "i9"]))))
+    (testing "--by, --grep, and filters combine with -n"
+      (is (= 2 (count (run ["--by" "s1"]))))
+      (is (= ["unrelated (i10)"] (keep :text (run ["--by" "s1" "--grep" "i1\\d"]))))
+      (is (= ["see i2"] (keep :text (run ["--type" "note" "-n" "1"]))))
+      (is (= ";; +2 earlier events — -n 3"
+             (first (str/split-lines (cli/show-log root ["--type" "note" "-n" "1"])))))
+      (is (= "" (cli/show-log root ["--by" "nobody"]))))
+    (testing "bad queries are refused"
+      (is (thrown-with-msg? Exception #"bad --grep regex" (cli/show-log root ["--grep" "("])))
+      (is (thrown-with-msg? Exception #"usage: lume log" (cli/show-log root ["--by" "a" "--by" "b"])))
+      (is (thrown-with-msg? Exception #"usage: lume log" (cli/show-log root ["--type"]))))))
+
+(deftest note-show-reads-a-note-in-full
+  (let [s (new-session "goal")
+        long-text (str "start " (str/join " " (repeat 80 "word")) " the end")]
+    (binding [cli/*actor* "s1"] (cli/note s [long-text]))
+    (cli/note s ["--pin" "lasting"])
+    (cli/note s ["--pin" "was lasting"])
+    (cli/note s ["--unpin" "n3"])
+    (let [out (cli/note-show s ["n1"])]
+      (is (re-find #"^n1\nnoted    \d{4}-\d\d-\d\dT\d\d:\d\d by s1\n" out))
+      (is (str/ends-with? out (str "\n" long-text))))
+    (is (str/starts-with? (cli/note-show s ["n2"]) "n2 pinned\n"))
+    (is (re-find #"^n3 unpinned\nnoted .*\nunpinned \S+ by human\nwas lasting$" (cli/note-show s ["n3"])))
+    (binding [store/*session* s]
+      (is (str/starts-with? (cli/run ["note" "show" "n2"]) "n2 pinned"))
+      (is (= "noted n4" (cli/run ["note" "show"])) "a note that just says show is still a note"))
+    (is (thrown-with-msg? Exception #"no such note: n9" (cli/note-show s ["n9"])))
+    (is (thrown-with-msg? Exception #"usage: lume note show <id>" (cli/note-show s [])))))
 
 (deftest ask-show-reads-an-ask-in-full
   (let [s (new-session "goal")

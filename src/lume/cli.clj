@@ -364,6 +364,22 @@
                                            pin (assoc :pinned true))))]
           (str (if pin "pinned " "noted ") (:note/id e)))))))
 
+;; Note show: what status clips. The text in full, who noted it and when, and
+;; whether it's pinned.
+(defn note-show [session [id]]
+  (when (str/blank? id) (fail! "usage: lume note show <id>"))
+  (let [events (store/read-events session)
+        added (or (some #(when (and (= :note/added (:type %)) (= id (:note/id %))) %) events)
+                  (fail! "no such note:" id))
+        unpinned (some #(when (and (= :note/unpinned (:type %)) (= id (:note/id %))) %) events)
+        at #(str (subs (:t %) 0 16) " by " (:by %))]
+    (str/join "\n"
+              (concat
+               [(str id (cond unpinned " unpinned" (:pinned added) " pinned" :else ""))
+                (str "noted    " (at added))]
+               (when unpinned [(str "unpinned " (at unpinned))])
+               [(:text added)]))))
+
 ;; Only the human grants permissions: workers and agent drivers would grant themselves
 ;; whatever they need, so they ask with lume ask instead.
 (defn allow [session [a b]]
@@ -848,7 +864,7 @@
                 (str "gate    " (or (:gate item) "none"))]
                (when (:measure item) [(str "measure " (status/spec-text item))])
                (when (> (count related) (count shown))
-                 [(str "+" (- (count related) (count shown)) " earlier events — lume log")])
+                 [(str "+" (- (count related) (count shown)) " earlier events — lume log --item " id " -n N")])
                (map item-event-line shown)))))
 
 ;; Install: set up the agent side of this machine. Safe to re-run; writes only
@@ -895,13 +911,36 @@
                              (when (> (count sessions) (count shown))
                                [(str "+" (- (count sessions) (count shown)) " more — lume ls --all")]))))))
 
-(def ^:private log-usage "usage: lume log [-n N] [--session <id>]")
+(def ^:private log-usage
+  "usage: lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]")
+
+;; Filters narrow the events before -n takes the last N, so a query is as
+;; bounded as the plain log. --type matches a prefix of ns/name (note, spawn/);
+;; --item is item show's events plus its spawns' progress; --grep searches the
+;; event's EDN. Output stays EDN: the hint for what -n left out is a comment.
+(defn- log-filter [events {[t & ts] "--type" [iid & iids] "--item" [by & bys] "--by" [re & res] "--grep"}]
+  (when (some seq [ts iids bys res]) (fail! log-usage))
+  (let [re (when re (try (re-pattern re) (catch Exception e (fail! "bad --grep regex:" (ex-message e)))))
+        spawn-ids (when iid
+                    (set (:spawns (or (get-in (status/project events) [:items iid]) (fail! "no such item:" iid)))))
+        of-item (when iid (item-event? iid spawn-ids))]
+    (filterv (fn [e]
+               (and (or (nil? t) (str/starts-with? (subs (str (:type e)) 1) t))
+                    (or (nil? iid) (of-item e) (contains? spawn-ids (:spawn/id e)))
+                    (or (nil? by) (= by (:by e)))
+                    (or (nil? re) (re-find re (pr-str e)))))
+             events)))
 
 (defn show-log [root args]
-  (let [[pos {[n & ns] "-n" [id & ids] "--session"}] (take-flags args #{"-n" "--session"} log-usage)
+  (let [[pos {[n & ns] "-n" [id & ids] "--session" :as flags}]
+        (take-flags args #{"-n" "--session" "--type" "--item" "--by" "--grep"} log-usage)
         n (if n (parse-long n) 20)]
     (when (or (seq pos) (seq ns) (seq ids) (not (and n (<= 0 n)))) (fail! log-usage))
-    (str/join "\n" (map pr-str (take-last n (store/read-events (session-by-id root id)))))))
+    (let [events (log-filter (store/read-events (session-by-id root id)) flags)
+          shown (take-last n events)]
+      (str/join "\n" (concat (when (> (count events) (count shown))
+                               [(str ";; +" (- (count events) (count shown)) " earlier events — -n " (count events))])
+                             (map pr-str shown))))))
 
 ;; Ledger: every measurement row, open and closed items alike, newest last,
 ;; each with its change against the row it was compared with when taken. A
@@ -1106,6 +1145,7 @@ lume item close <id> done|dropped \"<why>\"   record a disposition; done runs th
 lume item show <id>                         one item in full: intent, gate, disposition and its events
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
 lume note --unpin <id>                      let a pinned note age out like the rest
+lume note show <id>                         one note in full: text, who noted it and when, pinned or not
 lume ask \"<question>\"                       put a question to the human; open asks top status
 lume ask                                    open asks in full, wrapped to the terminal, each with its answer command
 lume ask show <id>                          one ask in full: question, who asked and when, its item, its answer
@@ -1130,7 +1170,10 @@ lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]
                                             every-spawn, is the human's
 lume ls [--all]                             this repo's sessions, newest first (* current): goal, open/closed
                                             items, last event, outcome; 10 unless --all
-lume log [-n N] [--session <id>]            raw events (default last 20), of a past session by id
+lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]
+                                            raw events as EDN (default last 20), of a past session by id;
+                                            filters combine: type prefix (note, spawn/), an item's events,
+                                            actor, regex over the event; a ;; line counts what -n left out
 lume clean [--session <id>] [--yes]         remove every trace of lume for this repo (or one session):
                                             its state, refs/lume/*, worktrees; lists them, refused without --yes")
 
@@ -1154,7 +1197,9 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                (fail! "usage: lume item add|gate|measure|close|show ..."))
       "measure" (if (#{"-h" "--help"} sub) measure-usage (measure (session) (rest args)))
       "ledger" (if (#{"-h" "--help"} sub) ledger-usage (ledger @root (rest args)))
-      "note" (note (session) (rest args))
+      "note" (if (and (= "show" sub) (= 2 (count (rest args))))
+               (note-show (session) (drop 2 args))
+               (note (session) (rest args)))
       "ask" (if (and (= "show" sub) (= 2 (count (rest args))))
               (ask-show (session) (drop 2 args))
               (ask (session) (rest args)))
