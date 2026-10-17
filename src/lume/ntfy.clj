@@ -265,5 +265,5 @@
   {:name "ntfy"
    :events {:notify/sent {:req #{:on :text}}
             :notify/failed {:req #{:on :text :error}}}
-   :reactions [{:on :ask/opened :run (fn [e] (notify-ask! kernel/*session* e))}
-               {:on :drive/stopped :run (fn [e] (notify! kernel/*session* e "lume: drive stopped" (:why e)))}]})
+   :reactions [{:on :ask/opened :run (fn [session e] (notify-ask! session e))}
+               {:on :drive/stopped :run (fn [session e] (notify! session e "lume: drive stopped" (:why e)))}]})

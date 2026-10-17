@@ -97,7 +97,7 @@
 
 (defn- reactions [{:keys [rules]}]
   (for [rule (vals rules)]
-    {:on (:on rule) :run #(fire! kernel/*session* rule %)}))
+    {:on (:on rule) :run (fn [session e] (fire! session rule e))}))
 
 (def feature
   {:name "rule"

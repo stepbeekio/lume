@@ -145,8 +145,8 @@
    :fold (into {} (for [[type fold] (:fold f)] [type (contained name fold true)]))
    :guards (into {} (for [[type guard] (:guards f)] [type (contained name guard false)]))
    :reactions (for [{:keys [on run] :as r} (:reactions f)]
-                (assoc r :run (fn [e] (try (run e)
-                                           (catch Exception x (warn "extension" name "on" (pr-str (:type e)) "failed:" (ex-message x)))))))
+                (assoc r :run (fn [_session e] (try (run e)
+                                                    (catch Exception x (warn "extension" name "on" (pr-str (:type e)) "failed:" (ex-message x)))))))
    :commands (:commands f)
    :status (for [{:keys [lines order]} (:status f)
                  :let [ls #(section-lines name lines (get-in % [:ext name]))]]

@@ -1007,9 +1007,9 @@
         pinger {:name "pinger"
                 :events {:pinger/ping {:req #{:n}}}
                 :reactions [{:on :note
-                             :run (fn [e] (swap! fired conj [(:text e) (:by e) (store/session-id kernel/*session*)]))}
+                             :run (fn [session e] (swap! fired conj [(:text e) (:by e) (store/session-id session)]))}
                             {:on :pinger/ping
-                             :run (fn [e] (kernel/append! kernel/*session* (constantly {:type :pinger/ping :n (inc (:n e))})))}]}]
+                             :run (fn [session e] (kernel/append! session (constantly {:type :pinger/ping :n (inc (:n e))})))}]}]
     (binding [kernel/*features* (conj features/all pinger)]
       (let [s (new-session "goal")
             sid (store/session-id s)

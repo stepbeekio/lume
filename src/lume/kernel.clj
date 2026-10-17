@@ -175,9 +175,10 @@
                       (some-> (some #(% s e) guards) fail!)))
                   e))))
 
-;; Reactions: a feature's :reactions [{:on type-or-prefix :run (fn [e])}] run
-;; after append! writes an event, in the appending process, with *session*
-;; bound to the event's session. :on is a type (:ask/opened) or a namespace
+;; Reactions: a feature's :reactions [{:on type-or-prefix :run (fn [session e])}]
+;; run after append! writes an event, in the appending process, given the
+;; event's session. An extension's reactions are (fn [e]) and read *session*
+;; instead: lume.ext adapts them. :on is a type (:ask/opened) or a namespace
 ;; (:ask matches every :ask/… type). :reactions may instead be a fn of the
 ;; session's state returning them, for reactions the log declares (rules).
 ;; A reaction's own appends react in turn, nested at most max-depth deep; a
@@ -193,7 +194,8 @@
   (or (some-> (System/getenv "LUME_DEPTH") not-empty parse-long) 0))
 
 (def ^:dynamic *session*
-  "The session whose event the running reactions see; nil outside them."
+  "The session whose event the running reactions see, for extensions'
+  (fn [e]) reactions; nil outside them."
   nil)
 
 (def ^:dynamic *spawned-as*
@@ -214,7 +216,7 @@
       (let [s (delay (state session))]
         (doseq [{:keys [on run]} (mapcat #(let [r (:reactions %)] (if (fn? r) (r @s) r)) (features))
                 :when (reacts? on (:type e))]
-          (run e))))))
+          (run session e))))))
 
 (defn react-for!
   "Run the reactions for the events who (a worker or driver this process

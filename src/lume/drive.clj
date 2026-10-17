@@ -160,51 +160,51 @@
                   (kernel/append! session (constantly {:type :drive/stopped :why why}))
                   (str "drive stopped: " why))]
       ;; Waiting, the drive sends asks itself, with their codes.
-      (push-thread-bindings {#'ntfy/*ask-notices* (not wait) #'ntfy/*sent* (atom #{})})
-      (try
-        (loop [n from]
-          (let [events (kernel/read-events session)
-                {:keys [items allow] :as state} (kernel/project events)
-                idle (not-any? #(= :open (:state %)) (vals items))
-                closing (when idle (unreviewed-spawn events))
-                ask (first (ask/open-asks state))
-                over (policy/over-budget state)
-                now (when (> n from) (fingerprint src))
-                changed (and now (not= now @loaded))
-                broken (when changed (load-error src))]
-            (when broken
-              (reset! loaded now)
-              (note/note session [(str "drive: lume source changed but doesn't load, so turn " n
-                                       " runs the code the drive started with: " broken)]))
-            (cond
-              (and ask wait) (do (ntfy/wait-for-answer! session codes replies say) (recur n))
-              ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
-              over (stop! over)
-              (and idle (not closing)) (stop! "no open items")
-              (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
-              (> n turns) (stop! (str turns " turns run"))
-              (and changed (not broken))
-              (do (kernel/append! session (constantly {:type :drive/reloaded :n n}))
-                  (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
-                                  wait (conj "--wait-on-ask"))))
-              :else
-              (let [{did :drive/id} (kernel/append! session (fn [events]
-                                                              {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
-                                                               :n n}))
-                    {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
-                    logged (rest (drop-while #(not= did (:drive/id %)) (kernel/read-events session)))]
-                ;; Logged after reading what the turn did, so it never counts as the turn's work.
-                (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
-                                                           turn)))
-                (kernel/react-for! session did)
-                (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
-                (if (and (empty? logged) (not closing))
-                  (stop! (str did " logged no events"))
-                  (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))
-                      (recur (inc n))))))))
-        (finally (pop-thread-bindings)
-                 (when (realized? replies) ((:stop @replies)))
-                 (finished!))))))
+      ;; Bound, not passed: the ntfy reactions to the drive's appends read them.
+      (binding [ntfy/*ask-notices* (not wait) ntfy/*sent* (atom #{})]
+        (try
+          (loop [n from]
+            (let [events (kernel/read-events session)
+                  {:keys [items allow] :as state} (kernel/project events)
+                  idle (not-any? #(= :open (:state %)) (vals items))
+                  closing (when idle (unreviewed-spawn events))
+                  ask (first (ask/open-asks state))
+                  over (policy/over-budget state)
+                  now (when (> n from) (fingerprint src))
+                  changed (and now (not= now @loaded))
+                  broken (when changed (load-error src))]
+              (when broken
+                (reset! loaded now)
+                (note/note session [(str "drive: lume source changed but doesn't load, so turn " n
+                                         " runs the code the drive started with: " broken)]))
+              (cond
+                (and ask wait) (do (ntfy/wait-for-answer! session codes replies say) (recur n))
+                ask (stop! (str "ask " (:id ask) " is open: " (:question ask) " — answer with lume answer " (:id ask) " \"<text>\""))
+                over (stop! over)
+                (and idle (not closing)) (stop! "no open items")
+                (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
+                (> n turns) (stop! (str turns " turns run"))
+                (and changed (not broken))
+                (do (kernel/append! session (constantly {:type :drive/reloaded :n n}))
+                    (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
+                                    wait (conj "--wait-on-ask"))))
+                :else
+                (let [{did :drive/id} (kernel/append! session (fn [events]
+                                                                {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
+                                                                 :n n}))
+                      {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
+                      logged (rest (drop-while #(not= did (:drive/id %)) (kernel/read-events session)))]
+                  ;; Logged after reading what the turn did, so it never counts as the turn's work.
+                  (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
+                                                             turn)))
+                  (kernel/react-for! session did)
+                  (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
+                  (if (and (empty? logged) (not closing))
+                    (stop! (str did " logged no events"))
+                    (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))
+                        (recur (inc n))))))))
+          (finally (when (realized? replies) ((:stop @replies)))
+                   (finished!)))))))
 
 (def feature
   {:name "drive"
