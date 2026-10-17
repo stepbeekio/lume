@@ -1094,15 +1094,22 @@
         (human-only! (str "only the human runs a spec that sets policy (" policy "); remove it from the spec,"
                           " or ask with lume ask \"<question>\"")
                      (str "Start a session where " policy ".") "yes"))
-      (let [session (store/new-session! root)]
+      ;; Run from inside a session (a worker or driver), the new one starts
+      ;; alongside it: the repo's current session stays the human's.
+      (let [within store/*session*
+            session (store/new-session! root :current (not within))]
         (doseq [e ((requiring-resolve 'lume.spec/events) sp root)]
           (store/append! session (constantly (assoc e :by (actor)))))
         (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
-        (doseq [item (->> (vals (:items (status/project (store/read-events session)))) (filter :measure) (sort-by :order))]
-          (say (str "baseline " (measure-row session (run-measure session item)))))
-        (if (zero? n)
-          "--turns 0: not driving; lume drive, or drive by hand from lume status"
-          (drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent))))))))
+        (when within
+          (say (str "not made current: run inside " (store/session-id within)
+                    "; lume status " (store/session-id session) " reads it")))
+        (binding [store/*session* (when within session)]
+          (doseq [item (->> (vals (:items (status/project (store/read-events session)))) (filter :measure) (sort-by :order))]
+            (say (str "baseline " (measure-row session (run-measure session item)))))
+          (if (zero? n)
+            "--turns 0: not driving; lume drive, or drive by hand from lume status"
+            (drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
 
 (defn- terminal? []
   ;; Java 22+ Console.isTerminal; before that, a console meant a terminal.
@@ -1276,7 +1283,8 @@ lume spec [--all]                           this session's harness as spec EDN (
 lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]
                                             check a spec, start a session from it, baseline its measurements,
                                             then drive (--turns 0: don't). A spec's allow, or a cadence above
-                                            every-spawn, is the human's
+                                            every-spawn, is the human's. Run by a worker or driver, the new
+                                            session starts alongside; the current one stays
 lume ls [--all]                             this repo's sessions, newest first (* current): goal, open/closed
                                             items, last event, outcome; 10 unless --all
 lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]

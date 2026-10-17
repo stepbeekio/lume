@@ -1392,6 +1392,18 @@
         (is (str/includes? out "baseline m1 i1"))
         (is (= "cut t further" (:goal (status/project events))))
         (is (not-any? #(= :drive/started (:type %)) events))))
+    (testing "run inside a session, it starts one alongside and leaves the current one be"
+      (let [outer (store/current-session *root*)
+            before (store/read-events outer)
+            [ret out] (binding [store/*session* outer] (run! (spec-file sp) "--turns" "0"))
+            [_ id] (re-find #"^session (\S+) started" out)
+            inner (store/find-session *root* id)]
+        (is (str/starts-with? ret "--turns 0"))
+        (is (str/includes? out (str "not made current: run inside " (store/session-id outer))))
+        (is (= outer (store/current-session *root*)))
+        (is (not= outer inner))
+        (is (= ["m1"] (keep :measure/id (store/read-events inner))) "the baseline went to the new session")
+        (is (= before (store/read-events outer)) "and nothing to the outer one")))
     (testing "an agent runs the same harness, policy aside"
       (binding [cli/*actor* "d7"]
         (let [[ret] (run! (spec-file sp) "--turns" "0")

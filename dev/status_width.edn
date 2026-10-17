@@ -1,0 +1,6 @@
+{:goal "lume status holds to its 100 columns at every decision of a real session's history"
+ :gate "bb test"
+ :budget {:usd 5 :spawns 3 :minutes 30}
+ :items [{:intent "Clip status lines so none passes status.clj's width (100): closed lines with ' — gate passed after sNN', notes by long actors, spawn result lines reach 104-106 on 20261016-034706 (found in lume repl, i55, n155). Measured by replaying that session's log at every decision."
+          :gate "bb test && bb dev/status_width.clj 20261016-034706 --max 100"
+          :measure "bb dev/status_width.clj 20261016-034706"}]}

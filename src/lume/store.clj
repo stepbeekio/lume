@@ -68,8 +68,9 @@
 (defn new-session!
   "Start a session with id yyyyMMdd-HHmmss, suffixed -2, -3… if that second is
   taken. The directory is claimed with an atomic create, so two inits in the
-  same second (even in different processes) never share a log."
-  [root]
+  same second (even in different processes) never share a log. It becomes the
+  repo's current session unless :current false."
+  [root & {:keys [current] :or {current true}}]
   (let [stamp (.format (LocalDateTime/now) (DateTimeFormatter/ofPattern "yyyyMMdd-HHmmss"))
         sessions (fs/path (repo-dir root) "sessions")]
     (fs/create-dirs sessions)
@@ -79,7 +80,7 @@
             claimed (try (fs/create-dir session) true
                          (catch java.nio.file.FileAlreadyExistsException _ false))]
         (if claimed
-          (do (spit (str (fs/path (repo-dir root) "current")) id)
+          (do (when current (spit (str (fs/path (repo-dir root) "current")) id))
               session)
           (recur (inc n)))))))
 
