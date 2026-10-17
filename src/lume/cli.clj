@@ -981,6 +981,12 @@
   "How long the reply subscriber waits before reconnecting. Tests bind it."
   5000)
 
+(def ^:dynamic *idle-ms*
+  "How long the reply stream may go silent before the subscriber drops it and
+  reconnects. ntfy sends a keepalive every ~45s, so two missed ones mean a
+  half-dead connection. Tests bind it."
+  100000)
+
 (defn- reply-code
   "8 characters a phone types easily, from a secure random source."
   []
@@ -999,32 +1005,54 @@
   "Stream the ntfy topic at url, from now on, into :queue: each message as
   {:message text}, each failure as {:error why}. It runs on a daemon thread,
   reconnecting after a dropped stream from the last message it saw, until
-  (:stop) is called."
+  (:stop) is called. A stream silent for *idle-ms* (no message, no
+  keepalive) is dropped by a watchdog, so a half-dead connection can't block
+  it forever."
   [url]
   (let [q (java.util.concurrent.LinkedBlockingQueue.)
         [url auth] (ntfy-target url)
         since (atom (str (quot (System/currentTimeMillis) 1000)))
         running (atom true)
         stream (atom nil)
+        heard (atom (System/currentTimeMillis))
+        dropped (atom false)
+        idle-ms (long *idle-ms*)
         http-get (requiring-resolve 'babashka.http-client/get)
         parse (requiring-resolve 'cheshire.core/parse-string)
         run (bound-fn []
               (while @running
-                (try (let [{:keys [status body]} (http-get (ntfy-json-url url @since) {:headers auth :as :stream :throw false})]
+                (try (let [{:keys [status body]} (http-get (ntfy-json-url url @since)
+                                                           {:headers auth :as :stream :throw false :timeout idle-ms})]
+                       (reset! heard (System/currentTimeMillis))
+                       (reset! dropped false)
                        (reset! stream body)
                        (with-open [r (io/reader body)]
                          (if (<= 200 status 299)
                            (doseq [line (line-seq r)
-                                   :let [m (try (parse line true) (catch Exception _ nil))]
+                                   :let [_ (reset! heard (System/currentTimeMillis))
+                                         m (try (parse line true) (catch Exception _ nil))]
                                    :when (= "message" (:event m))]
                              (reset! since (:id m))
                              (.put q {:message (str (:message m))}))
                            (.put q {:error (str "HTTP " status)}))))
                      (catch Exception e
-                       (when @running
+                       (when (and @running (not @dropped))
                          (.put q {:error (str (.getSimpleName (class e)) (some->> (ex-message e) (str ": ")))}))))
-                (when @running (Thread/sleep (long *reconnect-ms*)))))]
+                (reset! stream nil)
+                (when @running (Thread/sleep (long *reconnect-ms*)))))
+        ;; Closing the stream ends the blocked read; run then reconnects
+        ;; from the last message it saw.
+        watch (fn []
+                (while @running
+                  (Thread/sleep (max 10 (quot idle-ms 4)))
+                  (when-let [s @stream]
+                    (when (> (- (System/currentTimeMillis) @heard) idle-ms)
+                      (reset! heard (System/currentTimeMillis))
+                      (reset! dropped true)
+                      (.put q {:error (str "no data for " (quot idle-ms 1000) "s, reconnecting")})
+                      (try (.close ^java.io.InputStream s) (catch Exception _ nil))))))]
     (doto (Thread. ^Runnable run) (.setDaemon true) (.start))
+    (doto (Thread. ^Runnable watch) (.setDaemon true) (.start))
     {:queue q
      :stop #(do (reset! running false)
                 (some-> ^java.io.InputStream @stream (.close)))}))

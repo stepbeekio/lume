@@ -1283,6 +1283,38 @@
                                   (cli/drive s *root* ["--wait-on-ask"]))))))
       (finally (httpkit/server-stop! server)))))
 
+(deftest a-stalled-reply-stream-reconnects
+  (let [gets (atom [])
+        open (atom [])
+        server (httpkit/run-server
+                (fn [r]
+                  (swap! gets conj (:query-string r))
+                  (httpkit/as-channel r {:on-open
+                                         (fn [ch]
+                                           (swap! open conj ch)
+                                           ;; First connection: a message, then silence with the socket held open.
+                                           ;; Second: the reply, then silence again.
+                                           (httpkit/send! ch {:status 200
+                                                              :body (str (json/generate-string
+                                                                          (if (= 1 (count @gets))
+                                                                            {:id "m1" :event "message" :message "first"}
+                                                                            {:id "m2" :event "message" :message "second"}))
+                                                                         "\n")}
+                                                          false))}))
+                {:port 0 :legacy-return-value? false})
+        {:keys [queue stop]} (binding [cli/*idle-ms* 300 cli/*reconnect-ms* 10]
+                               (#'cli/ntfy-subscribe! (str "http://localhost:" (httpkit/server-port server) "/reply?auth=tok")))
+        take! #(.poll ^java.util.concurrent.LinkedBlockingQueue queue 5 java.util.concurrent.TimeUnit/SECONDS)]
+    (try
+      (is (= {:message "first"} (take!)))
+      (is (= {:error "no data for 0s, reconnecting"} (take!)) "the silent stream is dropped")
+      (is (= {:message "second"} (take!)) "and the next connection delivers")
+      (is (re-find #"^auth=tok&since=\d+$" (first @gets)))
+      (is (= "auth=tok&since=m1" (second @gets)) "resuming after the last message, so none is lost")
+      (finally (stop)
+               (run! #(httpkit/close %) @open)
+               (httpkit/server-stop! server)))))
+
 (deftest drive-runs-driver-turns
   (testing "a driver's spawn is a request, run after its turn"
     (let [s (new-session "goal")]
