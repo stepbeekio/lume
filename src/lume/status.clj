@@ -4,9 +4,9 @@
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [clock secs]]
-            [lume.note :as note])
-  (:import (java.time Duration Instant)))
+            [lume.kernel :as kernel :refer [ago clock paint]]
+            [lume.measure :as measure]
+            [lume.note :as note]))
 
 ;; Budgets bound what agents spend: dollars and minutes of spawns and drive
 ;; turns, and how many spawns started.
@@ -14,35 +14,6 @@
   (cond-> s
     cost-usd (update-in [:spent :usd] + cost-usd)
     ms (update-in [:spent :minutes] + (/ ms 60000.0))))
-
-;; A measurement spec is its command and how it repeats; rows compare only
-;; with rows of the same spec. One run, none dropped, is the default.
-(defn- spec [{:keys [measure runs drop]}]
-  {:measure measure :runs (or runs 1) :drop (or drop 0)})
-
-(defn before-row
-  "The row a projected item's latest spawn pinned as its before row for the
-  item's current spec, or nil: no spawn has started, or no good row preceded
-  it."
-  [item]
-  (last (get-in item [:before-rows (spec item)])))
-
-(defn spec-text
-  "The command, then how it repeats, then the numbers where higher is better,
-  then whether a spawn takes a before row, e.g. bb bench ×10 drop 1 higher
-  score before."
-  [{:keys [measure higher before] :as m}]
-  (let [{:keys [runs drop]} (spec m)]
-    (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop))
-         (when (seq higher) (str " higher " (str/join "," higher)))
-         (when before " before"))))
-
-(defn direction-text
-  "Which way is better, as the plateau ask says it."
-  [higher]
-  (if (seq higher)
-    (str "higher is better for " (str/join "," higher) ", lower for the rest")
-    "lower is better"))
 
 ;; Cadence: when drive hands control back. A driver may request up to :batch
 ;; spawns a turn (every-spawn is 1), run in order; :gate-fail ends a batch at a
@@ -74,22 +45,6 @@
                                 (when (and (:plateau ceiling) (> (or (:plateau c) Long/MAX_VALUE) (:plateau ceiling)))
                                   (str "plateau " (:plateau ceiling) " → " (or (:plateau c) "none")))]))))
 
-;; A plateau is counted per item and measurement spec: rows since the last one
-;; that set a new best. Lower is better, except for the row's :higher names. A
-;; failed row, or one without numbers, is no evidence and leaves the count be. A
-;; change of direction, or of the numbers' names (a misparse, say), starts over.
-(defn- plateau [{:keys [best stale best-id] :as p} {:keys [exit values higher] mid :measure/id}]
-  (let [higher (set higher)
-        best (when (and (= higher (:higher p #{})) (= (set (keys values)) (set (keys best)))) best)
-        better? (fn [k v b] (if (higher k) (> v b) (< v b)))]
-    (cond
-      (or (not (zero? exit)) (empty? values)) p
-      (or (nil? best) (some (fn [[k v]] (better? k v (get best k))) values))
-      {:best (reduce-kv (fn [b k v] (cond-> b (or (nil? (get b k)) (better? k v (get b k))) (assoc k v)))
-                        (or best {}) values)
-       :stale 0 :best-id mid :higher higher :counted mid}
-      :else {:best best :stale (inc (or stale 0)) :best-id best-id :higher higher :counted mid})))
-
 (defn amount [k v]
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
     (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
@@ -114,15 +69,6 @@
 ;; Rendering
 
 (def ^:private width 100)
-
-;; Colour is for humans at a terminal. It wraps text that is already clipped
-;; and padded, so it never changes visible width or line count.
-(def ^:private ^:dynamic *color* false)
-
-(def ^:private sgr {:dim "2" :yellow "33" :green "32" :red "31" :cyan "36"})
-
-(defn- paint [style s]
-  (if *color* (str "\u001b[" (sgr style) "m" s "\u001b[0m") s))
 
 (defn strip-color [s]
   (str/replace s #"\u001b\[[0-9;]*m" ""))
@@ -151,13 +97,6 @@
                (str (clip (str/join " " (drop (dec max-lines) lines)) last-n) tail)))
        lines))))
 
-(defn- ago [now t]
-  (let [secs (.getSeconds (Duration/between (Instant/parse t) now))]
-    (cond (< secs 60) (str secs "s ago")
-          (< secs 3600) (str (quot secs 60) "m ago")
-          (< secs 86400) (str (quot secs 3600) "h ago")
-          :else (str (quot secs 86400) "d ago"))))
-
 (defn- spawn-line [now {:keys [exit interrupted result t progress] :as sp}]
   (let [running (not (or interrupted (contains? sp :exit)))]
     (str (:spawn/id sp) " "
@@ -174,59 +113,6 @@
        (when-let [{:keys [exit t tail] gid :gate/id} last-gate]
          (str " · " gid " " (if (zero? exit) (paint :green "pass") (paint :red (str "fail exit " exit))) " · " (ago now t)
               (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
-
-(defn num-text
-  "A measured number for reading: whole numbers as they are, others to 3
-  significant digits, never rounding away a digit before the point."
-  [v]
-  (if (or (not (number? v)) (integer? v) (Double/isNaN v) (Double/isInfinite v))
-    (str v)
-    (let [d (bigdec v)]
-      (-> d (.round (java.math.MathContext. (max 3 (- (.precision d) (.scale d))))) .stripTrailingZeros .toPlainString))))
-
-;; With both spreads, " ~" when the ranges overlap (within noise), " !" when
-;; they don't; a single-run row or base has no spread, so no mark.
-(defn- change [v b [lo hi] [blo bhi]]
-  (when (and (number? v) (number? b) (not= v b))
-    (let [d (num-text (- v b))]
-      (str "(" (when-not (str/starts-with? d "-") "+") d
-           (when (and lo blo) (if (and (<= lo bhi) (<= blo hi)) " ~" " !"))
-           ")"))))
-
-(defn measure-text
-  "A ledger row's numbers: name=value pairs (name↑ where higher is better),
-  each with its change against the row's :base when it has one (marked ~
-  within noise or ! outside it when both rows have spreads), then wall
-  time, then a failure, then which row it was compared with (unless :vs is
-  false), then the spawn it was taken before, if it's a before row."
-  [{:keys [values spread ms exit base runs drop failed-run higher before-spawn] :or {drop 0}} & {:keys [vs] :or {vs true}}]
-  (str (if (seq values)
-         (str/join " " (map (fn [[k v]]
-                              (str k (when (some #{k} higher) "↑") "=" (num-text v) (change v (get (:values base) k) (get spread k) (get (:spread base) k))
-                                   (when-let [[lo hi] (get spread k)]
-                                     (when (not= lo hi) (str "[" (num-text lo) ".." (num-text hi) "]")))))
-                            (sort values)))
-         "no numbers")
-       " · " (secs ms)
-       (when (and runs (not failed-run)) (str " · " (if (pos? drop) (str (- runs drop) " of " runs) runs) " runs"))
-       (when-not (zero? exit) (str " · fail exit " exit (when failed-run (str " in run " failed-run " of " runs))))
-       (when (and vs base) (str " · vs " (:measure/id base)))
-       (when before-spawn (str " · before " before-spawn))))
-
-(defn env-text
-  "Where a row was taken, e.g. on asahi load 0.21 at a3d907a/msslzuos."
-  [{:keys [host load commit change]}]
-  (str "on " host (when load (str " load " load))
-       (when (or commit change) (str " at " (str/join "/" (remove nil? [commit change]))))))
-
-;; The latest row only; lume item show has the rest.
-(defn- measure-line [now {:keys [measure runs drop last-measure]}]
-  (let [repeats (spec-text {:runs runs :drop drop})]
-    (str "measure " (clip measure (- 18 (count repeats))) repeats
-         (when-let [{:keys [t exit base] mid :measure/id :as m} last-measure]
-           (str " · " mid (when base (str " vs " (:measure/id base))) " "
-                (when-not (zero? exit) (str (paint :red (str "exit " exit)) " · "))
-                (clip (measure-text (-> m (assoc :exit 0) (dissoc :runs)) :vs false) 36) " · " (ago now t))))))
 
 (defn- event-line [e]
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
@@ -369,42 +255,6 @@
           :spawn/exited (fn [s e] (update-in s [:spawns (:spawn/id e)] merge e))}
    :item-lines (fn [s item now] (when-let [sp (get (:spawns s) (peek (:spawns item)))] [(spawn-line now sp)]))})
 
-(def measure-feature
-  {:name "measure"
-   :events {:item/measuring {:req #{:item/id :measure}}
-            :measure/ran {:req #{:measure/id :item/id :measure :exit :out}}}
-   :init {:ledger []}
-   :fold {:item/measuring (fn [s e]
-                            (update-in s [:items (:item/id e)]
-                                       #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before]))))
-          ;; Each row carries the row it's compared with: the latest earlier one
-          ;; of the same spec (command, runs and drop) that passed with numbers
-          ;; and shares a number's name with it, so a misparsed row isn't the
-          ;; baseline for a good one. One good row is kept per set of names.
-          ;; Once a spawn has started on the item, that is the latest such row
-          ;; before the spawn (its before row, :before-rows), so every row after
-          ;; it compares with the code as it was, not with the row before. A row
-          ;; a spawn took before its edits (:before-spawn) is the new before row,
-          ;; and isn't counted towards a plateau: no change was tried.
-          :measure/ran (fn [s e]
-                         (let [s (update-in s [:items (:item/id e)]
-                                            (fn [item]
-                                              (let [names #(set (keys (:values %)))
-                                                    base (last (filter #(some (names %) (keys (:values e)))
-                                                                       (or (get-in item [:before-rows (spec e)])
-                                                                           (get-in item [:good-measures (spec e)]))))
-                                                    p (plateau (get-in item [:plateaus (spec e)]) e)]
-                                                (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
-                                                  (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (spec e)] p))
-                                                  (and (zero? (:exit e)) (seq (:values e)))
-                                                  (update-in [:good-measures (spec e)]
-                                                             (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
-                                                  (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
-                           ;; Every row, newest last, as compared when it was taken: lume ledger.
-                           (update s :ledger conj (get-in s [:items (:item/id e) :last-measure]))))
-          :spawn/started (fn [s e] (update-in s [:items (:item/id e)] #(assoc % :before-rows (:good-measures %))))}
-   :item-lines (fn [_ item now] (when (:measure item) [(measure-line now item)]))})
-
 (defn- within-budget [s _] (over-budget s))
 
 (def budget-feature
@@ -460,7 +310,7 @@
 
 (def features
   "The built-in features, in fold order. lume.cli binds kernel/*features* to these."
-  [session-feature item-feature ask-feature note/feature measure-feature spawn-feature
+  [session-feature item-feature ask-feature note/feature measure/feature spawn-feature
    budget-feature cadence-feature drive-feature ntfy-feature inspect-feature])
 
 (defn project
@@ -547,7 +397,7 @@
   the next commands."
   ([session-id events now] (render session-id events now {}))
   ([session-id events now {:keys [color past replay]}]
-   (binding [*color* (boolean color)
+   (binding [kernel/*color* (boolean color)
              kernel/*features* (or kernel/*features* features)]
      (render* session-id events now past replay))))
 

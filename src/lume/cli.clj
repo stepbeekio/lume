@@ -5,7 +5,8 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [*read-line* actor child-env clip-to columns driver? fail! flag
-                                            human-only! next-id open-item run-in-repo! run-repeated take-flags]]
+                                            human-only! next-id open-item run-in-repo! session-by-id take-flags]]
+            [lume.measure :as measure]
             [lume.note :as note]
             [lume.status :as status]
             [lume.store :as store])
@@ -73,33 +74,6 @@
                             (open-item events id)
                             {:type :item/gated :item/id id :gate gate :by (actor)}))
   (str id " gate " gate))
-
-;; A measurement runs after every spawn on the item, and on demand with lume measure.
-;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
-;; Lower is better unless a number is named with --higher (repeatable).
-;; --before has each spawn measure first too, so it yields a before/after pair.
-(def ^:private item-measure-usage
-  "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]")
-
-(defn item-measure [session args]
-  (let [usage item-measure-usage
-        before (boolean (some #{"--before"} args))
-        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher"}]
-        (take-flags (remove #{"--before"} args) #{"--runs" "--drop" "--higher"} usage)
-        runs (if runs (parse-long runs) 1)
-        drop (if drop (parse-long drop) 0)
-        higher (vec (sort (distinct higher)))]
-    (when (or (str/blank? cmd) (seq extra) (seq rs) (seq ds)) (fail! usage))
-    (when-not (and runs drop (pos? runs) (<= 0 drop) (< drop runs))
-      (fail! "--runs must be a positive whole number and --drop less than it;" usage))
-    (kernel/append! session (fn [events]
-                              (open-item events id)
-                              (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
-                                (> runs 1) (assoc :runs runs)
-                                (pos? drop) (assoc :drop drop)
-                                (seq higher) (assoc :higher higher)
-                                before (assoc :before true))))
-    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher :before before}))))
 
 ;; Hand-backs reach the human remotely: when an ask opens or a drive stops,
 ;; lume POSTs a short message to the ntfy topic URL in LUME_NTFY and logs
@@ -240,170 +214,11 @@
                  (let [gid (next-id "g" :gate/ran events)]
                    [gid {:type :gate/ran :gate/id gid :item/id id :gate gate}]))))
 
-(defn measure-values
-  "The numbers in a measurement's output: each name=number or name: number
-  (the last one wins), or with none of those, the last number, as value.
-  A number may lack digits on one side of its point (.5, -.5, 5.), as bc
-  prints them."
-  [output]
-  (let [num #(or (parse-long %) (parse-double %))
-        named (re-seq #"([A-Za-z_][\w.-]*)\s*[=:]\s*(-?(?:\d+(?:\.\d*)?|\.\d+))(?![\w.])" output)]
-    (if (seq named)
-      (reduce (fn [m [_ k v]] (assoc m k (num v))) {} named)
-      (when-let [n (last (re-seq #"-?(?:\d+(?:\.\d*)?|\.\d+)" output))]
-        {"value" (num n)}))))
-
-(defn- median [xs]
-  (let [xs (vec (sort xs)) n (count xs) mid (quot n 2)]
-    (if (odd? n)
-      (xs mid)
-      ;; Decimal, so the mean of 0.1 and 0.2 is 0.15; whole when it can be.
-      (let [m (/ (+ (bigdec (xs (dec mid))) (bigdec (xs mid))) 2M)]
-        (if (== m (bigint m)) (long m) (double m))))))
-
-(defn summarize-runs
-  "One row from the kept runs: each number's median, its [min max] across
-  runs when there are several, and the median wall time."
-  [kept]
-  (let [per-run (keep (comp measure-values :output) kept)
-        values (into {} (for [k (distinct (mapcat keys per-run))
-                              :let [vs (keep #(get % k) per-run)]]
-                          [k (median vs)]))
-        spread (into {} (for [k (keys values)
-                              :let [vs (keep #(get % k) per-run)]
-                              :when (> (count vs) 1)]
-                          [k [(apply min vs) (apply max vs)]]))]
-    (cond-> {:ms (long (median (map :ms kept)))}
-      (seq values) (assoc :values values)
-      (seq spread) (assoc :spread spread))))
-
-(defn- sh-out [root & cmd]
-  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
-         (when (zero? exit) (not-empty (str/trim out))))
-       (catch Exception _ nil)))
-
-(defn- environment
-  "Where a row was taken, so a noisy one can be explained: host, 1-minute
-  load average, and the repo's git HEAD and jj change. Read-only, and it asks
-  only the tools that can answer: each process costs a row a few ms. The jj
-  change's commit (:jj-commit) is what a revert restores; read-only means it
-  is the working copy as of jj's last snapshot."
-  [root]
-  (let [load (if (fs/exists? "/proc/loadavg")
-               (some-> (re-find #"^[\d.]+" (first (fs/read-all-lines "/proc/loadavg"))) parse-double)
-               (some->> (sh-out root "uptime") (re-find #"load averages?:\s*([\d.]+)") second parse-double))]
-    (cond-> {:host (try (.getHostName (java.net.InetAddress/getLocalHost)) (catch Exception _ "?"))}
-      load (assoc :load load)
-      :always (merge (when (fs/exists? (fs/path root ".git"))
-                       (when-let [c (sh-out root "git" "rev-parse" "--short" "HEAD")] {:commit c}))
-                     (when (fs/exists? (fs/path root ".jj"))
-                       (when-let [[change commit] (some-> (sh-out root "jj" "log" "-r" "@" "--ignore-working-copy" "--no-graph"
-                                                                  "-T" "change_id.short(8) ++ \" \" ++ commit_id.short(12)")
-                                                          (str/split #" "))]
-                         {:change change :jj-commit commit}))))))
-
-(defn- plateau-ask!
-  "Under cadence on plateau K, the row that makes K (2K, …) rows without a new
-  best on its item hands back to the human: an ask is opened and returned,
-  unless the item is closed or an ask about it is already open. A row that
-  didn't count (failed, or no numbers) never asks."
-  [session {id :item/id mid :measure/id}]
-  (kernel/append! session
-                  (fn [events]
-                    (let [s (status/project events)
-                          k (:plateau (status/cadence s))
-                          {:keys [stale best-id higher counted]} (get-in s [:items id :plateau])]
-                      (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
-                                 (= :open (get-in s [:items id :state]))
-                                 (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
-                        {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
-                         :question (str id " plateaued: " stale " measurement rows without a new best"
-                                        (when best-id (str " (best " best-id ", " (status/direction-text (sort higher)) ")"))
-                                        "; keep going, change approach, or stop?")
-                         :by (actor)})))))
-
-(defn- measure-fields
-  "A row's fields from its runs: the kept runs summarized, the spec, and which
-  run failed if one did."
-  [ran {:keys [measure runs drop higher] :or {runs 1 drop 0}}]
-  (let [kept (nthrest ran drop)
-        failed (when-not (zero? (:exit (peek ran))) (count ran))]
-    (cond-> (merge {:measure measure} (when (seq kept) (summarize-runs kept)))
-      (> runs 1) (assoc :runs runs)
-      (pos? drop) (assoc :drop drop)
-      (seq higher) (assoc :higher higher)
-      (and failed (> runs 1)) (assoc :failed-run failed))))
-
-(defn- run-measure
-  "Run the item's measurement --runs times, drop the first --drop, and log one
-  :measure/ran row, which is returned (with :ask if it opened a plateau ask).
-  A failed run ends the measurement; the row has the runs kept so far and the
-  failing run's exit. :before-spawn sid marks a spawn's before row."
-  [session {:keys [id measure runs] :or {runs 1} :as item} & {:keys [before-spawn]}]
-  (let [env (environment (:repo (status/project (store/read-events session))))
-        ran (run-in-repo! session "measures" measure
-                         (fn [events ran]
-                           (let [mid (next-id "m" :measure/ran events)]
-                             [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :env env}
-                                                 (measure-fields ran item))
-                                    before-spawn (assoc :before-spawn before-spawn))]))
-                         :n runs)]
-    (if-let [ask (plateau-ask! session ran)]
-      (do (notify-ask! session ask) (assoc ran :ask ask))
-      ran)))
-
-(defn try-measure
-  "Run cmd exactly as an item's measurement would (sh -c in the repo, runs,
-  drop, name=number values, wall time) and return the row with the last run's
-  :exit and :output. Logs nothing and keeps no output file: for trying a
-  candidate in lume repl before it goes into a spec."
-  [session cmd & {:keys [runs drop higher] :or {runs 1 drop 0}}]
-  (let [ran (run-repeated session (:repo (status/project (store/read-events session))) cmd runs (fn [_ _]))
-        {:keys [exit output]} (peek ran)]
-    (merge {:exit exit} (measure-fields ran {:measure cmd :runs runs :drop drop :higher higher})
-           {:output output})))
-
-(defn- measure-row
-  "The ledger row, not the output: the numbers and wall time against the
-  previous row, and where the output is when the command failed."
-  [session {:keys [exit out ask] mid :measure/id id :item/id :as ran}]
-  (let [row (get-in (status/project (store/read-events session)) [:items id :last-measure])]
-    (str mid " " id " " (status/measure-text (if (= mid (:measure/id row)) row ran))
-         (when-not (zero? exit) (str "\n" out))
-         (when ask (str "\nask " (:ask/id ask) " " (:question ask))))))
-
 (defn- gate-summary [{:keys [exit tail out] gid :gate/id}]
   (str gid " " (if (zero? exit) "pass" (str "fail exit " exit))
        (when (and tail (not (zero? exit))) (str " · " (str/replace tail #"\s+" " ") "\n" out))))
 
-;; Rollback is data: dropped --revert restores the working copy to the jj
-;; commit (or, without jj, the git commit) the item's before row was taken at,
-;; and the close event says which row and commit. History is left alone: the
-;; restore is a diff in the working copy, and jj's snapshot before it keeps
-;; the dropped edits in the op log.
-(defn- revert!
-  "Restore root's working copy to the before row's commit and return what was
-  restored, or fail without touching the log."
-  [root id item]
-  (let [row (or (status/before-row item)
-                (fail! id "has no before row to revert to: a spawn must start on it after a good measurement"))
-        mid (:measure/id row)
-        {:keys [jj-commit commit]} (:env row)
-        [restored cmd] (cond (fs/exists? (fs/path root ".jj"))
-                             (if jj-commit
-                               [{:jj-commit jj-commit} ["jj" "restore" "--from" jj-commit]]
-                               (fail! id "not reverted:" mid "records no jj commit"))
-                             (fs/exists? (fs/path root ".git"))
-                             (if commit
-                               [{:commit commit} ["git" "restore" (str "--source=" commit) "--staged" "--worktree" "--" ":/"]]
-                               (fail! id "not reverted:" mid "records no git commit"))
-                             :else (fail! id "not reverted:" root "is neither a jj nor a git repo"))
-        {:keys [exit err]} (try (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)
-                                (catch Exception e {:exit -1 :err (ex-message e)}))]
-    (when-not (zero? exit)
-      (fail! id "not reverted:" (str/join " " cmd) "failed:" (str/trim (str err))))
-    (assoc restored :measure/id mid)))
-
+;; dropped --revert restores the working copy to the item's before row (lume.measure).
 (def ^:private item-close-usage "usage: lume item close <id> done|dropped [--revert] \"<why>\"")
 
 (defn item-close [session [id disposition & more]]
@@ -418,7 +233,7 @@
           _ (when (and ran (not (zero? (:exit ran))))
               (fail! id "not done: gate" (gate-summary ran)))
           restored (when revert
-                     (revert! (:repo (status/project events)) id (get-in (status/project events) [:items id])))]
+                     (measure/revert! (:repo (status/project events)) id (get-in (status/project events) [:items id])))]
       (kernel/append! session (fn [events]
                                 (open-item events id)
                                 (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
@@ -429,14 +244,6 @@
            (when restored
              (str " · restored " (if (:jj-commit restored) (str "jj " (:jj-commit restored)) (str "git " (:commit restored)))
                   " from " (:measure/id restored)))))))
-
-(def ^:private measure-usage "usage: lume measure <id>")
-
-(defn measure [session [id]]
-  (when (str/blank? id) (fail! measure-usage))
-  (let [item (or (get-in (status/project (store/read-events session)) [:items id]) (fail! "no such item:" id))]
-    (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
-    (measure-row session (run-measure session item))))
 
 ;; Only the human grants permissions: workers and agent drivers would grant themselves
 ;; whatever they need, so they ask with lume ask instead.
@@ -632,6 +439,11 @@
             (recur prog logged at)))
         prog))))
 
+(defn- sh-out [root & cmd]
+  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
+         (when (zero? exit) (not-empty (str/trim out))))
+       (catch Exception _ nil)))
+
 (defn- worktree-fingerprint
   "A hash of the repo's git HEAD, its changed paths and their contents, so a
   spawn that changed nothing can be told apart from one that did. Read-only
@@ -682,7 +494,7 @@
     (let [;; A before row is taken once the spawn has started, before the
           ;; worker runs, so every row after it compares with it.
           before-row (when (and (:measure item) (:before item))
-                       (str (measure-row session (run-measure session item :before-spawn sid)) "\n"))
+                       (str (measure/measure-row session (measure/run-measure session item :before-spawn sid)) "\n"))
           t0 (System/currentTimeMillis)
           before (worktree-fingerprint root)
           ;; A worker may run the session's allowed commands, and its own gate.
@@ -711,7 +523,7 @@
            ;; change is the human's or driver's call. Otherwise its gate decides.
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (:measure item)
-               (str "\n" (measure-row session (run-measure session item)))))
+               (str "\n" (measure/measure-row session (measure/run-measure session item)))))
            (let [item (get-in (status/project (store/read-events session)) [:items id])
                  why (when (and (= :open (:state item)) (or (:gate item) (:measure item)))
                        (idle-why session sid before (worktree-fingerprint root)))]
@@ -1081,9 +893,9 @@
 (defn- item-event-line [e]
   (str (subs (:t e) 0 16) " " (namespace (:type e)) "/" (name (:type e)) " "
        (clip-to 240 (case (:type e)
-                      :measure/ran (str (:measure/id e) " " (status/measure-text e)
-                                        (when (:env e) (str " · " (status/env-text (:env e)))))
-                      :item/measuring (status/spec-text e)
+                      :measure/ran (str (:measure/id e) " " (measure/measure-text e)
+                                        (when (:env e) (str " · " (measure/env-text (:env e)))))
+                      :item/measuring (measure/spec-text e)
                       (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
                                           [:spawn/id :gate/id :note/id :ask/id :disposition :exit
                                            :command :gate :measure :text :question :answer :why :result :tail]))))
@@ -1102,7 +914,7 @@
                [(str id " " (name (:state item)) (when (:why item) (str " — " (clip-to 200 (:why item)))))
                 (str "intent  " (clip-to 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
-               (when (:measure item) [(str "measure " (status/spec-text item))])
+               (when (:measure item) [(str "measure " (measure/spec-text item))])
                (when (> (count related) (count shown))
                  [(str "+" (- (count related) (count shown)) " earlier events — lume log --item " id " -n N")])
                (map item-event-line shown)))))
@@ -1126,14 +938,6 @@
 
 ;; Past sessions: lume run makes several per repo. ls lists them; status and
 ;; log read any of them by id, and write nothing to it.
-
-(defn- session-by-id
-  "The session to read: the one named by id, else the current one."
-  [root id]
-  (or (if id (store/find-session root id) (store/current-session root))
-      (fail! (if id
-               (str "no session " id " for this repo; lume ls lists them")
-               "no session for this repo; run lume init \"<goal>\""))))
 
 (def ^:private ls-usage "usage: lume ls [--all]")
 
@@ -1181,37 +985,6 @@
       (str/join "\n" (concat (when (> (count events) (count shown))
                                [(str ";; +" (- (count events) (count shown)) " earlier events — -n " (count events))])
                              (map pr-str shown))))))
-
-;; Ledger: every measurement row, open and closed items alike, newest last,
-;; each with its change against the row it was compared with when taken. A
-;; row names its spec when it's the first shown for its item or the spec changed.
-
-(def ^:private ledger-usage "usage: lume ledger [<item>] [-n N] [--session <id>]")
-
-(defn ledger [root args]
-  (let [[[id & extra] {[n & ns] "-n" [sid & sids] "--session"}] (take-flags args #{"-n" "--session"} ledger-usage)
-        n (if n (parse-long n) 20)
-        _ (when (or (seq extra) (seq ns) (seq sids) (not (and n (<= 0 n)))) (fail! ledger-usage))
-        {:keys [items ledger]} (status/project (store/read-events (session-by-id root sid)))
-        _ (when (and id (not (items id))) (fail! "no such item:" id))
-        rows (cond->> ledger id (filterv #(= id (:item/id %))))
-        shown (take-last n rows)
-        ;; Each shown row's spec, or nil when it's that of the item's previous shown row.
-        specs (second (reduce (fn [[last-spec out] {iid :item/id :as row}]
-                                (let [spec (status/spec-text row)]
-                                  [(assoc last-spec iid spec) (conj out (when (not= spec (last-spec iid)) spec))]))
-                              [{} []] shown))
-        lines (map (fn [{mid :measure/id iid :item/id :keys [t] :as row} spec]
-                     (str mid " " iid " " (subs t 0 16) " " (status/measure-text row)
-                          (when spec (str " · " (clip-to 60 spec)))))
-                   shown specs)]
-    (if (empty? rows)
-      (if id (str id " has no measurement rows") "no measurement rows")
-      (str/join "\n" (concat (when (> (count rows) (count shown))
-                               [(str "+" (- (count rows) (count shown)) " earlier rows — lume ledger"
-                                     (str/join (map #(str " " %) (remove nil? [id (when sid (str "--session " sid))])))
-                                     " -n " (count rows))])
-                             lines)))))
 
 ;; Clean: every trace of lume for this repo, or one session's. Lume writes
 ;; nothing inside the repo, so that is its state under LUME_HOME, plus any
@@ -1347,7 +1120,7 @@
                     "; lume status " (store/session-id session) " reads it")))
         (binding [store/*session* (when within session)]
           (doseq [item (->> (vals (:items (status/project (store/read-events session)))) (filter :measure) (sort-by :order))]
-            (say (str "baseline " (measure-row session (run-measure session item)))))
+            (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
           (if (zero? n)
             "--turns 0: not driving; lume drive, or drive by hand from lume status"
             (drive session root (cond-> ["--turns" (str n)] agent (conj "--agent" agent)))))))))
@@ -1458,7 +1231,9 @@
       (intern ns-sym 'render render)
       (intern ns-sym 'measure (fn measure
                                 ([cmd] (measure cmd {}))
-                                ([cmd opts] (try-measure session cmd opts))))
+                                ;; nREPL evaluates outside the run's binding.
+                                ([cmd opts] (binding [kernel/*features* (or kernel/*features* status/features)]
+                                              (measure/try-measure session cmd opts)))))
       (refresh!))))
 
 (defn start-repl
@@ -1549,22 +1324,6 @@ lume ask                                    open asks in full, wrapped to the te
     {:path ["allow"] :needs :session :usage allow-usage
      :run (fn [{:keys [session]} args] (allow session args))
      :help "lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}]
-   "measure"
-   [{:path ["item" "measure"] :needs :session :usage item-measure-usage
-     :run (fn [{:keys [session]} args] (item-measure session args))
-     :help "lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]
-                                            measure an item after each spawn: output's name=number pairs
-                                            (or else its last number) and wall time become a ledger row;
-                                            N runs, first K dropped, give medians and min..max; lower is
-                                            better unless --higher names it (shown name↑); rows after a
-                                            spawn compare with its before row; --before takes one first"}
-    {:path ["measure"] :needs :session :usage measure-usage
-     :run (fn [{:keys [session]} args] (measure session args))
-     :help "lume measure <id>                           run the item's measurement now and print its row (a baseline)"}
-    {:path ["ledger"] :needs :root :usage ledger-usage
-     :run (fn [{:keys [root]} args] (ledger root args))
-     :help "lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
-                                            numbers with change vs the row compared, spread, wall time, exit"}]
    "budget"
    [{:path ["budget"] :needs :session :usage budget-usage
      :run (fn [{:keys [session]} args] (budget session args))
@@ -1636,7 +1395,10 @@ lume ask                                    open asks in full, wrapped to the te
         order ["install" "session" "item" "ask" "note" "measure" "spawn" "budget" "cadence" "drive"
                "ntfy" "spec" "inspect" "clean"]]
     (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
-    (mapv #(update (get named % {:name %}) :commands (fn [own] (or own (get commands % [])))) order)))
+    (mapv #(-> (get named % {:name %})
+               (update :commands (fn [own] (or own (get commands % []))))
+               (cond-> (= "ntfy" %) (assoc :reactions [{:on :ask/opened :run (fn [session e] (notify-ask! session e))}])))
+          order)))
 
 (defn -main [& args]
   (try

@@ -6,7 +6,7 @@
             [babashka.process :as p]
             [clojure.string :as str]
             [lume.store :as store])
-  (:import (java.time Instant ZoneId)
+  (:import (java.time Duration Instant ZoneId)
            (java.time.format DateTimeFormatter)))
 
 (defn fail! [& msg]
@@ -209,6 +209,39 @@
 (defn clip-to [n s]
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
+
+(defn ago [now t]
+  (let [secs (.getSeconds (Duration/between (Instant/parse t) now))]
+    (cond (< secs 60) (str secs "s ago")
+          (< secs 3600) (str (quot secs 60) "m ago")
+          (< secs 86400) (str (quot secs 3600) "h ago")
+          :else (str (quot secs 86400) "d ago"))))
+
+;; Colour is for humans at a terminal. It wraps text that is already clipped
+;; and padded, so it never changes visible width or line count. status/render
+;; binds it.
+(def ^:dynamic *color* false)
+
+(def ^:private sgr {:dim "2" :yellow "33" :green "32" :red "31" :cyan "36"})
+
+(defn paint [style s]
+  (if *color* (str "\u001b[" (sgr style) "m" s "\u001b[0m") s))
+
+(defn session-by-id
+  "The session to read: the one named by id, else the current one."
+  [root id]
+  (or (if id (store/find-session root id) (store/current-session root))
+      (fail! (if id
+               (str "no session " id " for this repo; lume ls lists them")
+               "no session for this repo; run lume init \"<goal>\""))))
+
+;; Reactions, for now run by the code that appended the event rather than by
+;; append!: a feature's :reactions [{:on type :run (fn [session e])}]. ntfy's
+;; sends an ask opened outside lume ask, e.g. a measurement's plateau ask.
+(defn react! [session e]
+  (doseq [{:keys [on run]} (mapcat :reactions (features))
+          :when (= on (:type e))]
+    (run session e)))
 
 ;; The ntfy URLs never reach a child process (n8: env leaks into workers): a
 ;; worker that could read the notification topic could read an ask's code,
