@@ -6,7 +6,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [fail! human-only! next-id]]))
+            [lume.kernel :as kernel :refer [fail! human-only! next-id timed]]))
 
 (def ^:private on-usage "usage: lume on [<event-pattern> \"<cmd>\" | --remove <id>]")
 
@@ -71,15 +71,15 @@
   (let [root (:repo (kernel/state session))
         dir (fs/create-dirs (fs/path session "rules"))
         out (fs/file (fs/create-temp-file {:dir dir :prefix (str id "-") :suffix ".out"}))
-        t0 (System/currentTimeMillis)
-        proc (p/process ["sh" "-c" cmd] {:dir root :in "" :out :write :out-file out :err :out
-                                         :extra-env (merge (event-env e)
-                                                           {"LUME_SESSION" (str session) "LUME_ACTOR" id
-                                                            "LUME_SPAWNED_AS" "" "LUME_DEPTH" (str kernel/*depth*)})})
-        done (deref proc *timeout-ms* nil)]
-    (when-not done (p/destroy-tree proc) @proc)
+        [done ms] (timed #(let [proc (p/process ["sh" "-c" cmd] {:dir root :in "" :out :write :out-file out :err :out
+                                                                 :extra-env (merge (event-env e)
+                                                                                   {"LUME_SESSION" (str session) "LUME_ACTOR" id
+                                                                                    "LUME_SPAWNED_AS" "" "LUME_DEPTH" (str kernel/*depth*)})})
+                                done (deref proc *timeout-ms* nil)]
+                            (when-not done (p/destroy-tree proc) @proc)
+                            done))]
     (let [tail (last (remove str/blank? (str/split-lines (slurp out))))]
-      (cond-> {:exit (if done (:exit done) 124) :ms (- (System/currentTimeMillis) t0) :out (str out)}
+      (cond-> {:exit (if done (:exit done) 124) :ms ms :out (str out)}
         (not done) (assoc :timed-out true)
         tail (assoc :tail (kernel/clip 200 tail))))))
 

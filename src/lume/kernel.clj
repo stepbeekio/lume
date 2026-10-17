@@ -6,11 +6,35 @@
             [babashka.process :as p]
             [clojure.string :as str]
             [lume.store :as store])
-  (:import (java.time Duration Instant ZoneId)
+  (:import (java.security MessageDigest)
+           (java.time Duration Instant ZoneId)
            (java.time.format DateTimeFormatter)))
 
 (defn fail! [& msg]
   (throw (ex-info (str/join " " msg) {:lume/user-error true})))
+
+;; Process and time helpers.
+
+(defn sh
+  "Run cmd quietly, and return {:exit :out :err} with both outputs as strings,
+  whatever its exit. stdin is empty unless opts (babashka.process options, as
+  :dir or :in) say otherwise."
+  [opts & cmd]
+  (apply p/shell (merge {:in "" :out :string :err :string :continue true} opts) cmd))
+
+(defn timed
+  "[(f) ms]: what f returns and how many milliseconds it took."
+  [f]
+  (let [t0 (System/currentTimeMillis)
+        r (f)]
+    [r (- (System/currentTimeMillis) t0)]))
+
+(defn sha256-hex
+  "The lowercase hex SHA-256 of the byte arrays, in order."
+  [& byte-arrays]
+  (let [md (MessageDigest/getInstance "SHA-256")]
+    (doseq [^bytes b byte-arrays] (.update md b))
+    (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest md)))))
 
 (defn next-id [prefix type events]
   (str prefix (inc (count (filter #(= type (:type %)) events)))))
@@ -38,7 +62,7 @@
 ;; uid can forge (a1): an interactive stdin and a typed confirmation. Spawns and
 ;; drives run with no tty, so they can't pass.
 (defn tty? []
-  (zero? (:exit (p/shell {:in :inherit :out :string :err :string :continue true} "test" "-t" "0"))))
+  (zero? (:exit (sh {:in :inherit} "test" "-t" "0"))))
 
 (defn- tty-confirm
   "True if stdin is a terminal and the user types `expected` at the prompt."
@@ -65,7 +89,7 @@
 (defn columns
   "The terminal's width, for text a human reads in full: stty, then COLUMNS, then 100."
   []
-  (or (some->> (p/shell {:in :inherit :out :string :err :string :continue true} "stty" "size")
+  (or (some->> (sh {:in :inherit} "stty" "size")
                :out (re-find #"^\d+ (\d+)") second parse-long (max 40))
       (some-> (System/getenv "COLUMNS") parse-long)
       100))
@@ -209,6 +233,20 @@
     (when e (react! session e))
     e))
 
+(defn exit-hook!
+  "Append event to session if lume exits (ctrl-c, say) before the work
+  finishes. Returns finished!, which marks the work finished and drops the
+  hook; calling it again does nothing more."
+  [session event]
+  (let [done (promise)
+        hook (Thread. ^Runnable (bound-fn []
+                                  (when-not (realized? done)
+                                    (append! session (constantly event)))))]
+    (.addShutdownHook (Runtime/getRuntime) hook)
+    (fn finished! []
+      (deliver done true)
+      (.removeShutdownHook (Runtime/getRuntime) hook))))
+
 ;; Commands are data too: a feature's :commands are
 ;;   {:path ["item" "measure"]   the words that name it
 ;;    :needs :session            what its ctx holds: :session, :root, :none, or a set of them
@@ -326,7 +364,7 @@
 (defn sh-out
   "cmd's trimmed stdout, run in root, or nil when it fails or prints nothing."
   [root & cmd]
-  (try (let [{:keys [exit out]} (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)]
+  (try (let [{:keys [exit out]} (apply sh {:dir root} cmd)]
          (when (zero? exit) (not-empty (str/trim out))))
        (catch Exception _ nil)))
 
@@ -338,10 +376,9 @@
   returns the runs, {:exit :ms :output} in order. (on-run i run) sees each."
   [session root cmd n on-run]
   (reduce (fn [runs i]
-            (let [t0 (System/currentTimeMillis)
-                  {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
-                                                                   :extra-env (child-env {"LUME_SESSION" session})})
-                  run {:exit exit :ms (- (System/currentTimeMillis) t0) :output out}
+            (let [[{:keys [exit out]} ms] (timed #(deref (p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
+                                                                                     :extra-env (child-env {"LUME_SESSION" session})})))
+                  run {:exit exit :ms ms :output out}
                   r (conj runs run)]
               (on-run i run)
               (if (zero? exit) r (reduced r))))

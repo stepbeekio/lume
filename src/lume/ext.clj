@@ -16,8 +16,7 @@
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [fail! human-only!]]
-            [lume.store :as store])
-  (:import (java.security MessageDigest)))
+            [lume.store :as store]))
 
 (defn ext-dir [session] (str (fs/path session "ext")))
 
@@ -33,9 +32,7 @@
     root (conj {:scope "repo" :dir (str (fs/path (store/repo-dir root) "ext")) :log store/*home*})
     :always (conj {:scope "session" :dir (ext-dir session) :log session})))
 
-(defn- sha256 [path]
-  (let [d (.digest (MessageDigest/getInstance "SHA-256") (fs/read-all-bytes path))]
-    (apply str (map #(format "%02x" (bit-and % 0xff)) d))))
+(defn- sha256 [path] (kernel/sha256-hex (fs/read-all-bytes path)))
 
 (defn- ext-name [path] (str/replace (fs/file-name path) #"\.clj$" ""))
 

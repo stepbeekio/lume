@@ -7,7 +7,7 @@
             [clojure.string :as str]
             [lume.item :as item]
             [lume.kernel :as kernel :refer [*default-agent* actor ago child-env clip driver? fail! flag human-only!
-                                            next-id open-item paint sh-out]]
+                                            next-id open-item paint sh sh-out sha256-hex timed]]
             [lume.measure :as measure]
             [lume.note :as note]
             [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]
@@ -80,17 +80,13 @@
   [root]
   (when (fs/exists? (fs/path root ".git"))
     (try
-      (let [{:keys [exit out]} (p/shell {:dir root :in "" :out :string :err :string :continue true}
-                                        "git" "--no-optional-locks" "status" "--porcelain=v1" "-z" "-uall")]
+      (let [{:keys [exit out]} (sh {:dir root} "git" "--no-optional-locks" "status" "--porcelain=v1" "-z" "-uall")]
         (when (zero? exit)
-          (let [md (java.security.MessageDigest/getInstance "SHA-256")
-                add #(.update md ^bytes %)]
-            (add (.getBytes (str (sh-out root "git" "rev-parse" "HEAD") "\n" out)))
-            (doseq [entry (str/split out #"\x00")
-                    :let [f (fs/path root (subs entry (min 3 (count entry))))]
-                    :when (fs/regular-file? f)]
-              (add (fs/read-all-bytes f)))
-            (apply str (map #(format "%02x" %) (.digest md))))))
+          (apply sha256-hex (.getBytes (str (sh-out root "git" "rev-parse" "HEAD") "\n" out))
+                 (for [entry (str/split out #"\x00")
+                       :let [f (fs/path root (subs entry (min 3 (count entry))))]
+                       :when (fs/regular-file? f)]
+                   (fs/read-all-bytes f)))))
       (catch Exception _ nil))))
 
 (defn- idle-why
@@ -102,6 +98,21 @@
     (cond (seq asks) (str sid " asked " (str/join ", " asks))
           (and before (= before after)) (str sid " changed nothing in the repo"))))
 
+(defn- run-worker
+  "Run agent's worker on item until it exits, its stdout copied to out, and
+  return {:exit :steps :summary}."
+  [session root agent sid events item out]
+  (let [;; A worker may run the session's allowed commands, and its own gate.
+        allowed (distinct (cond-> (:allow (kernel/project events)) (:gate item) (conj (:gate item))))
+        proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
+                        {:dir root :in ""
+                         :err :write :err-file (fs/file (str out ".err"))
+                         :extra-env (child-env {"LUME_SESSION" session "LUME_ACTOR" sid "LUME_SPAWNED_AS" sid})})
+        {:keys [steps]} (follow! session sid agent proc out)
+        {:keys [exit]} @proc]
+    {:exit exit :steps steps
+     :summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))}))
+
 (defn- run-spawn [session root id opts]
   (let [agent (keyword (or (flag opts "--agent") *default-agent*))
         events (kernel/read-events session)
@@ -111,34 +122,18 @@
                                             {:type :spawn/started :spawn/id sid :item/id id :agent agent
                                              :out (str (fs/path session "spawns" (str sid ".out")))})))
         {sid :spawn/id out :out} started
-        done (promise)
-        hook (Thread. ^Runnable (bound-fn []
-                                  (when-not (realized? done)
-                                    (kernel/append! session (constantly {:type :spawn/exited :spawn/id sid
-                                                                         :interrupted true})))))]
+        finished! (kernel/exit-hook! session {:type :spawn/exited :spawn/id sid :interrupted true})]
     (fs/create-dirs (fs/parent out))
-    (.addShutdownHook (Runtime/getRuntime) hook)
     (let [;; A before row is taken once the spawn has started, before the
           ;; worker runs, so every row after it compares with it.
           before-row (when (and (:measure item) (:before item))
                        (str (measure/measure-row session (measure/run-measure session item :before-spawn sid)) "\n"))
-          t0 (System/currentTimeMillis)
           before (worktree-fingerprint root)
-          ;; A worker may run the session's allowed commands, and its own gate.
-          allowed (distinct (cond-> (:allow (kernel/project events)) (:gate item) (conj (:gate item))))
-          proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
-                          {:dir root :in ""
-                           :err :write :err-file (fs/file (str out ".err"))
-                           :extra-env (child-env {"LUME_SESSION" session "LUME_ACTOR" sid "LUME_SPAWNED_AS" sid})})
-          {:keys [steps]} (follow! session sid agent proc out)
-          {:keys [exit]} @proc
-          summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))
-          exited (kernel/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit
-                                                                     :ms (- (System/currentTimeMillis) t0)}
+          [{:keys [exit steps summary]} ms] (timed #(run-worker session root agent sid events item out))
+          exited (kernel/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit :ms ms}
                                                                     summary)
                                                        steps (assoc :steps steps))))]
-      (deliver done true)
-      (.removeShutdownHook (Runtime/getRuntime) hook)
+      (finished!)
       (kernel/react-for! session sid)
       (str before-row sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
            (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))

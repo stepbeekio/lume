@@ -5,7 +5,6 @@
   A measurement runs after every spawn on its item too; lume.agent's spawn
   calls run-measure and measure-row for that."
   (:require [babashka.fs :as fs]
-            [babashka.process :as p]
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [ago clip fail! next-id open-item paint
                                             run-in-repo! run-repeated secs sh-out take-flags]]))
@@ -286,7 +285,7 @@
                                [{:commit commit} ["git" "restore" (str "--source=" commit) "--staged" "--worktree" "--" ":/"]]
                                (fail! id "not reverted:" mid "records no git commit"))
                              :else (fail! id "not reverted:" root "is neither a jj nor a git repo"))
-        {:keys [exit err]} (try (apply p/shell {:dir root :in "" :out :string :err :string :continue true} cmd)
+        {:keys [exit err]} (try (apply kernel/sh {:dir root} cmd)
                                 (catch Exception e {:exit -1 :err (ex-message e)}))]
     (when-not (zero? exit)
       (fail! id "not reverted:" (str/join " " cmd) "failed:" (str/trim (str err))))
