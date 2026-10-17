@@ -208,6 +208,29 @@
     (is (nil? (lettered "(a) w (c) y")) "not a, b, c in order")
     (is (nil? (lettered "see (a) above")))))
 
+;; i96: a subscriber stopped mid-request used to send (or have recorded) a GET
+;; after :stop returned, so the next case's count of GETs caught it.
+(deftest a-stopped-subscriber-sends-nothing-after
+  (let [gets (atom [])
+        entered (promise)
+        server (httpkit/run-server
+                (fn [r]
+                  (deliver entered true)
+                  (Thread/sleep 200)
+                  (swap! gets conj (:query-string r))
+                  {:status 200 :body "{\"event\":\"open\"}"})
+                {:port 0 :legacy-return-value? false})
+        {:keys [stop]} (binding [ntfy/*reconnect-ms* 10]
+                         (ntfy/subscribe! (str "http://localhost:" (httpkit/server-port server) "/reply")))]
+    (try
+      (is (deref entered 5000 false))
+      (stop)
+      (let [n (count @gets)]
+        (is (= 1 n) "the request in flight finished before :stop returned")
+        (Thread/sleep 400)
+        (is (= n (count @gets)) "and none followed"))
+      (finally (httpkit/server-stop! server)))))
+
 (deftest a-stalled-reply-stream-reconnects
   (let [gets (atom [])
         open (atom [])

@@ -179,6 +179,8 @@
                        (reset! heard (System/currentTimeMillis))
                        (reset! dropped false)
                        (reset! stream body)
+                       ;; Stopped while connecting: :stop found no stream to close.
+                       (when-not @running (.close ^java.io.InputStream body))
                        (with-open [r (io/reader body)]
                          (if (<= 200 status 299)
                            (doseq [line (line-seq r)
@@ -204,11 +206,14 @@
                       (reset! dropped true)
                       (.put q {:error (str "no data for " (quot idle-ms 1000) "s, reconnecting")})
                       (try (.close ^java.io.InputStream s) (catch Exception _ nil))))))]
-    (doto (Thread. ^Runnable run) (.setDaemon true) (.start))
-    (doto (Thread. ^Runnable watch) (.setDaemon true) (.start))
-    {:queue q
-     :stop #(do (reset! running false)
-                (some-> ^java.io.InputStream @stream (.close)))}))
+    (let [t (doto (Thread. ^Runnable run) (.setDaemon true) (.start))]
+      (doto (Thread. ^Runnable watch) (.setDaemon true) (.start))
+      ;; :stop waits, a bounded while, for a request in flight, so none is
+      ;; sent after it returns.
+      {:queue q
+       :stop #(do (reset! running false)
+                  (some-> ^java.io.InputStream @stream (.close))
+                  (.join t 2000))})))
 
 (defn- open-ask-ids [session]
   (->> (vals (:asks (kernel/project (kernel/read-events session))))
