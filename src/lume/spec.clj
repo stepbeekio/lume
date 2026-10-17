@@ -19,7 +19,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [lume.drive :as drive]
-            [lume.kernel :as kernel :refer [actor clip fail! human-only! take-flags]]
+            [lume.kernel :as kernel :refer [clip fail! human-only! take-flags]]
             [lume.measure :as measure]
             [lume.policy :as policy]
             [lume.store :as store]))
@@ -258,7 +258,7 @@
 (defn show-spec [session args]
   (when (seq (remove #{"--all"} args)) (fail! spec-usage))
   (let [all (boolean (some #{"--all"} args))
-        state (kernel/project (kernel/read-events session))
+        state (kernel/state session)
         closed (count (remove #(= :open (:state %)) (vals (:items state))))]
     (str (pretty (from-state state :all all))
          (when (and (not all) (pos? closed))
@@ -300,13 +300,13 @@
       (let [within store/*session*
             session (store/new-session! root :current (not within))]
         (doseq [e (events sp root)]
-          (kernel/append! session (constantly (assoc e :by (actor)))))
+          (kernel/append! session (constantly e)))
         (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
         (when within
           (say (str "not made current: run inside " (store/session-id within)
                     "; lume status " (store/session-id session) " reads it")))
         (binding [store/*session* (when within session)]
-          (doseq [item (->> (vals (:items (kernel/project (kernel/read-events session)))) (filter :measure) (sort-by :order))]
+          (doseq [item (->> (vals (:items (kernel/state session))) (filter :measure) (sort-by :order))]
             (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
           (if (zero? n)
             "--turns 0: not driving; lume drive, or drive by hand from lume status"

@@ -1,7 +1,7 @@
 (ns lume.session
   "Sessions: lume init starts one, with its goal, repo and default gate."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor fail! human-only! take-flags]]
+            [lume.kernel :as kernel :refer [fail! human-only! take-flags]]
             [lume.store :as store]))
 
 ;; A session may have a default gate: items added without --gate get it, so
@@ -18,11 +18,11 @@
       (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
                    (str "Workers will be allowed to run: " (str/join " · " allows) ".") "yes"))
     (let [session (store/new-session! root)]
-      (kernel/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
+      (kernel/append! session (constantly {:type :session/started :goal goal :repo root}))
       (when gate
-        (kernel/append! session (constantly {:type :session/gated :gate gate :by (actor)})))
+        (kernel/append! session (constantly {:type :session/gated :gate gate})))
       (doseq [command allows]
-        (kernel/append! session (constantly {:type :session/allowed :command command :by (actor)})))
+        (kernel/append! session (constantly {:type :session/allowed :command command})))
       (str "session " (store/session-id session) " started"
            (when gate (str " · default gate " gate))
            (when (seq allows) (str " · workers may run " (str/join " · " allows)))))))

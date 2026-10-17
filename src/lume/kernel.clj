@@ -125,6 +125,11 @@
             (apply merge (map :init fs))
             events)))
 
+(defn state
+  "The session's current state: its log, projected."
+  [session]
+  (project (store/read-events session)))
+
 (defn- checked
   "e with :by filled from the actor, or a refusal: no feature declares it, it
   lacks a required key, it is the human's, or a guard refuses it in (state)."
@@ -177,8 +182,8 @@
   [session e]
   (when (and (not *spawned-as*) (< *depth* max-depth))
     (binding [*depth* (inc *depth*) *session* session]
-      (let [state (delay (project (store/read-events session)))]
-        (doseq [{:keys [on run]} (mapcat #(let [r (:reactions %)] (if (fn? r) (r @state) r)) (features))
+      (let [s (delay (state session))]
+        (doseq [{:keys [on run]} (mapcat #(let [r (:reactions %)] (if (fn? r) (r @s) r)) (features))
                 :when (reacts? on (:type e))]
           (run e))))))
 
@@ -345,7 +350,7 @@
   :tail and :out are added unless the event has its own. The id is allocated
   under the log lock."
   [session kind cmd event-for & {:keys [n] :or {n 1}}]
-  (let [root (:repo (project (store/read-events session)))
+  (let [root (:repo (state session))
         dir (fs/create-dirs (fs/path session kind))
         tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
         runs (run-repeated session root cmd n
@@ -358,7 +363,7 @@
         ran (append! session (fn [events]
                                (let [[id e] (event-for events runs)]
                                  (cond-> (merge {:exit exit :ms ms} e
-                                                {:out (str (fs/path dir (str id ".out"))) :by (actor)})
+                                                {:out (str (fs/path dir (str id ".out")))})
                                    tail (assoc :tail tail)))))]
     (fs/move tmp (:out ran))
     ran))

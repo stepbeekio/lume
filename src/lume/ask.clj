@@ -35,7 +35,7 @@
         (or (str/blank? question) (seq extra)) (fail! ask-usage)
         :else (let [opened (kernel/append! session (fn [events]
                                                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
-                                                      :question question :by (actor)}))]
+                                                      :question question}))]
                 (:ask/id opened))))
 
 ;; With no text, at a terminal, the human reads the question in full and types
@@ -63,7 +63,7 @@
                  (str "Answer " id ": " text) id)
     (kernel/append! session (fn [events]
                               (open-ask events)
-                              {:type :ask/answered :ask/id id :answer text :by (actor)}))
+                              {:type :ask/answered :ask/id id :answer text}))
     (str id " answered")))
 
 ;; Ask show: what status clips. The question in full, who asked and when, the

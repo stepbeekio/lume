@@ -15,7 +15,7 @@
    :reactions [{:on :tally/added :run (fn [e] (kernel/append! kernel/*session* (constantly {:type :tally/seen :of (:n e)})))}]
    :commands [{:path ["tally"] :needs :session :usage "usage: lume tally"
                :run (fn [{:keys [session]} _]
-                      (let [{:keys [counts gates]} (get-in (kernel/project (kernel/read-events session)) [:ext "tally"])]
+                      (let [{:keys [counts gates]} (get-in (kernel/state session) [:ext "tally"])]
                         (str "total " (reduce + counts) " · gates " gates)))
                :help "lume tally                                  the total so far"}
               {:path ["tally" "add"] :needs :session :usage "usage: lume tally add <n>"

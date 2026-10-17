@@ -8,7 +8,7 @@
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor child-env fail! flag next-id]]
+            [lume.kernel :as kernel :refer [child-env fail! flag next-id]]
             [lume.note :as note]
             [lume.ntfy :as ntfy]
             [lume.policy :as policy]
@@ -87,7 +87,7 @@
           (if why
             (let [skipped (mapv :item/id more)]
               (kernel/append! session (constantly {:type :drive/handed-back :drive/id did :why why
-                                                   :skipped skipped :by (actor)}))
+                                                   :skipped skipped}))
               (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
             (recur more)))))))
 
@@ -149,13 +149,13 @@
         done (promise)
         stop! (fn [why]
                 (deliver done true)
-                (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
+                (kernel/append! session (constantly {:type :drive/stopped :why why}))
                 (str "drive stopped: " why))
         hook (Thread. ^Runnable (bound-fn []
                                   (when-not (realized? done)
-                                    (kernel/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)})))))]
+                                    (kernel/append! session (constantly {:type :drive/stopped :why "interrupted"})))))]
     (when (= 1 from)
-      (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
+      (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent)})))
     (.addShutdownHook (Runtime/getRuntime) hook)
     ;; Waiting, the drive sends asks itself, with their codes.
     (push-thread-bindings {#'ntfy/*ask-notices* (not wait) #'ntfy/*sent* (atom #{})})
@@ -182,13 +182,13 @@
             (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
             (> n turns) (stop! (str turns " turns run"))
             (and changed (not broken))
-            (do (kernel/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
+            (do (kernel/append! session (constantly {:type :drive/reloaded :n n}))
                 (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
                                 wait (conj "--wait-on-ask"))))
             :else
             (let [{did :drive/id} (kernel/append! session (fn [events]
                                                             {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
-                                                             :n n :by (actor)}))
+                                                             :n n}))
                   {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
                   logged (rest (drop-while #(not= did (:drive/id %)) (kernel/read-events session)))]
               ;; Logged after reading what the turn did, so it never counts as the turn's work.

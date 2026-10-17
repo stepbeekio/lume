@@ -28,7 +28,7 @@
     (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
                  (str (if revoke "Workers may no longer run: " "Workers may run: ") command ".") "yes")
     (kernel/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
-                                         :command command :by (actor)}))
+                                         :command command}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
 (defn- worker-prompt [events item]
@@ -109,8 +109,7 @@
         started (kernel/append! session (fn [events]
                                           (let [sid (next-id "s" :spawn/started events)]
                                             {:type :spawn/started :spawn/id sid :item/id id :agent agent
-                                             :out (str (fs/path session "spawns" (str sid ".out")))
-                                             :by (actor)})))
+                                             :out (str (fs/path session "spawns" (str sid ".out")))})))
         {sid :spawn/id out :out} started
         done (promise)
         hook (Thread. ^Runnable (bound-fn []
@@ -149,10 +148,10 @@
            ;; nothing about its work, so the item stays open. A measured item
            ;; stays open too: its gate runs, but keeping or rolling back the
            ;; change is the human's or driver's call. Otherwise its gate decides.
-           (let [item (get-in (kernel/project (kernel/read-events session)) [:items id])]
+           (let [item (get-in (kernel/state session) [:items id])]
              (when (:measure item)
                (str "\n" (measure/measure-row session (measure/run-measure session item)))))
-           (let [item (get-in (kernel/project (kernel/read-events session)) [:items id])
+           (let [item (get-in (kernel/state session) [:items id])
                  why (when (and (= :open (:state item)) (or (:gate item) (:measure item)))
                        (idle-why session sid before (worktree-fingerprint root)))]
              (cond
@@ -174,9 +173,9 @@
     (do
       (kernel/append! session (fn [events]
                                 (open-item events id)
-                                (cond-> {:type :spawn/requested :item/id id :by (actor)}
+                                (cond-> {:type :spawn/requested :item/id id}
                                   (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
-      (let [state (kernel/project (kernel/read-events session))
+      (let [state (kernel/state session)
             n (get-in state [:requested (actor)])
             batch (:batch (policy/cadence state))]
         (if (< n batch)

@@ -4,7 +4,7 @@
   prompt. Pinned notes stay in status and every worker prompt until unpinned;
   others age out."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor clip clock fail! next-id]]))
+            [lume.kernel :as kernel :refer [clip clock fail! next-id]]))
 
 (def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
 
@@ -17,14 +17,14 @@
                                     (when-not (some #(and (= b (:note/id %)) (:pinned %))
                                                     (:notes (kernel/project events)))
                                       (fail! "no pinned note:" b))
-                                    {:type :note/unpinned :note/id b :by (actor)}))
+                                    {:type :note/unpinned :note/id b}))
           (str "unpinned " b))
       (let [pin (= "--pin" a)
             text (if pin b a)]
         (when (str/blank? text) (fail! usage))
         (let [e (kernel/append! session (fn [events]
                                           (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
-                                                   :text text :by (actor)}
+                                                   :text text}
                                             pin (assoc :pinned true))))]
           (str (if pin "pinned " "noted ") (:note/id e)))))))
 

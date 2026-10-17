@@ -3,7 +3,7 @@
   repo's sessions by id, and write nothing to it but repl/opened."
   (:require [clojure.string :as str]
             [lume.item :as item]
-            [lume.kernel :as kernel :refer [*read-line* actor ago clip clock fail! session-by-id take-flags]]
+            [lume.kernel :as kernel :refer [*read-line* ago clip clock fail! session-by-id take-flags]]
             [lume.measure :as measure]
             [lume.status :as status]
             [lume.store :as store])
@@ -207,7 +207,7 @@
   (let [server ((requiring-resolve 'babashka.nrepl.server/start-server!) {:port port :quiet true})
         port (.getLocalPort ^java.net.ServerSocket (:socket server))
         ;; The one write: the log shows prototyping happened, e.g. before a spec.
-        _ (kernel/append! session (constantly {:type :repl/opened :port port :by (actor)}))
+        _ (kernel/append! session (constantly {:type :repl/opened :port port}))
         n (repl-ns! ns session)]
     {:server server
      :port port

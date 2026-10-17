@@ -7,7 +7,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor ago clip fail! next-id open-item paint
+            [lume.kernel :as kernel :refer [ago clip fail! next-id open-item paint
                                             run-in-repo! run-repeated secs sh-out take-flags]]))
 
 ;; A measurement spec is its command and how it repeats; rows compare only
@@ -128,7 +128,7 @@
       (fail! "--runs must be a positive whole number and --drop less than it;" usage))
     (kernel/append! session (fn [events]
                               (open-item events id)
-                              (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
+                              (cond-> {:type :item/measuring :item/id id :measure cmd}
                                 (> runs 1) (assoc :runs runs)
                                 (pos? drop) (assoc :drop drop)
                                 (seq higher) (assoc :higher higher)
@@ -212,8 +212,7 @@
                         {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
                          :question (str id " plateaued: " stale " measurement rows without a new best"
                                         (when best-id (str " (best " best-id ", " (direction-text (sort higher)) ")"))
-                                        "; keep going, change approach, or stop?")
-                         :by (actor)})))))
+                                        "; keep going, change approach, or stop?")})))))
 
 (defn- measure-fields
   "A row's fields from its runs: the kept runs summarized, the spec, and which
@@ -233,7 +232,7 @@
   A failed run ends the measurement; the row has the runs kept so far and the
   failing run's exit. :before-spawn sid marks a spawn's before row."
   [session {:keys [id measure runs] :or {runs 1} :as item} & {:keys [before-spawn]}]
-  (let [env (environment (:repo (kernel/project (kernel/read-events session))))
+  (let [env (environment (:repo (kernel/state session)))
         ran (run-in-repo! session "measures" measure
                          (fn [events ran]
                            (let [mid (next-id "m" :measure/ran events)]
@@ -251,7 +250,7 @@
   :exit and :output. Logs nothing and keeps no output file: for trying a
   candidate in lume repl before it goes into a spec."
   [session cmd & {:keys [runs drop higher] :or {runs 1 drop 0}}]
-  (let [ran (run-repeated session (:repo (kernel/project (kernel/read-events session))) cmd runs (fn [_ _]))
+  (let [ran (run-repeated session (:repo (kernel/state session)) cmd runs (fn [_ _]))
         {:keys [exit output]} (peek ran)]
     (merge {:exit exit} (measure-fields ran {:measure cmd :runs runs :drop drop :higher higher})
            {:output output})))
@@ -260,7 +259,7 @@
   "The ledger row, not the output: the numbers and wall time against the
   previous row, and where the output is when the command failed."
   [session {:keys [exit out ask] mid :measure/id id :item/id :as ran}]
-  (let [row (get-in (kernel/project (kernel/read-events session)) [:items id :last-measure])]
+  (let [row (get-in (kernel/state session) [:items id :last-measure])]
     (str mid " " id " " (measure-text (if (= mid (:measure/id row)) row ran))
          (when-not (zero? exit) (str "\n" out))
          (when ask (str "\nask " (:ask/id ask) " " (:question ask))))))
@@ -297,7 +296,7 @@
 
 (defn measure [session [id]]
   (when (str/blank? id) (fail! measure-usage))
-  (let [item (or (get-in (kernel/project (kernel/read-events session)) [:items id]) (fail! "no such item:" id))]
+  (let [item (or (get-in (kernel/state session) [:items id]) (fail! "no such item:" id))]
     (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
     (measure-row session (run-measure session item))))
 
@@ -311,7 +310,7 @@
   (let [[[id & extra] {[n & ns] "-n" [sid & sids] "--session"}] (take-flags args #{"-n" "--session"} ledger-usage)
         n (if n (parse-long n) 20)
         _ (when (or (seq extra) (seq ns) (seq sids) (not (and n (<= 0 n)))) (fail! ledger-usage))
-        {:keys [items ledger]} (kernel/project (kernel/read-events (kernel/session-by-id root sid)))
+        {:keys [items ledger]} (kernel/state (kernel/session-by-id root sid))
         _ (when (and id (not (items id))) (fail! "no such item:" id))
         rows (cond->> ledger id (filterv #(= id (:item/id %))))
         shown (take-last n rows)

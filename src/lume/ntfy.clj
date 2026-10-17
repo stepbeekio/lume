@@ -6,7 +6,7 @@
   --wait-on-ask reads answers back with wait-for-answer!."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor]]))
+            [lume.kernel :as kernel]))
 
 (def ^:dynamic *ntfy*
   "The ntfy topic URL hand-backs are POSTed to: LUME_NTFY, else nil (no
@@ -66,8 +66,7 @@
            (kernel/append! session (constantly (merge {:type (if why :notify/failed :notify/sent) :on (:type e)}
                                                       (select-keys e [:ask/id :item/id :drive/id])
                                                       {:text text}
-                                                      (when why {:error why})
-                                                      {:by (actor)}))))
+                                                      (when why {:error why})))))
          (catch Exception _ nil))))
 
 (defn ask-item
@@ -216,7 +215,7 @@
                   (.join t 2000))})))
 
 (defn- open-ask-ids [session]
-  (->> (vals (:asks (kernel/project (kernel/read-events session))))
+  (->> (vals (:asks (kernel/state session)))
        (filter #(= :open (:state %))) (map :id) (sort-by #(parse-long (subs % 1)))))
 
 (defn- reply-answer

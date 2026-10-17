@@ -5,7 +5,7 @@
   human's (human-only!), like permissions. Drive reads them through cadence and
   over-budget."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor clip fail! human-only! paint take-flags]]))
+            [lume.kernel :as kernel :refer [clip fail! human-only! paint take-flags]]))
 
 ;; Budgets bound what agents spend: dollars and minutes of spawns and drive
 ;; turns, and how many spawns started.
@@ -77,7 +77,7 @@
                                     n (if (= :spawns k) (parse-long v) (parse-double v))]]
                           (do (when (or (seq more) (nil? n) (neg? n)) (fail! usage))
                               [k n])))
-        state #(kernel/project (kernel/read-events session))]
+        state #(kernel/state session)]
     (when (seq pos) (fail! usage))
     (when (seq limits)
       (let [{:keys [budget]} (state)
@@ -86,7 +86,7 @@
           (human-only! "only the human raises a budget; lower it, or ask with lume ask \"<question>\""
                        (str "Raise the budget: " (str/join " · " (map (fn [[k n]] (str (name k) " " (budget k) " → " n)) raised)) ".")
                        "yes"))
-        (kernel/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
+        (kernel/append! session (constantly (assoc limits :type :session/budgeted)))))
     (let [s (state)]
       (str "budget " (budget-text s) (when-let [over (over-budget s)] (str "\n" over))))))
 
@@ -106,14 +106,14 @@
 
 (defn cadence-cmd [session args]
   (let [words (remove str/blank? (mapcat #(str/split % #"\s+") args))
-        state #(kernel/project (kernel/read-events session))]
+        state #(kernel/state session)]
     (when (seq words)
       (let [c (parse-cadence words)]
         (when-let [raises (cadence-raises (cadence-ceiling (state)) c)]
           (human-only! (str "only the human hands back less often (" raises "); hand back more often,"
                             " or ask with lume ask \"<question>\"")
                        (str "Raise the cadence ceiling: " raises ".") "yes"))
-        (kernel/append! session (constantly (assoc c :type :session/cadence :by (actor))))))
+        (kernel/append! session (constantly (assoc c :type :session/cadence)))))
     (let [s (state)]
       (str "cadence " (cadence-text (cadence s))
            " · ceiling " (cadence-text (cadence-ceiling s))))))

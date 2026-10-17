@@ -6,7 +6,7 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor fail! human-only! next-id]]))
+            [lume.kernel :as kernel :refer [fail! human-only! next-id]]))
 
 (def ^:private on-usage "usage: lume on [<event-pattern> \"<cmd>\" | --remove <id>]")
 
@@ -27,14 +27,14 @@
   (let [[a b] args]
     (cond
       (empty? args)
-      (let [rules (vals (:rules (kernel/project (kernel/read-events session))))]
+      (let [rules (vals (:rules (kernel/state session)))]
         (if (seq rules) (str/join "\n" (map rule-line (sort-by :order rules))) "no rules"))
 
       (= "--remove" a)
-      (let [rule (or (get-in (kernel/project (kernel/read-events session)) [:rules b]) (fail! "no such rule:" (str b)))]
+      (let [rule (or (get-in (kernel/state session) [:rules b]) (fail! "no such rule:" (str b)))]
         (human-only! "only the human changes rules; ask with lume ask \"<question>\""
                      (str "Remove " (rule-line rule) ".") "yes")
-        (kernel/append! session (constantly {:type :rule/removed :rule/id b :by (actor)}))
+        (kernel/append! session (constantly {:type :rule/removed :rule/id b}))
         (str "removed " b))
 
       (or (str/starts-with? a "--") (str/blank? b) (> (count args) 2)) (fail! on-usage)
@@ -45,7 +45,7 @@
                      (str "After every " (subs (str k) 1) " event, run: " b ".") "yes")
         (:rule/id (kernel/append! session (fn [events]
                                             (let [id (next-id "r" :rule/added events)]
-                                              {:type :rule/added :rule/id id :on k :cmd b :by (actor)}))))))))
+                                              {:type :rule/added :rule/id id :on k :cmd b}))))))))
 
 ;; Running a rule. Its command sees the event in env: LUME_EVENT as EDN, and
 ;; LUME_EVENT_<KEY> for each scalar key (gate/ran's :exit is LUME_EVENT_EXIT,
@@ -68,7 +68,7 @@
           [(env-key k) (if (keyword? v) (subs (str v) 1) (str v))])))
 
 (defn- run-rule [session {:keys [id cmd]} e]
-  (let [root (:repo (kernel/project (kernel/read-events session)))
+  (let [root (:repo (kernel/state session))
         dir (fs/create-dirs (fs/path session "rules"))
         out (fs/file (fs/create-temp-file {:dir dir :prefix (str id "-") :suffix ".out"}))
         t0 (System/currentTimeMillis)

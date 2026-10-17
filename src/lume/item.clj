@@ -2,7 +2,7 @@
   "Work items: lume item add, gate, close and show, and gates. An item's gate
   is a shell command whose exit code decides done."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor ago clip fail! next-id open-item paint run-in-repo!]]
+            [lume.kernel :as kernel :refer [ago clip fail! next-id open-item paint run-in-repo!]]
             [lume.measure :as measure]
             [lume.status :as status]))
 
@@ -20,7 +20,7 @@
                                       (when parent (open-item events parent))
                                       (let [gate (or gate (:default-gate (kernel/project events)))]
                                         (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
-                                                 :intent intent :by (actor)}
+                                                 :intent intent}
                                           gate (assoc :gate gate)
                                           parent (assoc :parent parent)))))]
       (:item/id e))))
@@ -31,7 +31,7 @@
   (when (str/blank? gate) (fail! item-gate-usage))
   (kernel/append! session (fn [events]
                             (open-item events id)
-                            {:type :item/gated :item/id id :gate gate :by (actor)}))
+                            {:type :item/gated :item/id id :gate gate}))
   (str id " gate " gate))
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
@@ -69,7 +69,7 @@
       (kernel/append! session (fn [events]
                                 (open-item events id)
                                 (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
-                                         :why why :by (actor)}
+                                         :why why}
                                   ran (assoc :gate/id (:gate/id ran))
                                   restored (merge restored))))
       (str id " " disposition (when ran (str " · " (gate-summary ran)))

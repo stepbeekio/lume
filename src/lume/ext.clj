@@ -15,7 +15,7 @@
   source, is what trusts the code."
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [actor fail! human-only!]]
+            [lume.kernel :as kernel :refer [fail! human-only!]]
             [lume.store :as store])
   (:import (java.security MessageDigest)))
 
@@ -177,7 +177,7 @@
 (defn- approvals
   "{path sha256}, by the :ext/approved events in log."
   [log]
-  (:extensions (kernel/project (kernel/read-events log))))
+  (:extensions (kernel/state log)))
 
 (defn scan
   "Each .clj in the session's scopes, user then repo then session, with its
@@ -205,7 +205,7 @@
   [features session]
   (let [report (when session
                  (binding [kernel/*features* features]
-                   (scan session (:repo (kernel/project (kernel/read-events session))))))]
+                   (scan session (:repo (kernel/state session)))))]
     (if (empty? report)
       features
       (let [loaded (for [{:keys [name path state] :as r} report]
@@ -240,11 +240,11 @@
     (name state)))
 
 (defn- session-scopes [session]
-  (scopes session (:repo (kernel/project (kernel/read-events session)))))
+  (scopes session (:repo (kernel/state session))))
 
 (defn ext-list [session]
   (let [rs (report)
-        st (when (seq rs) (kernel/project (kernel/read-events session)))]
+        st (when (seq rs) (kernel/state session))]
     (if (empty? rs)
       (str "no extensions; put <name>.clj in one of these and lume ext approve it:\n"
            (str/join "\n" (for [{:keys [scope dir]} (session-scopes session)] (str scope " " dir))))
@@ -290,7 +290,7 @@
     (human-only! "only the human approves extensions; ask with lume ask \"<question>\""
                  (str src "\n\nApprove " scope " extension " name " (" path ", sha256 " (subs sha 0 12) ") to load into " reach "?")
                  name)
-    (kernel/append! log (constantly {:type :ext/approved :ext/name name :path path :sha256 sha :by (actor)}))
+    (kernel/append! log (constantly {:type :ext/approved :ext/name name :path path :sha256 sha}))
     (str "approved " scope " extension " name " · sha256 " (subs sha 0 12) " · it loads into " reach " from the next one")))
 
 (defn- report-lines [_ _ _]
