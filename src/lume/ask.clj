@@ -118,14 +118,8 @@
    :fold {:ask/opened (fn [s e]
                         (update s :asks assoc (:ask/id e) (cond-> {:id (:ask/id e) :question (:question e) :state :open}
                                                             (:item/id e) (assoc :item (:item/id e)))))
-          ;; An answer is steering, like a note, so it joins the notes (and
-          ;; reaches status and the worker prompt with them).
-          :ask/answered (fn [s e]
-                          (-> s
-                              (assoc-in [:asks (:ask/id e) :state] :answered)
-                              (update :notes conj (assoc (select-keys e [:ask/id :answer :t :by])
-                                                         :question (get-in s [:asks (:ask/id e) :question])
-                                                         :text (str (:ask/id e) " → " (:answer e))))))}
+          ;; The note feature folds the answer into the notes too.
+          :ask/answered (fn [s e] (assoc-in s [:asks (:ask/id e) :state] :answered))}
    :status [{:label "asks" :order 20 :cap 7 :more "asks — lume ask" :lines ask-lines}]
    ;; ask show needs an id: with anything else, show is the text.
    :commands [{:path ["ask"] :needs :session :usage ask-usage

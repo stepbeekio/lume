@@ -1,6 +1,12 @@
 (ns lume.item
   "Work items: lume item add, gate, close and show, and gates. An item's gate
-  is a shell command whose exit code decides done."
+  is a shell command whose exit code decides done.
+
+  Each fold writes only its own feature's state, with one accepted exception:
+  other features add their own keys to an item map (measure its spec and rows:
+  :measure, :runs, :drop, :higher, :before, :last-measure, :plateau(s),
+  :good-measures, :before-rows; agent :spawns). Only item sets :state, :intent
+  and :gate."
   (:require [clojure.string :as str]
             [lume.kernel :as kernel :refer [ago clip fail! more next-id open-item paint run-in-repo!]]
             [lume.measure :as measure]

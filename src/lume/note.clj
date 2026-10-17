@@ -55,8 +55,14 @@
                (when unpinned [(str "unpinned " (at unpinned))])
                [(:text added)]))))
 
-;; Answered asks join :notes too (the ask feature folds them in), so they
-;; reach the prompt with the notes.
+;; An answer is steering, like a note, so it joins the notes (and reaches status
+;; and the worker prompt with them). The question comes from the ask feature's
+;; :asks, which its fold, earlier in feature order, has already set.
+(defn- answered-note [s e]
+  (update s :notes conj (assoc (select-keys e [:ask/id :answer :t :by])
+                               :question (get-in s [:asks (:ask/id e) :question])
+                               :text (str (:ask/id e) " → " (:answer e)))))
+
 (defn- prompt [{:keys [notes]} _]
   (let [line #(if (:ask/id %) (str (:ask/id %) " " (:question %) " → " (:answer %)) (:text %))
         bullets (fn [heading ns] (when (seq ns) (cons heading (map #(str "- " (line %)) ns))))]
@@ -69,7 +75,8 @@
             :note/unpinned {:req #{:note/id}}}
    :init {:notes []}
    :fold {:note/added (fn [s e] (update s :notes conj e))
-          :note/unpinned (fn [s e] (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned)))))}
+          :note/unpinned (fn [s e] (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned)))))
+          :ask/answered answered-note}
    ;; Pinned notes are the lasting ones. Asks past 4 lines take their room, so
    ;; status stays one screen; when there are any, recent notes give up room.
    :status [{:label "pinned" :order 50 :cap (fn [_ shown] (- 6 (max 0 (- (shown "asks" 0) 4))))
