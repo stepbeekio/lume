@@ -215,93 +215,139 @@
   (or (get rawInput "command")
       (str/join " " (remove nil? [name (or (get rawInput "file_path") title)]))))
 
+;; The bridge is a pure step over its state, (acp-step state msg) -> [state effects],
+;; and a loop that does the IO. Effects run in order: [:send m] writes a JSON-RPC
+;; message to the agent, [:emit m] prints a line, [:permission e] logs a
+;; :spawn/permission event, [:exit code] ends the bridge.
+;;
+;; State: :opts and :prompt and :cwd as given; :sid, the agent's session;
+;; :cost, its latest USD cost; :text, the message being collected
+;; ({:id :parts}: text comes in chunks and each message is printed whole, once
+;; it ends); :calls, tool calls by id (a permission request's toolCall may be
+;; just its id, as Devin's are, so it's read over the tool_call that announced it).
+
+;; The handshake: lume's requests in order, each sent when the one before
+;; replies. A request's id is its place here.
+(def ^:private acp-handshake ["initialize" "session/new" "session/prompt"])
+
+(defn- acp-request [method params]
+  {:jsonrpc "2.0" :id (.indexOf acp-handshake method) :method method :params params})
+
+(defn- acp-open
+  "The bridge's first state and effects: initialize."
+  [opts prompt cwd]
+  [{:opts opts :prompt prompt :cwd cwd :calls {}}
+   [[:send (acp-request "initialize"
+                        {:protocolVersion 1
+                         :clientCapabilities {:fs {:readTextFile false :writeTextFile false} :terminal false}})]]])
+
+(defn- text-effects
+  "Effects printing the message being collected, if there is one."
+  [{:keys [text]}]
+  (if-let [{:keys [id parts]} text]
+    [[:emit {:sessionUpdate "agent_message_chunk" :messageId id
+             :content {:type "text" :text (apply str parts)}}]]
+    []))
+
+(defn- acp-finish [{:keys [sid cost text] :as state} m code]
+  [state (conj (text-effects state)
+               [:emit (cond-> (assoc m :type "result" :sessionId sid :text (some->> (:parts text) (apply str)))
+                        cost (assoc :costUsd cost))]
+               [:exit code])])
+
+(defn- acp-permission [{:keys [opts calls] :as state} {:strs [id params]}]
+  (let [call (merge (get calls (get-in params ["toolCall" "toolCallId"])) (get params "toolCall"))
+        params (assoc params "toolCall" call)
+        permit? (acp-permit? opts params)
+        tool (or (get call "name") (get call "kind"))
+        spawn (:spawn opts)]
+    [state [[:send {:jsonrpc "2.0" :id id :result {:outcome (acp-answer permit? params)}}]
+            [:emit {:type "permission" :tool tool :kind (get call "kind")
+                    :subject (acp-subject call) :allowed permit?}]
+            [:permission {:type :spawn/permission :spawn/id spawn :tool tool :command (acp-subject call)
+                          :disposition (if permit? :allow :reject) :by spawn}]]]))
+
+(def ^:private quiet-updates #{"available_commands_update" "usage_update" "agent_thought_chunk"})
+
+(defn- acp-update [state {:strs [sessionUpdate messageId content toolCallId] :as u}]
+  (let [usd (when (= "USD" (get-in u ["cost" "currency"])) (get-in u ["cost" "amount"]))
+        state (cond-> (update state :cost #(or usd %))
+                (#{"tool_call" "tool_call_update"} sessionUpdate) (update-in [:calls toolCallId] merge u))
+        text (:text state)]
+    (cond
+      ;; A tool call ends the message before it, so the result is the text
+      ;; after the last call even when chunks have no messageId.
+      (= "tool_call" sessionUpdate) [(assoc state :text nil) (conj (text-effects state) [:emit u])]
+
+      ;; Devin's chunks have no messageId, so nil is an id too.
+      (= "agent_message_chunk" sessionUpdate)
+      (let [new? (or (nil? text) (not= messageId (:id text)))]
+        [(cond-> state
+           new? (assoc :text {:id messageId :parts []})
+           :always (update-in [:text :parts] conj (get content "text")))
+         (if new? (text-effects state) [])])
+
+      (quiet-updates sessionUpdate) [state []]
+      :else [state [[:emit u]]])))
+
+(defn- acp-reply
+  "Step on the agent's reply to a handshake request: send the next one, or finish."
+  [{:keys [cwd prompt] :as state} {:strs [id result]}]
+  (case (get acp-handshake id)
+    "initialize" [state [[:send (acp-request "session/new" {:cwd cwd :mcpServers []})]]]
+    "session/new" (let [sid (get result "sessionId")]
+                    [(assoc state :sid sid)
+                     [[:send (acp-request "session/prompt" {:sessionId sid :prompt [{:type "text" :text prompt}]})]]])
+    "session/prompt" (acp-finish state {:stopReason (get result "stopReason")} 0)
+    [state []]))
+
+(defn acp-step
+  "The bridge's next [state effects] on `msg`, a parsed line from the agent;
+  nil means its output ended."
+  [state {:strs [id method params error] :as msg}]
+  (cond
+    (nil? msg) (acp-finish state {:error "the ACP agent exited before the prompt finished"} 1)
+    (= "session/request_permission" method) (acp-permission state msg)
+    (and id method) [state [[:send {:jsonrpc "2.0" :id id :error {:code -32601 :message (str "lume: no " method)}}]]]
+    (= "session/update" method) (acp-update state (get params "update"))
+    error (acp-finish state {:error (get error "message")} 1)
+    :else (acp-reply state msg)))
+
+(defn- read-acp-line
+  "A line from the agent as a message: nil at the end, {} if it isn't JSON."
+  [line]
+  (when line (or (try (json/parse-string line) (catch Exception _ nil)) {})))
+
+(defn- emit-line! [m] (println (json/generate-string m)) (flush))
+
+(defn- acp-effects!
+  "Carry out `effects`; returns the exit code if they end the bridge."
+  [w session effects]
+  (doseq [[kind m] effects]
+    (case kind
+      :send (do (.write w (str (json/generate-string m) "\n")) (.flush w))
+      :emit (emit-line! m)
+      :permission (when session (kernel/append! session (constantly m)))
+      :exit nil))
+  (some (fn [[kind code]] (when (= :exit kind) code)) effects))
+
 (defn acp-bridge
   "Run the ACP agent on `prompt` in the current directory, printing lines to
   *out*. `opts` has :agent (argv), :allow and :role, and :session and :spawn
   to log permission decisions to. Returns the exit code."
-  [{:keys [agent session spawn] :as opts} prompt]
+  [{:keys [agent session] :as opts} prompt]
   (let [proc (p/process agent {:err :inherit})
-        w (io/writer (:in proc))
-        send! (fn [m] (.write w (str (json/generate-string m) "\n")) (.flush w))
-        emit! (fn [m] (println (json/generate-string m)) (flush))
-        ;; Text comes in chunks; each message is printed whole, once it ends.
-        text (atom nil)
-        ;; A permission request's toolCall may be just its id (Devin's are), so
-        ;; it's read over the tool_call that announced it.
-        calls (atom {})
-        flush-text! (fn [] (when-let [{:keys [id parts]} @text]
-                             (emit! {:sessionUpdate "agent_message_chunk" :messageId id
-                                     :content {:type "text" :text (apply str parts)}})))]
+        w (io/writer (:in proc))]
     (try
-      (send! {:jsonrpc "2.0" :id 0 :method "initialize"
-              :params {:protocolVersion 1
-                       :clientCapabilities {:fs {:readTextFile false :writeTextFile false} :terminal false}}})
-      (loop [lines (line-seq (io/reader (:out proc))) sid nil cost nil]
-        ;; rest, not [line & more]: destructuring would read ahead a line the
-        ;; agent won't send until we answer this one.
-        (let [line (first lines)
-              more (rest lines)
-              {:strs [id method params result error]} (when line (try (json/parse-string line) (catch Exception _ nil)))
-              finish (fn [m code]
-                       (flush-text!)
-                       (emit! (cond-> (assoc m :type "result" :sessionId sid :text (some-> @text :parts (#(apply str %))))
-                                cost (assoc :costUsd cost)))
-                       code)]
-          (cond
-            (nil? line) (finish {:error "the ACP agent exited before the prompt finished"} 1)
-
-            (= "session/request_permission" method)
-            (let [call (merge (get @calls (get-in params ["toolCall" "toolCallId"])) (get params "toolCall"))
-                  params (assoc params "toolCall" call)
-                  permit? (acp-permit? opts params)
-                  answer (acp-answer permit? params)]
-              (send! {:jsonrpc "2.0" :id id :result {:outcome answer}})
-              (emit! {:type "permission" :tool (or (get call "name") (get call "kind")) :kind (get call "kind")
-                      :subject (acp-subject call) :allowed permit?})
-              (when session
-                (kernel/append! session (constantly {:type :spawn/permission :spawn/id spawn
-                                                     :tool (or (get call "name") (get call "kind")) :command (acp-subject call)
-                                                     :disposition (if permit? :allow :reject) :by spawn})))
-              (recur more sid cost))
-
-            (and id method)
-            (do (send! {:jsonrpc "2.0" :id id :error {:code -32601 :message (str "lume: no " method)}})
-                (recur more sid cost))
-
-            (= "session/update" method)
-            (let [{:strs [sessionUpdate messageId content toolCallId] :as u} (get params "update")
-                  cost (or (when (= "USD" (get-in u ["cost" "currency"])) (get-in u ["cost" "amount"])) cost)]
-              (when (#{"tool_call" "tool_call_update"} sessionUpdate)
-                (swap! calls update toolCallId merge u))
-              ;; A tool call ends the message before it, so the result is the
-              ;; text after the last call even when chunks have no messageId.
-              (when (= "tool_call" sessionUpdate)
-                (flush-text!)
-                (reset! text nil))
-              (if (= "agent_message_chunk" sessionUpdate)
-                ;; Devin's chunks have no messageId, so nil is an id too.
-                (do (when (or (nil? @text) (not= messageId (:id @text)))
-                      (flush-text!)
-                      (reset! text {:id messageId :parts []}))
-                    (swap! text update :parts conj (get content "text")))
-                (when-not (#{"available_commands_update" "usage_update" "agent_thought_chunk"} sessionUpdate)
-                  (emit! u)))
-              (recur more sid cost))
-
-            error (finish {:error (get error "message")} 1)
-
-            (= 0 id) (do (send! {:jsonrpc "2.0" :id 1 :method "session/new"
-                                 :params {:cwd (str (fs/cwd)) :mcpServers []}})
-                         (recur more sid cost))
-            (= 1 id) (let [sid (get result "sessionId")]
-                       (send! {:jsonrpc "2.0" :id 2 :method "session/prompt"
-                               :params {:sessionId sid :prompt [{:type "text" :text prompt}]}})
-                       (recur more sid cost))
-            (= 2 id) (finish {:stopReason (get result "stopReason")} 0)
-
-            :else (recur more sid cost))))
+      ;; Never read ahead a line the agent won't send until we answer this one:
+      ;; lazy-seq, since line-seq reads its first line at once (before
+      ;; initialize is sent), and first and rest, not [line & more].
+      (loop [lines (lazy-seq (line-seq (io/reader (:out proc))))
+             [state effects] (acp-open opts prompt (str (fs/cwd)))]
+        (or (acp-effects! w session effects)
+            (recur (rest lines) (acp-step state (read-acp-line (first lines))))))
       (catch java.io.IOException e
-        (emit! {:type "result" :error (str "the ACP agent's pipe closed: " (ex-message e))})
+        (emit-line! {:type "result" :error (str "the ACP agent's pipe closed: " (ex-message e))})
         1)
       (finally (p/destroy-tree proc)))))
 
