@@ -7,6 +7,7 @@
             [clojure.test :refer [are deftest is testing use-fixtures]]
             [lume.agents :as agents]
             [lume.cli :as cli]
+            [lume.kernel :as kernel]
             [lume.spec :as spec]
             [lume.status :as status]
             [lume.store :as store]
@@ -24,8 +25,8 @@
     (let [home (str (fs/create-temp-dir {:prefix "lume-home"}))
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
-        (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
-                  cli/*confirm* (constantly true) cli/*read-line* (constantly nil)
+        (binding [store/*home* home store/*session* nil kernel/*actor* "human" *root* root
+                  kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
                   agents/*claude-home* (str (fs/path home "claude"))
@@ -114,7 +115,7 @@
       (doseq [args [["g" "--gate"] ["g" "--allow"] ["g" "--gate" "a" "--gate" "b"] ["g" "--gat" "x"] ["g" "h"] ["--gate" "x"]]]
         (is (thrown-with-msg? Exception #"usage" (cli/init *root* args)) (pr-str args)))
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["x" "--gate"])) "a trailing --gate is not ungated")
-      (binding [cli/*actor* "d1"]
+      (binding [kernel/*actor* "d1"]
         (is (thrown-with-msg? Exception #"only the human" (cli/init *root* ["g" "--allow" "rm"])))
         (is (str/includes? (cli/init *root* ["g" "--gate" "bb test"]) "default gate bb test"))))))
 
@@ -586,7 +587,7 @@
       (cli/allow s ["--revoke" "jj"])
       (is (= ["bb test"] (:allow (status/project (store/read-events s)))))
       (doseq [who ["s1" "d1"]]
-        (binding [cli/*actor* who]
+        (binding [kernel/*actor* who]
           (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["rm"])))
           (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["--revoke" "bb test"]))))))))
 
@@ -594,7 +595,7 @@
   (let [s (new-session "goal")]
     (cli/ask s ["ok?"])
     (doseq [who ["claude" "s1" "d1" "Human" "human " ""]]
-      (binding [cli/*actor* who]
+      (binding [kernel/*actor* who]
         (is (thrown-with-msg? Exception #"only the human changes permissions" (cli/allow s ["rm"])) who)
         (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "yes"])) who)))
     (is (empty? (:allow (status/project (store/read-events s)))))
@@ -606,7 +607,7 @@
         typed #(fn [prompt expected] (swap! confirms conj [prompt expected]) (= % expected))]
     (cli/ask s ["ok?"])
     (testing "a wrong confirmation is refused"
-      (binding [cli/*confirm* (typed "a2")]
+      (binding [kernel/*confirm* (typed "a2")]
         (is (thrown-with-msg? Exception #"need an interactive terminal and a typed confirmation"
                               (cli/answer s ["a1" "yes"])))
         (is (thrown-with-msg? Exception #"typed confirmation" (cli/allow s ["rm"])))
@@ -618,13 +619,13 @@
     (is (= s (store/current-session *root*)) "a refused init starts no session")
     (testing "LUME_ACTOR is still checked first, before any prompt"
       (reset! confirms [])
-      (binding [cli/*actor* "s1" cli/*confirm* (typed "a1")]
+      (binding [kernel/*actor* "s1" kernel/*confirm* (typed "a1")]
         (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "yes"]))))
       (is (empty? @confirms)))
     (testing "the human at a terminal who types it passes"
-      (binding [cli/*confirm* (typed "a1")]
+      (binding [kernel/*confirm* (typed "a1")]
         (is (= "a1 answered" (cli/answer s ["a1" "yes"]))))
-      (binding [cli/*confirm* (typed "yes")]
+      (binding [kernel/*confirm* (typed "yes")]
         (is (= "workers may run rm" (cli/allow s ["rm"])))))
     (testing "with no tty (as in spawns and drives) the real check refuses, naming the rule"
       (cli/ask s ["again?"])
@@ -724,7 +725,7 @@
 (deftest asks-wait-for-the-human
   (let [s (new-session "goal")
         id (cli/item-add s ["use the answer"])]
-    (binding [cli/*actor* "s1"]
+    (binding [kernel/*actor* "s1"]
       (is (= "a1" (cli/ask s ["ship on fridays?"]))))
     (is (= "a2" (cli/ask s ["which db?"])))
     (let [out (status/render "sess" (store/read-events s) (Instant/now))]
@@ -732,7 +733,7 @@
           "open asks come right after the goal"))
     (testing "only the human answers"
       (doseq [who ["s1" "d1"]]
-        (binding [cli/*actor* who]
+        (binding [kernel/*actor* who]
           (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1" "sure"]))))))
     (testing "answers move from asks to notes"
       (is (= "a1 answered" (cli/answer s ["a1" "never"])))
@@ -791,14 +792,14 @@
             (is (not (str/includes? (replay ["--at" (str m)]) "decided")) "the last event is a note"))
           (testing "--step: the screen after each decision, at a terminal"
             (let [shown (atom [])]
-              (binding [cli/*read-line* (fn [screen prompt] (swap! shown conj [screen prompt]) "")]
+              (binding [kernel/*read-line* (fn [screen prompt] (swap! shown conj [screen prompt]) "")]
                 (is (= "end of replay: 2 decisions" (replay ["--step"]))))
               (is (= [(str "decision 1 of 2 · event " d1 " of " m) (str "decision 2 of 2 · event " s1 " of " m)]
                      (map #(re-find #"decision \d of \d · event \d+ of \d+" (second %)) @shown)))
               (is (str/includes? (status/strip-color (first (second @shown))) "decided s1 exit 3")))
-            (binding [cli/*read-line* (constantly "q")]
+            (binding [kernel/*read-line* (constantly "q")]
               (is (= (str "stopped at event " d1 " — lume replay --at " d1) (replay ["--step"]))))
-            (binding [cli/*read-line* (constantly "")]
+            (binding [kernel/*read-line* (constantly "")]
               (is (= "end of replay: 1 decision" (replay ["--step" "--at" (str (inc d1))])) "--at sets where stepping starts"))
             (is (= (replay []) (replay ["--step"])) "no terminal: the list instead"))
           (testing "out of range or stray args are refused"
@@ -886,7 +887,7 @@
                   (mapv edn/read-string))]
     (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id i1 :by "human"}))
     (store/append! s (constantly {:type :spawn/progress :spawn/id "s1" :text "editing"}))
-    (binding [cli/*actor* "s1"]
+    (binding [kernel/*actor* "s1"]
       (cli/note s ["about i1: done soon"])
       (cli/note s ["unrelated (i10)"]))
     (cli/note s ["see i2"])
@@ -914,7 +915,7 @@
 (deftest note-show-reads-a-note-in-full
   (let [s (new-session "goal")
         long-text (str "start " (str/join " " (repeat 80 "word")) " the end")]
-    (binding [cli/*actor* "s1"] (cli/note s [long-text]))
+    (binding [kernel/*actor* "s1"] (cli/note s [long-text]))
     (cli/note s ["--pin" "lasting"])
     (cli/note s ["--pin" "was lasting"])
     (cli/note s ["--unpin" "n3"])
@@ -934,7 +935,7 @@
         id (cli/item-add s ["pick a db"])
         long-q (str "which db? " (str/join " " (repeat 60 "word")) " the end")]
     (store/append! s (constantly {:type :spawn/started :spawn/id "s1" :item/id id}))
-    (binding [cli/*actor* "s1"] (cli/ask s [long-q]))
+    (binding [kernel/*actor* "s1"] (cli/ask s [long-q]))
     (cli/ask s ["short?"])
     (testing "status wraps a long question to 3 lines, clips the rest and points at ask show"
       (let [out (status/render "sess" (store/read-events s) (Instant/now))]
@@ -978,23 +979,23 @@
       (is (thrown-with-msg? Exception #"need an interactive terminal" (cli/answer s ["a1"])))
       (is (= :open (get-in (status/project (store/read-events s)) [:asks "a1" :state]))))
     (testing "an agent is refused before any prompt"
-      (binding [cli/*actor* "d1" cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+      (binding [kernel/*actor* "d1" kernel/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
         (is (thrown-with-msg? Exception #"only the human answers" (cli/answer s ["a1"])))))
     (testing "an unknown or answered ask is refused before any prompt"
-      (binding [cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+      (binding [kernel/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
         (is (thrown-with-msg? Exception #"no such ask: a9" (cli/answer s ["a9"])))))
     (testing "at a terminal: the full question, then the typed answer, then the typed id"
-      (binding [cli/*read-line* (fn [q prompt] (reset! shown [q prompt]) "  postgres ")
-                cli/*confirm* (fn [prompt expected] (and (= "Answer a1: postgres" prompt) (= "a1" expected)))]
+      (binding [kernel/*read-line* (fn [q prompt] (reset! shown [q prompt]) "  postgres ")
+                kernel/*confirm* (fn [prompt expected] (and (= "Answer a1: postgres" prompt) (= "a1" expected)))]
         (is (= "a1 answered" (cli/answer s ["a1"]))))
       (is (str/includes? (str/replace (first @shown) #"\s+" " ") "which db? word"))
       (is (str/includes? (first @shown) "END") "unclipped")
       (is (= "postgres" (get-in (status/project (store/read-events s)) [:notes 0 :answer])))
-      (binding [cli/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
+      (binding [kernel/*read-line* (fn [& _] (throw (ex-info "prompted" {})))]
         (is (thrown-with-msg? Exception #"a1 is already answered" (cli/answer s ["a1"])))))
     (testing "an empty typed answer is refused"
       (cli/ask s ["again?"])
-      (binding [cli/*read-line* (constantly "")]
+      (binding [kernel/*read-line* (constantly "")]
         (is (thrown-with-msg? Exception #"usage: lume answer" (cli/answer s ["a2"])))))))
 
 ;; A fake driver: each turn runs the next shell script, which can call lume.
@@ -1463,7 +1464,7 @@
       (doseq [args [["--usd"] ["--usd" "x"] ["--spawns" "1.5"] ["--minutes" "-1"] ["10"] ["--usd" "1" "--usd" "2"]]]
         (is (thrown-with-msg? Exception #"usage" (cli/budget s args)) (pr-str args))))
     (testing "agents may set and lower limits, never raise them"
-      (binding [cli/*actor* "d1"]
+      (binding [kernel/*actor* "d1"]
         (is (= "budget $0.00/$5.00 · 0/3 spawns · 0 min" (cli/budget s ["--usd" "5" "--spawns" "3"])))
         (cli/budget s ["--spawns" "2"])
         (is (thrown-with-msg? Exception #"only the human raises" (cli/budget s ["--spawns" "4"])))
@@ -1471,7 +1472,7 @@
             "a raise refuses the whole command, lowering included"))
       (is (= {:usd 5.0 :spawns 2} (:budget (status/project (store/read-events s))))))
     (testing "the human raises at a terminal, with a typed confirmation"
-      (binding [cli/*confirm* (constantly false)]
+      (binding [kernel/*confirm* (constantly false)]
         (is (thrown-with-msg? Exception #"interactive terminal" (cli/budget s ["--spawns" "4"]))))
       (cli/budget s ["--spawns" "4"])
       (is (= 4 (:spawns (:budget (status/project (store/read-events s)))))))
@@ -1492,7 +1493,7 @@
       (cli/item-add s ["more" "--gate" "true"])
       (is (thrown-with-msg? Exception #"^budget reached: 1 of 1 spawns — only the human raises it, with lume budget --spawns N$"
                             (cli/spawn s *root* ["i2" "--agent" "test"])))
-      (binding [cli/*actor* "d9"]
+      (binding [kernel/*actor* "d9"]
         (is (thrown-with-msg? Exception #"budget reached" (cli/spawn s *root* ["i2"])) "a driver's request too"))
       (is (re-find #"^budget reached: 1 of 1 spawns" (drive! s (lume-cmd "note" "never"))))
       (is (empty? @*driver-calls*) "no turn starts past a limit")
@@ -1529,7 +1530,7 @@
              (cli/cadence s ["batch 3" "on" "gate-fail" "on plateau 4"])))
       (is (= {:batch 3 :gate-fail true :plateau 4} (cad)))
       (testing "a driver may hand back more often, within the human's ceiling, never less"
-        (binding [cli/*actor* "d1"]
+        (binding [kernel/*actor* "d1"]
           (cli/cadence s ["batch 2 on gate-fail on plateau 2"])
           (doseq [rules ["batch 4 on gate-fail on plateau 4" "batch 2 on plateau 2" "batch 2 on gate-fail"
                          "batch 2 on gate-fail on plateau 5"]]
@@ -1538,10 +1539,10 @@
         (is (re-find #"(?m)^allow   cadence batch 2 on gate-fail on plateau 2 \(ceiling batch 3 on gate-fail on plateau 4\)$"
                      (render))))
       (testing "the human raises at a terminal, and their cadence is the new ceiling"
-        (binding [cli/*confirm* (constantly false)]
+        (binding [kernel/*confirm* (constantly false)]
           (is (thrown-with-msg? Exception #"interactive terminal" (cli/cadence s ["batch 5"]))))
         (cli/cadence s ["every-spawn"])
-        (binding [cli/*actor* "d1"]
+        (binding [kernel/*actor* "d1"]
           (is (thrown-with-msg? Exception #"batch 1 → 2" (cli/cadence s ["batch 2"]))))
         (is (re-find #"(?m)^allow   cadence every-spawn$" (render)))))))
 
@@ -1552,7 +1553,7 @@
       (is (= ["i1"] (started s)))))
   (testing "batch N: up to N requests a turn, run in order, failed gates and all"
     (let [s (cadence-session "batch 3" "false" "false" "false" "false")]
-      (binding [cli/*actor* "d9"]
+      (binding [kernel/*actor* "d9"]
         (is (re-find #"\(1 of 3 this turn\)" (cli/spawn s *root* ["i1"]))))
       (is (= "d2 logged no events" (drive! s (spawn-cmds "i3" "i2" "i1" "i4"))))
       (is (= ["i3" "i2" "i1"] (started s)))
@@ -1812,7 +1813,7 @@
         (is (= ["m1"] (keep :measure/id (store/read-events inner))) "the baseline went to the new session")
         (is (= before (store/read-events outer)) "and nothing to the outer one")))
     (testing "an agent runs the same harness, policy aside"
-      (binding [cli/*actor* "d7"]
+      (binding [kernel/*actor* "d7"]
         (let [[ret] (run! (spec-file sp) "--turns" "0")
               events (store/read-events (store/current-session *root*))]
           (is (str/starts-with? ret "--turns 0"))
@@ -1823,11 +1824,11 @@
       (let [before (store/current-session *root*)]
         (doseq [[extra why] [[{:allow ["jj"]} #"workers may run jj"]
                              [{:cadence {:batch 3}} #"the cadence ceiling is raised: batch 1 → 3"]]]
-          (binding [cli/*actor* "s4"]
+          (binding [kernel/*actor* "s4"]
             (is (re-find (re-pattern (str "^only the human runs a spec that sets policy \\(.*" why))
                          (refused (spec-file (merge sp extra)) "--turns" "0"))))
           (testing "and the human must confirm it at a terminal"
-            (binding [cli/*confirm* (constantly false)]
+            (binding [kernel/*confirm* (constantly false)]
               (is (re-find #"interactive terminal" (refused (spec-file (merge sp extra)) "--turns" "0"))))))
         (is (= before (store/current-session *root*)) "a refused run starts no session")))
     (testing "a human's confirmed policy is logged as theirs"
@@ -1945,7 +1946,7 @@
     (sh "git" "worktree" "add" "-q" "--detach" (str (fs/path dir "worktrees" "s1")))
     (is (seq (differing (tree control) (tree *root*))))
     (testing "workers and drivers may not clean"
-      (binding [cli/*actor* "s1"]
+      (binding [kernel/*actor* "s1"]
         (is (thrown-with-msg? Exception #"don't delete the log" (cli/clean *root* ["--yes"])))))
     (testing "without --yes it only lists what it would remove"
       (let [e (is (thrown? Exception (cli/clean *root* [])))]

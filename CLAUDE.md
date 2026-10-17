@@ -9,6 +9,7 @@ A durable substrate for disposable agent harnesses. Read `pitch.md` for the why;
 - `src/lume/status.clj` — `lume status`: fold the log, render one bounded screen
 - `src/lume/spec.clj` — harness specs: the schema (`lume check`), folding a session into one (`lume spec`), and the events that start one
 - `src/lume/agents.clj` — adapters; the only code that knows which agent CLI is in play
+- `src/lume/kernel.clj` — what every command shares: actor, fail!, flags, human-only!, running commands in the repo
 - `src/lume/cli.clj` — commands
 - `test/lume/` — `bb test`
 

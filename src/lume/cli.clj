@@ -4,6 +4,8 @@
             [babashka.process :as p]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [lume.kernel :as kernel :refer [*read-line* actor child-env clip-to columns driver? fail! flag
+                                            human-only! next-id open-item run-in-repo! run-repeated take-flags]]
             [lume.status :as status]
             [lume.store :as store])
   (:import (java.time Instant)))
@@ -12,95 +14,13 @@
 ;; lume calls (note, item, ask, a driver's spawn request) are short processes
 ;; that need neither, and loading code is most of what they cost.
 
-(defn- fail! [& msg]
-  (throw (ex-info (str/join " " msg) {:lume/user-error true})))
-
-(defn- next-id [prefix type events]
-  (str prefix (inc (count (filter #(= type (:type %)) events)))))
-
-;; Spawns and drives get their id in LUME_SPAWNED_AS as well as LUME_ACTOR,
-;; because an agent's own settings can override LUME_ACTOR in what it runs:
-;; Claude Code's settings.json env sets LUME_ACTOR=claude for interactive
-;; sessions, and wins over the env lume passes (i46).
-(def ^:dynamic *actor*
-  "Who is acting: a spawn or drive id inside an agent lume started, else
-  LUME_ACTOR, else \"human\". An empty var counts as unset, so a test's
-  subprocess can clear the LUME_SPAWNED_AS it inherits inside a spawn. Tests bind it."
-  (or (some not-empty [(System/getenv "LUME_SPAWNED_AS") (System/getenv "LUME_ACTOR")]) "human"))
-
-(defn- actor [] *actor*)
-
-(defn- driver? [] (boolean (re-matches #"d\d+" (actor))))
-
 (def ^:dynamic *default-agent*
   "The agent spawn, drive, run and install use without --agent: LUME_AGENT, else
   claude. Set it once on a machine whose agent CLI isn't claude. Tests bind it."
   (or (not-empty (System/getenv "LUME_AGENT")) "claude"))
 
-;; Human-only commands need more than LUME_ACTOR, which an agent running as your
-;; uid can forge (a1): an interactive stdin and a typed confirmation. Spawns and
-;; drives run with no tty, so they can't pass.
-(defn- tty? []
-  (zero? (:exit (p/shell {:in :inherit :out :string :err :string :continue true} "test" "-t" "0"))))
-
-(defn- tty-confirm
-  "True if stdin is a terminal and the user types `expected` at the prompt."
-  [prompt expected]
-  (and (tty?)
-       (do (binding [*out* *err*] (print (str prompt " Type " expected " to confirm: ")) (flush))
-           (= expected (some-> (read-line) str/trim)))))
-
-(def ^:dynamic *confirm*
-  "(fn [prompt expected]) → true when a human at a terminal confirmed. Tests bind it."
-  tty-confirm)
-
-(defn- tty-read
-  "What the user types after printing `shown` and `prompt`, or nil with no terminal."
-  [shown prompt]
-  (when (tty?)
-    (binding [*out* *err*] (println shown) (print prompt) (flush))
-    (read-line)))
-
-(def ^:dynamic *read-line*
-  "(fn [shown prompt]) → a line typed at a terminal, or nil without one. Tests bind it."
-  tty-read)
-
-(defn- columns
-  "The terminal's width, for text a human reads in full: stty, then COLUMNS, then 100."
-  []
-  (or (some->> (p/shell {:in :inherit :out :string :err :string :continue true} "stty" "size")
-               :out (re-find #"^\d+ (\d+)") second parse-long (max 40))
-      (some-> (System/getenv "COLUMNS") parse-long)
-      100))
-
-(defn- human-only!
-  "Refuse unless the actor is the human and a human at a terminal confirms."
-  [refusal prompt expected]
-  (when-not (= "human" (actor)) (fail! refusal))
-  (when-not (*confirm* prompt expected)
-    (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
-           "agents ask with lume ask \"<question>\"")))
-
-(defn- open-item [events id]
-  (let [item (get-in (status/project events) [:items id])]
-    (cond (nil? item) (fail! "no such item:" id)
-          (not= :open (:state item)) (fail! id "is already" (name (:state item)))
-          :else item)))
-
 ;; Commands. Each takes the session dir (or repo root, for init) and its args,
 ;; and returns the text to print.
-
-(defn- take-flags
-  "Split args into positionals and the values of the given flags, in order.
-  A flag with no value, or any other flag-like arg, is a usage error."
-  [args flags usage]
-  (loop [[a & more :as args] args, pos [], vals {}]
-    (cond (empty? args) [pos vals]
-          (flags a) (let [[v & more] more]
-                      (when (or (str/blank? v) (str/starts-with? v "--")) (fail! usage))
-                      (recur more pos (update vals a (fnil conj []) v)))
-          (str/starts-with? a "--") (fail! usage)
-          :else (recur more (conj pos a) vals))))
 
 ;; A session may have a default gate: items added without --gate get it, so
 ;; nothing is ungated by omission. --allow is lume allow, so it's human-only too.
@@ -122,9 +42,6 @@
       (str "session " (store/session-id session) " started"
            (when gate (str " · default gate " gate))
            (when (seq allows) (str " · workers may run " (str/join " · " allows)))))))
-
-(defn- flag [opts name]
-  (second (drop-while #(not= name %) opts)))
 
 ;; --parent files work that emerged while on an open item under it. The tree
 ;; only makes that work visible: nothing is inherited and nothing orders spawns.
@@ -198,17 +115,6 @@
   "Where answers come from: LUME_NTFY_REPLY, else LUME_NTFY's own topic."
   []
   (or *ntfy-reply* *ntfy*))
-
-;; The ntfy URLs never reach a child process (n8: env leaks into workers): a
-;; worker that could read the notification topic could read an ask's code,
-;; and one that could write the reply topic could answer its own ask. So lume
-;; itself notifies for the asks its workers open.
-(defn- child-env
-  "env for a process lume starts, with every LUME_NTFY* emptied."
-  [env]
-  (merge (into {"LUME_NTFY" "" "LUME_NTFY_REPLY" ""}
-               (for [k (keys (System/getenv)) :when (str/starts-with? k "LUME_NTFY")] [k ""]))
-         env))
 
 (defn- ntfy-target
   "[url headers] for an ntfy topic URL: a token rides in it as ntfy's ?auth=
@@ -316,50 +222,10 @@
 ;; under the session. A gate's exit code decides done; a measurement's output
 ;; is numbers, one ledger row per run.
 
-(defn- run-repeated
-  "Run cmd with sh -c in root up to n times, stopping at the first failure;
-  returns the runs, {:exit :ms :output} in order. (on-run i run) sees each."
-  [session root cmd n on-run]
-  (reduce (fn [runs i]
-            (let [t0 (System/currentTimeMillis)
-                  {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
-                                                                   :extra-env (child-env {"LUME_SESSION" session})})
-                  run {:exit exit :ms (- (System/currentTimeMillis) t0) :output out}
-                  r (conj runs run)]
-              (on-run i run)
-              (if (zero? exit) r (reduced r))))
-          [] (range n)))
-
-(defn- run-in-repo
-  "Run cmd in the repo up to n times (1 by default), stopping at the first
-  failure, with all output in one file in the session's `kind` dir. Log the
-  event that (event-for events runs) returns as [id event], where runs are
-  {:exit :ms :output} in order; the last run's :exit and :ms, the output's
-  :tail and :out are added unless the event has its own. The id is allocated
-  under the log lock."
-  [session kind cmd event-for & {:keys [n] :or {n 1}}]
-  (let [root (:repo (status/project (store/read-events session)))
-        dir (fs/create-dirs (fs/path session kind))
-        tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
-        runs (run-repeated session root cmd n
-                           (fn [i {:keys [exit ms output]}]
-                             (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (status/secs ms) "\n"))
-                                            output)
-                                   :append true)))
-        {:keys [exit ms output]} (peek runs)
-        tail (last (remove str/blank? (str/split-lines output)))
-        ran (store/append! session (fn [events]
-                                     (let [[id e] (event-for events runs)]
-                                       (cond-> (merge {:exit exit :ms ms} e
-                                                      {:out (str (fs/path dir (str id ".out"))) :by (actor)})
-                                         tail (assoc :tail tail)))))]
-    (fs/move tmp (:out ran))
-    ran))
-
 (defn- run-gate
   "Run the item's gate and log a :gate/ran event, which is returned."
   [session {:keys [id gate]}]
-  (run-in-repo session "gates" gate
+  (run-in-repo! session "gates" gate
                (fn [events _]
                  (let [gid (next-id "g" :gate/ran events)]
                    [gid {:type :gate/ran :gate/id gid :item/id id :gate gate}]))))
@@ -465,7 +331,7 @@
   failing run's exit. :before-spawn sid marks a spawn's before row."
   [session {:keys [id measure runs] :or {runs 1} :as item} & {:keys [before-spawn]}]
   (let [env (environment (:repo (status/project (store/read-events session))))
-        ran (run-in-repo session "measures" measure
+        ran (run-in-repo! session "measures" measure
                          (fn [events ran]
                            (let [mid (next-id "m" :measure/ran events)]
                              [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :env env}
@@ -1224,10 +1090,6 @@
 
 ;; Item show: what status clips. The intent and gate in full, then the item's
 ;; events: its own, its spawns' (bar progress), and notes and asks naming it.
-
-(defn- clip-to [n s]
-  (let [s (str/replace (str s) #"\s+" " ")]
-    (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
 (defn- item-event? [id spawn-ids]
   (let [named (re-pattern (str "(?<![A-Za-z0-9])" id "(?![0-9])"))]
