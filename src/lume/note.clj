@@ -6,7 +6,8 @@
   (:require [clojure.string :as str]
             [lume.kernel :as kernel :refer [clip clock fail! next-id]]))
 
-(def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
+(def ^:private note-usage "usage: lume note [--pin] \"<text>\"")
+(def ^:private unpin-usage "usage: lume note --unpin <id>")
 
 (defn add!
   "Log a note (pinned with :pin) and return its :note/added event."
@@ -22,20 +23,20 @@
   (str (if (:pinned e) "pinned " "noted ") (:note/id e)))
 
 (defn note [session [a b]]
-  (let [usage note-usage]
-    (case a
-      "--unpin"
-      (do (when (str/blank? b) (fail! usage))
-          (kernel/append! session (fn [events]
-                                    (when-not (some #(and (= b (:note/id %)) (:pinned %))
-                                                    (:notes (kernel/project events)))
-                                      (fail! "no pinned note:" b))
-                                    {:type :note/unpinned :note/id b}))
-          (str "unpinned " b))
-      (let [pin (= "--pin" a)
-            text (if pin b a)]
-        (when (str/blank? text) (fail! usage))
-        (added-line (add! session text :pin pin))))))
+  (let [pin (= "--pin" a)
+        text (if pin b a)]
+    (when (str/blank? text) (fail! note-usage))
+    (added-line (add! session text :pin pin))))
+
+(defn- pinned? [events id]
+  (some #(and (= id (:note/id %)) (:pinned %)) (:notes (kernel/project events))))
+
+(defn unpin [session [id]]
+  (when (str/blank? id) (fail! unpin-usage))
+  (kernel/append! session (fn [events]
+                            (when-not (pinned? events id) (fail! "no pinned note:" id))
+                            {:type :note/unpinned :note/id id}))
+  (str "unpinned " id))
 
 ;; Note show: what status clips. The text in full, who noted it and when, and
 ;; whether it's pinned.
@@ -88,8 +89,10 @@
    ;; note show needs an id: with anything else, show is the text.
    :commands [{:path ["note"] :needs :session :usage note-usage
                :run (fn [{:keys [session]} args] (note session args))
-               :help "lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
-lume note --unpin <id>                      let a pinned note age out like the rest"}
+               :help "lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out"}
+              {:path ["note" "--unpin"] :needs :session :usage unpin-usage
+               :run (fn [{:keys [session]} args] (unpin session args))
+               :help "lume note --unpin <id>                      let a pinned note age out like the rest"}
               {:path ["note" "show"] :needs :session :usage note-show-usage
                :run (fn [{:keys [session]} args] (if (= 1 (count args)) (note-show session args) (note session (cons "show" args))))
                :help "lume note show <id>                         one note in full: text, who noted it and when, pinned or not"}]})

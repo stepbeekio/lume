@@ -18,17 +18,22 @@
 
 ;; Only the human grants permissions: workers and agent drivers would grant themselves
 ;; whatever they need, so they ask with lume ask instead.
-(def ^:private allow-usage "usage: lume allow [--revoke] \"<cmd>\"")
+(def ^:private allow-usage "usage: lume allow \"<cmd>\"")
+(def ^:private revoke-usage "usage: lume allow --revoke \"<cmd>\"")
 
-(defn allow [session [a b]]
-  (let [revoke (= "--revoke" a)
-        command (if revoke b a)]
-    (when (str/blank? command) (fail! allow-usage))
-    (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
-                 (str (if revoke "Workers may no longer run: " "Workers may run: ") command ".") "yes")
-    (kernel/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
-                                         :command command}))
-    (str (if revoke "workers may no longer run " "workers may run ") command)))
+(def ^:private permissions-why "only the human changes permissions; ask with lume ask \"<question>\"")
+
+(defn allow [session [command]]
+  (when (str/blank? command) (fail! allow-usage))
+  (human-only! permissions-why (str "Workers may run: " command ".") "yes")
+  (kernel/append! session (constantly {:type :session/allowed :command command}))
+  (str "workers may run " command))
+
+(defn revoke [session [command]]
+  (when (str/blank? command) (fail! revoke-usage))
+  (human-only! permissions-why (str "Workers may no longer run: " command ".") "yes")
+  (kernel/append! session (constantly {:type :session/disallowed :command command}))
+  (str "workers may no longer run " command))
 
 (defn prompt-lines
   "What the bound features add to a worker's prompt for item: each :prompt
@@ -273,4 +278,7 @@
                :help "lume spawn <id> [--agent A]                 run a worker on an item, in the foreground (a driver's is a request)"}
               {:path ["allow"] :needs :session :usage allow-usage
                :run (fn [{:keys [session]} args] (allow session args))
-               :help "lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}]})
+               :help "lume allow \"<cmd>\"                          human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}
+              {:path ["allow" "--revoke"] :needs :session :usage revoke-usage
+               :run (fn [{:keys [session]} args] (revoke session args))
+               :help "lume allow --revoke \"<cmd>\"                 human at a tty, types yes: workers may no longer run <cmd>"}]})

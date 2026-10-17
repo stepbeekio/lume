@@ -502,12 +502,12 @@
     (is (str/includes? (agent/spawn s *root* [id "--agent" "allowed"]) "· jj|bb test|true\n"))
     (is (str/includes? (status/render "sess" (store/read-events s) (Instant/now)) "allow   jj · bb test"))
     (testing "revoking removes a command; only the human changes permissions"
-      (agent/allow s ["--revoke" "jj"])
+      (agent/revoke s ["jj"])
       (is (= ["bb test"] (:allow (status/project (store/read-events s)))))
       (doseq [who ["s1" "d1"]]
         (binding [kernel/*actor* who]
           (is (thrown-with-msg? Exception #"only the human changes permissions" (agent/allow s ["rm"])))
-          (is (thrown-with-msg? Exception #"only the human changes permissions" (agent/allow s ["--revoke" "bb test"]))))))))
+          (is (thrown-with-msg? Exception #"only the human changes permissions" (agent/revoke s ["bb test"]))))))))
 
 (deftest only-the-exact-human-holds-policy
   (let [s (new-session "goal")]

@@ -35,7 +35,7 @@
     (binding [kernel/*actor* "s1"] (note/note s [long-text]))
     (note/note s ["--pin" "lasting"])
     (note/note s ["--pin" "was lasting"])
-    (note/note s ["--unpin" "n3"])
+    (note/unpin s ["n3"])
     (let [out (note/note-show s ["n1"])]
       (is (re-find #"^n1\nnoted    \d{4}-\d\d-\d\dT\d\d:\d\d by s1\n" out))
       (is (str/ends-with? out (str "\n" long-text))))
@@ -65,9 +65,11 @@
         (is (not (str/includes? prompt "- chatter 2\n")))
         (is (str/includes? prompt "- latest\n"))))
     (testing "unpinning returns a note to the notes section"
-      (is (= "unpinned n1" (note/note s ["--unpin" "n1"])))
-      (is (thrown-with-msg? Exception #"no pinned note: n1" (note/note s ["--unpin" "n1"])))
-      (is (thrown-with-msg? Exception #"no pinned note: n99" (note/note s ["--unpin" "n99"])))
+      (is (= "unpinned n1" (note/unpin s ["n1"])))
+      (is (thrown-with-msg? Exception #"no pinned note: n1" (note/unpin s ["n1"])))
+      (binding [store/*session* s]
+        (is (thrown-with-msg? Exception #"no pinned note: n99" (kernel/run ["note" "--unpin" "n99"])) "lume note --unpin is its own command")
+        (is (thrown-with-msg? Exception #"usage: lume note --unpin <id>" (kernel/run ["note" "--unpin"]))))
       (let [out (status/render "sess" (store/read-events s) (Instant/now))]
         (is (not (re-find #"(?m)^pinned" out)))
         (is (str/includes? out "+9 more") "14 notes, 5 shown")))))

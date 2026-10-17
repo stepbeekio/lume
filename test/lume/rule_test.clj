@@ -51,8 +51,8 @@
     (is (= "r2" (rule/on s ["ask" "echo asked"])))
     (is (= "r1 on gate/ran → true\nr2 on ask → echo asked" (rule/on s [])))
     (binding [kernel/*actor* "s1"]
-      (is (thrown-with-msg? Exception #"only the human" (rule/on s ["--remove" "r1"]))))
-    (is (= "removed r1" (rule/on s ["--remove" "r1"])))
+      (is (thrown-with-msg? Exception #"only the human" (rule/remove! s ["r1"]))))
+    (is (= "removed r1" (rule/remove! s ["r1"])))
     (is (= "r2 on ask → echo asked" (rule/on s [])))
     (is (thrown-with-msg? Exception #"usage" (rule/on s ["gate/ran"])))))
 
@@ -71,7 +71,7 @@
         (is (number? (:ms ran)))
         (is (re-find #"on gate/ran → .* · last exit 0" (rule/on s [])))))
     (testing "a failing or hung rule is logged and never fails what triggered it"
-      (rule/on s ["--remove" "r1"])
+      (rule/remove! s ["r1"])
       (rule/on s ["gate/ran" "echo broke; exit 7"])
       (rule/on s ["gate/ran" "sleep 5"])
       (binding [rule/*timeout-ms* 200]

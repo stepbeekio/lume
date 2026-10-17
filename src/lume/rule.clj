@@ -8,7 +8,8 @@
             [clojure.string :as str]
             [lume.kernel :as kernel :refer [fail! human-only! next-id timed]]))
 
-(def ^:private on-usage "usage: lume on [<event-pattern> \"<cmd>\" | --remove <id>]")
+(def ^:private on-usage "usage: lume on [<event-pattern> \"<cmd>\"]")
+(def ^:private remove-usage "usage: lume on --remove <id>")
 
 ;; A pattern is what a reaction's :on is: a type (gate/ran) or a namespace
 ;; (ask, every ask/… type), and must name something a feature declares.
@@ -23,29 +24,30 @@
   (str id " on " (subs (str on) 1) " → " cmd
        (when last (str " · last " (if (:timed-out last) "timed out" (str "exit " (:exit last))) " " (kernel/secs (:ms last))))))
 
+(defn rules-text
+  "lume on with no args: every rule, one per line, or \"no rules\"."
+  [state]
+  (let [rules (vals (:rules state))]
+    (if (seq rules) (str/join "\n" (map rule-line (sort-by :order rules))) "no rules")))
+
+(defn- add! [session [a b :as args]]
+  (when (or (str/starts-with? a "--") (str/blank? b) (> (count args) 2)) (fail! on-usage))
+  (let [k (pattern a)]
+    (human-only! "only the human adds rules; ask with lume ask \"<question>\""
+                 (str "After every " (subs (str k) 1) " event, run: " b ".") "yes")
+    (:rule/id (kernel/append! session (fn [events]
+                                        (let [id (next-id "r" :rule/added events)]
+                                          {:type :rule/added :rule/id id :on k :cmd b}))))))
+
 (defn on [session args]
-  (let [[a b] args]
-    (cond
-      (empty? args)
-      (let [rules (vals (:rules (kernel/state session)))]
-        (if (seq rules) (str/join "\n" (map rule-line (sort-by :order rules))) "no rules"))
+  (if (empty? args) (rules-text (kernel/state session)) (add! session args)))
 
-      (= "--remove" a)
-      (let [rule (or (get-in (kernel/state session) [:rules b]) (fail! "no such rule:" (str b)))]
-        (human-only! "only the human changes rules; ask with lume ask \"<question>\""
-                     (str "Remove " (rule-line rule) ".") "yes")
-        (kernel/append! session (constantly {:type :rule/removed :rule/id b}))
-        (str "removed " b))
-
-      (or (str/starts-with? a "--") (str/blank? b) (> (count args) 2)) (fail! on-usage)
-
-      :else
-      (let [k (pattern a)]
-        (human-only! "only the human adds rules; ask with lume ask \"<question>\""
-                     (str "After every " (subs (str k) 1) " event, run: " b ".") "yes")
-        (:rule/id (kernel/append! session (fn [events]
-                                            (let [id (next-id "r" :rule/added events)]
-                                              {:type :rule/added :rule/id id :on k :cmd b}))))))))
+(defn remove! [session [id]]
+  (let [rule (or (get-in (kernel/state session) [:rules id]) (fail! "no such rule:" (str id)))]
+    (human-only! "only the human changes rules; ask with lume ask \"<question>\""
+                 (str "Remove " (rule-line rule) ".") "yes")
+    (kernel/append! session (constantly {:type :rule/removed :rule/id id}))
+    (str "removed " id)))
 
 ;; Running a rule. Its command sees the event in env: LUME_EVENT as EDN, and
 ;; LUME_EVENT_<KEY> for each scalar key (gate/ran's :exit is LUME_EVENT_EXIT,
@@ -115,4 +117,7 @@
                :run (fn [{:keys [session]} args] (on session args))
                :help "lume on <event-pattern> \"<cmd>\"             human at a tty, types yes: run <cmd> after each matching event
                                             (a type like gate/ran, or a namespace like ask), event in env
-lume on [--remove <id>]                     list rules, or drop one (human)"}]})
+lume on                                     list rules"}
+              {:path ["on" "--remove"] :needs :session :usage remove-usage
+               :run (fn [{:keys [session]} args] (remove! session args))
+               :help "lume on --remove <id>                       human at a tty, types yes: drop a rule"}]})
