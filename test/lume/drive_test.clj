@@ -3,6 +3,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.agents :as agents]
+            [lume.ask :as ask]
             [lume.drive :as drive]
             [lume.features :as features]
             [lume.item :as item]
@@ -139,3 +140,17 @@
         (is (= 3 (count (filter #(= :drive/turn (:type %)) (take-while #(not= :drive/started (:type %)) (reverse (store/read-events s)))))))
         (is (some #(str/includes? % "doesn't load, so turn 2 runs the code the drive started with")
                   (map :text (:notes (status/project (store/read-events s))))))))))
+
+(deftest next-step-decides-from-the-log
+  (let [s (new-session "goal")
+        step (fn [n opts changed]
+               (let [events (store/read-events s)]
+                 (#'drive/next-step (kernel/project events) events n (merge {:turns 3} opts) changed)))]
+    (is (= [:stop "no open items"] (step 1 {} false)))
+    (item/item-add s ["do it"])
+    (is (= [:turn nil] (step 1 {} false)))
+    (is (= [:reload] (step 2 {} true)))
+    (is (= [:stop "3 turns run"] (step 4 {} true)) "a stop wins over a reload")
+    (with-out-str (ask/ask s ["which?"]))
+    (is (= [:wait] (step 1 {:wait true} false)))
+    (is (re-find #"^ask a1 is open: which\?" (second (step 1 {} false))))))
