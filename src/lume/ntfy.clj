@@ -224,36 +224,57 @@
             :else [id answer]))
     "not '<ask id> <code> <answer>'"))
 
+(defn- reply-step
+  "What to do with m, one poll of the reply queue (nil when it timed out),
+  given codes ({id code}) and sent, the ids of the drive's own posts echoed
+  on a shared topic: [:answer id text], [:ignore why], [:error why], or nil
+  to keep waiting."
+  [codes sent {:keys [id message error]}]
+  (cond
+    error [:error error]
+    (or (nil? message) (contains? sent id)) nil
+    :else (let [ok (reply-answer codes message)]
+            (if (vector? ok) (into [:answer] ok) [:ignore ok]))))
+
+(defn- send-codes!
+  "Send each open ask that has no code in codes its own. Returns codes with
+  them added."
+  [session codes say]
+  (reduce (fn [codes {:keys [id] :as a}]
+            (if (codes id)
+              codes
+              (let [code (reply-code)]
+                (notify-ask! session a code)
+                (say (str "waiting on " id " for an answer on ntfy, or lume answer " id))
+                (assoc codes id code))))
+          codes
+          (ask/open-asks (kernel/state session))))
+
 (defn wait-for-answer!
   "Send every open ask that has no code yet its own, then wait until a reply
   answers one (logged :ask/answered :by human :via :ntfy) or they're answered
-  some other way (lume answer at a terminal). codes is an atom, {id code};
-  replies delivers the reply subscriber. Messages whose id is in *sent* are
-  the drive's own, echoed on a shared topic, and skipped."
+  some other way (lume answer at a terminal). codes is {id code}; replies
+  delivers the reply subscriber. Returns the codes of asks still open."
   [session codes replies say]
-  (doseq [{:keys [id] :as a} (ask/open-asks (kernel/state session)) :when (not (@codes id))]
-    (let [code (reply-code)]
-      (swap! codes assoc id code)
-      (notify-ask! session a code)
-      (say (str "waiting on " id " for an answer on ntfy, or lume answer " id))))
   (let [q (:queue @replies)]
-    (loop [last-error nil]
-      (swap! codes select-keys (open-ask-ids session))
-      (when (seq @codes)
-        (let [{:keys [message error] :as m} (.poll ^java.util.concurrent.LinkedBlockingQueue q 1 java.util.concurrent.TimeUnit/SECONDS)
-              message (when-not (contains? @*sent* (:id m)) message)
-              [id answer :as ok] (when message (reply-answer @codes message))]
-          (cond
-            error (do (when (not= error last-error) (say (str "ntfy replies: " error "; retrying")))
-                      (recur error))
-            ;; The reply carried the ask's one-time code, which only the human
-            ;; was sent, so it is the human answering, whoever runs the drive.
-            (vector? ok) (do (swap! codes dissoc id)
-                             (when (binding [kernel/*actor* "human"]
-                                     (kernel/append! session #(ask/answered-event % id answer :via :ntfy)))
-                               (say (str id " answered from ntfy"))))
-            message (do (say (str "ignored a reply on ntfy: " ok)) (recur last-error))
-            :else (recur last-error)))))))
+    (loop [codes (send-codes! session codes say)
+           last-error nil]
+      (let [codes (select-keys codes (open-ask-ids session))]
+        (if (empty? codes)
+          codes
+          (let [m (.poll ^java.util.concurrent.LinkedBlockingQueue q 1 java.util.concurrent.TimeUnit/SECONDS)
+                [step a b] (reply-step codes (some-> *sent* deref) m)]
+            (case step
+              :error (do (when (not= a last-error) (say (str "ntfy replies: " a "; retrying")))
+                         (recur codes a))
+              ;; The reply carried the ask's one-time code, which only the human
+              ;; was sent, so it is the human answering, whoever runs the drive.
+              :answer (do (when (binding [kernel/*actor* "human"]
+                                  (kernel/append! session #(ask/answered-event % a b :via :ntfy)))
+                            (say (str a " answered from ntfy")))
+                          (dissoc codes a))
+              :ignore (do (say (str "ignored a reply on ntfy: " a)) (recur codes last-error))
+              (recur codes last-error))))))))
 
 ;; ntfy's :reactions send each ask opened and each drive stop. A worker's or
 ;; driver's events react when it exits, in the lume that started it.

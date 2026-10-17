@@ -145,15 +145,17 @@
 (defn- source-changed?
   "Whether the lume source changed since the drive loaded it and the new code
   loads, so the drive should re-exec before turn n. A change that doesn't
-  load is noted once (it becomes the loaded fingerprint) and the drive runs on."
+  load is noted once (it becomes the loaded fingerprint) and the drive runs on.
+  Returns [changed? loaded], loaded the fingerprint to compare next time."
   [session src loaded n]
   (let [now (fingerprint src)
-        broken (when (not= now @loaded) (load-error src))]
-    (when broken
-      (reset! loaded now)
-      (note/add! session (str "drive: lume source changed but doesn't load, so turn " n
-                              " runs the code the drive started with: " broken)))
-    (and (not= now @loaded) (not broken))))
+        broken (when (not= now loaded) (load-error src))]
+    (cond
+      (= now loaded) [false loaded]
+      broken (do (note/add! session (str "drive: lume source changed but doesn't load, so turn " n
+                                         " runs the code the drive started with: " broken))
+                 [false now])
+      :else [true loaded])))
 
 (defn- next-step
   "What the drive does before turn n, from the log and opts: [:wait] for an
@@ -211,10 +213,8 @@
   [session root opts]
   (let [{:keys [turns agent from wait] :as opts} (merge {:turns 10 :from 1 :wait false} opts
                                                         {:agent (or (:agent opts) kernel/*default-agent*)})
-        codes (atom {})
         replies (delay (ntfy/subscribe! (ntfy/reply-url)))
         src *source*
-        loaded (atom (fingerprint src))
         say #(do (println %) (flush))]
     (when (= 1 from)
       (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent)})))
@@ -227,18 +227,22 @@
       ;; Bound, not passed: the ntfy reactions to the drive's appends read them.
       (binding [ntfy/*ask-notices* (not wait) ntfy/*sent* (atom #{})]
         (try
-          (loop [n from]
+          ;; loaded is the source fingerprint the drive runs on; codes the
+          ;; reply codes of the asks it sent, {id code}.
+          (loop [n from loaded (fingerprint src) codes {}]
             (let [events (kernel/read-events session)
                   state (kernel/project events)
-                  changed (and src (> n from) (source-changed? session src loaded n))
+                  [changed loaded] (if (and src (> n from))
+                                     (source-changed? session src loaded n)
+                                     [false loaded])
                   [step arg] (next-step state events n opts changed)]
               (case step
-                :wait (do (ntfy/wait-for-answer! session codes replies say) (recur n))
+                :wait (recur n loaded (ntfy/wait-for-answer! session codes replies say))
                 :stop (stop! arg)
                 :reload (reload! session src opts n)
                 :turn (if-let [why (turn! session root opts n arg (:allow state) say)]
                         (stop! why)
-                        (recur (inc n))))))
+                        (recur (inc n) loaded codes)))))
           (finally (when (realized? replies) ((:stop @replies)))
                    (finished!)))))))
 
