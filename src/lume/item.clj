@@ -53,10 +53,10 @@
 ;; dropped --revert restores the working copy to the item's before row (lume.measure).
 (def ^:private item-close-usage "usage: lume item close <id> done|dropped [--revert] \"<why>\"")
 
-(defn item-close [session [id disposition & more]]
+(defn item-close [session args]
   (let [usage item-close-usage
-        revert (boolean (some #{"--revert"} more))
-        why (first (remove #{"--revert"} more))]
+        [[id disposition why] {revert "--revert"}] (kernel/take-flags args #{} #{"--revert"} usage)
+        revert (boolean revert)]
     (when-not (#{"done" "dropped"} disposition) (fail! usage))
     (when (and revert (not= "dropped" disposition)) (fail! "--revert goes with dropped;" usage))
     (let [events (kernel/read-events session)

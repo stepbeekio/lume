@@ -116,9 +116,9 @@
 
 (defn item-measure [session args]
   (let [usage item-measure-usage
-        before (boolean (some #{"--before"} args))
-        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher"}]
-        (take-flags (remove #{"--before"} args) #{"--runs" "--drop" "--higher"} usage)
+        [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher" before "--before"}]
+        (take-flags args #{"--runs" "--drop" "--higher"} #{"--before"} usage)
+        before (boolean before)
         runs (if runs (parse-long runs) 1)
         drop (if drop (parse-long drop) 0)
         higher (vec (sort (distinct higher)))]
@@ -305,13 +305,19 @@
 
 (def ^:private ledger-usage "usage: lume ledger [<item>] [-n N] [--session <id>]")
 
-(defn ledger [root args]
+(defn- ledger-args
+  "ledger's args as {:id :n :sid}, or a usage error."
+  [args]
   (let [[[id & extra] {[n & ns] "-n" [sid & sids] "--session"}] (take-flags args #{"-n" "--session"} ledger-usage)
-        n (if n (parse-long n) 20)
-        _ (when (or (seq extra) (seq ns) (seq sids) (not (and n (<= 0 n)))) (fail! ledger-usage))
-        {:keys [items ledger]} (kernel/state (kernel/session-by-id root sid))
-        _ (when (and id (not (items id))) (fail! "no such item:" id))
-        rows (cond->> ledger id (filterv #(= id (:item/id %))))
+        n (if n (parse-long n) 20)]
+    (when (or (seq extra) (seq ns) (seq sids) (not (and n (<= 0 n)))) (fail! ledger-usage))
+    {:id id :n n :sid sid}))
+
+(defn- ledger-text
+  "The ledger's rows, or those of item id, as the last n lines (sid names the
+  session in the footer's hint)."
+  [ledger id n sid]
+  (let [rows (cond->> ledger id (filterv #(= id (:item/id %))))
         shown (take-last n rows)
         ;; Each shown row's spec, or nil when it's that of the item's previous shown row.
         specs (second (reduce (fn [[last-spec out] {iid :item/id :as row}]
@@ -328,6 +334,12 @@
                                                    (str/join (map #(str " " %) (remove nil? [id (when sid (str "--session " sid))])))
                                                    " -n " (count rows)))
                              lines)))))
+
+(defn ledger [root args]
+  (let [{:keys [id n sid]} (ledger-args args)
+        {:keys [items ledger]} (kernel/state (kernel/session-by-id root sid))]
+    (when (and id (not (items id))) (fail! "no such item:" id))
+    (ledger-text ledger id n sid)))
 
 (def feature
   {:name "measure"

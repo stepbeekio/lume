@@ -9,7 +9,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.ask :as ask]
-            [lume.kernel :as kernel :refer [child-env fail! flag next-id timed]]
+            [lume.kernel :as kernel :refer [child-env fail! next-id take-flags timed]]
             [lume.note :as note]
             [lume.ntfy :as ntfy]
             [lume.policy :as policy]
@@ -129,18 +129,24 @@
 
 (def ^:private drive-usage "usage: lume drive [--turns N] [--agent claude|claude-acp|devin] [--wait-on-ask]")
 
+(defn- drive-args
+  "drive's args as {:turns :agent :from :wait}, or a usage error.
+  --from is the turn a reloaded drive resumes at."
+  [args]
+  (let [[pos {[turns] "--turns" [agent] "--agent" [from] "--from" wait "--wait-on-ask"}]
+        (take-flags args #{"--turns" "--agent" "--from"} #{"--wait-on-ask"} drive-usage)
+        turns (parse-long (or turns "10"))
+        from (parse-long (or from "1"))]
+    (when-not (and (empty? pos) turns (pos? turns) from (pos? from)) (fail! drive-usage))
+    (when (and wait (not ntfy/*ntfy*))
+      (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent, and answers read unless LUME_NTFY_REPLY is set)"))
+    {:turns turns :agent (or agent kernel/*default-agent*) :from from :wait (boolean wait)}))
+
 (defn drive
   "Run up to --turns driver turns, each followed by the spawns it requested,
   printing a line per turn and spawn. Returns why it stopped."
-  [session root opts]
-  (let [wait (boolean (some #{"--wait-on-ask"} opts))
-        opts (remove #{"--wait-on-ask"} opts)
-        turns (parse-long (or (flag opts "--turns") "10"))
-        agent (or (flag opts "--agent") kernel/*default-agent*)
-        from (parse-long (or (flag opts "--from") "1"))
-        _ (when-not (and turns (pos? turns) from (pos? from)) (fail! drive-usage))
-        _ (when (and wait (not ntfy/*ntfy*))
-            (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent, and answers read unless LUME_NTFY_REPLY is set)"))
+  [session root args]
+  (let [{:keys [turns agent from wait]} (drive-args args)
         codes (atom {})
         replies (delay (ntfy/subscribe! (ntfy/reply-url)))
         src *source*

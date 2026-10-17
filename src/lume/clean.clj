@@ -37,8 +37,7 @@
               (when (fs/exists? dir) [[:dir dir]])))))
 
 (defn clean [root args]
-  (let [[pos {[id & ids] "--session"}] (take-flags (remove #{"--yes"} args) #{"--session"} clean-usage)
-        yes (some #{"--yes"} args)]
+  (let [[pos {[id & ids] "--session" yes "--yes"}] (take-flags args #{"--session"} #{"--yes"} clean-usage)]
     (when (or (seq pos) (seq ids)) (fail! clean-usage))
     (when (re-matches #"[sd]\d+" (actor))
       (fail! "refused: workers and drivers don't delete the log; ask with lume ask \"<question>\""))

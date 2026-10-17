@@ -23,12 +23,18 @@
 
 (def ^:private status-usage "usage: lume status [<session>] [--color]")
 
+(defn- status-args
+  "status's args as {:id :color}, or a usage error."
+  [args]
+  (let [[[id & stray] {color "--color"}] (take-flags args #{} #{"--color"} status-usage)]
+    (when (seq stray) (fail! status-usage))
+    {:id id :color color}))
+
 (defn show-status [root args]
-  (let [[[id & stray] _] (take-flags (remove #{"--color"} args) #{} status-usage)
-        _ (when (seq stray) (fail! status-usage))
+  (let [{:keys [id color]} (status-args args)
         session (session-by-id root id)]
     (status/render (store/session-id session) (store/read-events session) (Instant/now)
-                   {:color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))
+                   {:color (color? color (terminal?) (System/getenv "NO_COLOR"))
                     :past (not= (store/session-id session) (some-> (store/current-session root) store/session-id))})))
 
 ;; Past sessions: lume run makes several per repo. ls lists them; status and
@@ -62,9 +68,15 @@
 
 (def ^:private ls-usage "usage: lume ls [--all]")
 
+(defn- ls-args
+  "ls's args as {:all}, or a usage error."
+  [args]
+  (let [[pos {all "--all"}] (take-flags args #{} #{"--all"} ls-usage)]
+    (when (seq pos) (fail! ls-usage))
+    {:all all}))
+
 (defn ls [root args]
-  (when (seq (remove #{"--all"} args)) (fail! ls-usage))
-  (let [all (some #{"--all"} args)
+  (let [{:keys [all]} (ls-args args)
         sessions (store/sessions root)
         current (some-> (store/current-session root) store/session-id)
         now (Instant/now)
@@ -124,21 +136,26 @@
                                (clip 100 (str i " " (subs (:t e) 0 16) " " (status/decision-text e))))
                              [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
 
-(defn replay [root args]
-  (let [[[id & stray] {[at & ats] "--at" [n & ns] "-n"}]
-        (take-flags (remove #{"--color" "--step"} args) #{"--at" "-n"} replay-usage)
-        step (some #{"--step"} args)
-        color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))
+(defn- replay-args
+  "replay's args as {:id :at :n :step :color}, or a usage error."
+  [args]
+  (let [[[id & stray] {[at & ats] "--at" [n & ns] "-n" step "--step" color "--color"}]
+        (take-flags args #{"--at" "-n"} #{"--step" "--color"} replay-usage)
         n (if n (parse-long n) 20)
-        at (when at (or (parse-long at) (fail! replay-usage)))
-        _ (when (or (seq stray) (seq ats) (seq ns) (not (and n (<= 0 n)))) (fail! replay-usage))
+        at (when at (or (parse-long at) (fail! replay-usage)))]
+    (when (or (seq stray) (seq ats) (seq ns) (not (and n (<= 0 n)))) (fail! replay-usage))
+    {:id id :at at :n n :step step :color color}))
+
+(defn replay [root args]
+  (let [{:keys [id at n step color]} (replay-args args)
+        color (color? color (terminal?) (System/getenv "NO_COLOR"))
         session (session-by-id root id)
         sid (store/session-id session)
         events (store/read-events session)
         m (count events)
-        _ (when (and at (not (<= 1 at m))) (fail! (str "--at " at " is outside the log: events 1.." m)))
         screen (fn [i] (status/render sid (subvec events 0 i) (Instant/parse (:t (nth events (dec i))))
                                       {:color color :replay {:of m}}))]
+    (when (and at (not (<= 1 at m))) (fail! (str "--at " at " is outside the log: events 1.." m)))
     (cond
       (and at (not step)) (screen at)
       (not step) (decision-index events 0 n)
@@ -218,10 +235,16 @@
                       "  aliases store status spec agents kernel str"
                       "runs until killed; logs repl/opened and writes nothing else"])}))
 
-(defn repl [root args]
+(defn- repl-args
+  "repl's args as {:id :port}, or a usage error."
+  [args]
   (let [[[id & stray] {[port & ports] "--port"}] (take-flags args #{"--port"} repl-usage)
-        port (if port (or (parse-long port) (fail! repl-usage)) 0)
-        _ (when (or (seq stray) (seq ports)) (fail! repl-usage))
+        port (if port (or (parse-long port) (fail! repl-usage)) 0)]
+    (when (or (seq stray) (seq ports)) (fail! repl-usage))
+    {:id id :port port}))
+
+(defn repl [root args]
+  (let [{:keys [id port]} (repl-args args)
         {:keys [text]} (start-repl (session-by-id root id) {:port port})]
     (println text)
     (flush)

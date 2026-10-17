@@ -6,8 +6,8 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [lume.item :as item]
-            [lume.kernel :as kernel :refer [*default-agent* actor ago child-env clip driver? fail! flag human-only!
-                                            next-id open-item paint sh sh-out sha256-hex timed]]
+            [lume.kernel :as kernel :refer [*default-agent* actor ago child-env clip driver? fail! human-only!
+                                            next-id open-item paint sh sh-out sha256-hex take-flags timed]]
             [lume.measure :as measure]
             [lume.note :as note]
             [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]
@@ -113,8 +113,8 @@
     {:exit exit :steps steps
      :summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))}))
 
-(defn- run-spawn [session root id opts]
-  (let [agent (keyword (or (flag opts "--agent") *default-agent*))
+(defn- run-spawn [session root id agent]
+  (let [agent (keyword (or agent *default-agent*))
         events (kernel/read-events session)
         item (open-item events id)
         started (kernel/append! session (fn [events]
@@ -162,21 +162,28 @@
 ;; The cadence's batch is how many requests a turn may make (its guard).
 (def ^:private spawn-usage "usage: lume spawn <id> [--agent claude|claude-acp|devin]")
 
-(defn spawn [session root [id & opts]]
-  (when (str/blank? id) (fail! spawn-usage))
-  (if (driver?)
-    (do
-      (kernel/append! session (fn [events]
-                                (open-item events id)
-                                (cond-> {:type :spawn/requested :item/id id}
-                                  (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
-      (let [state (kernel/state session)
-            n (get-in state [:requested (actor)])
-            batch (:batch (policy/cadence state))]
-        (if (< n batch)
-          (str id " spawn requested (" n " of " batch " this turn); requests run in order when your turn ends")
-          (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
-    (run-spawn session root id opts)))
+(defn- spawn-args
+  "spawn's args as {:id :agent}, or a usage error."
+  [args]
+  (let [[[id & extra] {[agent & agents] "--agent"}] (take-flags args #{"--agent"} spawn-usage)]
+    (when (or (str/blank? id) (seq extra) (seq agents)) (fail! spawn-usage))
+    {:id id :agent agent}))
+
+(defn spawn [session root args]
+  (let [{:keys [id agent]} (spawn-args args)]
+    (if (driver?)
+      (do
+        (kernel/append! session (fn [events]
+                                  (open-item events id)
+                                  (cond-> {:type :spawn/requested :item/id id}
+                                    agent (assoc :agent (keyword agent)))))
+        (let [state (kernel/state session)
+              n (get-in state [:requested (actor)])
+              batch (:batch (policy/cadence state))]
+          (if (< n batch)
+            (str id " spawn requested (" n " of " batch " this turn); requests run in order when your turn ends")
+            (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
+      (run-spawn session root id agent))))
 
 ;; Status: what workers may run (with the session's default gate and the
 ;; cadence), and each open item's latest spawn.

@@ -255,13 +255,14 @@
 (def ^:private spec-usage "usage: lume spec [--all]")
 
 (defn show-spec [session args]
-  (when (seq (remove #{"--all"} args)) (fail! spec-usage))
-  (let [all (boolean (some #{"--all"} args))
-        state (kernel/state session)
-        closed (count (remove #(= :open (:state %)) (vals (:items state))))]
-    (str (pretty (from-state state :all all))
-         (when (and (not all) (pos? closed))
-           (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all")))))
+  (let [[pos {all "--all"}] (take-flags args #{} #{"--all"} spec-usage)
+        all (boolean all)]
+    (when (seq pos) (fail! spec-usage))
+    (let [state (kernel/state session)
+          closed (count (remove #(= :open (:state %)) (vals (:items state))))]
+      (str (pretty (from-state state :all all))
+           (when (and (not all) (pos? closed))
+             (str "\n;; " closed " closed " (if (= 1 closed) "item" "items") " left out — lume spec --all"))))))
 
 ;; Run: a spec starts a session, as the events its commands would log, then
 ;; baselines each measurement and drives. The harness is the same whoever runs

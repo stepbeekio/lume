@@ -296,19 +296,19 @@
           :else item)))
 
 (defn take-flags
-  "Split args into positionals and the values of the given flags, in order.
+  "Split args into positionals and the values of the given flags, in order,
+  plus true for each of the given switches (flags that take no value) present.
   A flag with no value, or any other flag-like arg, is a usage error."
-  [args flags usage]
-  (loop [[a & more :as args] args, pos [], vals {}]
-    (cond (empty? args) [pos vals]
-          (flags a) (let [[v & more] more]
-                      (when (or (str/blank? v) (str/starts-with? v "--")) (fail! usage))
-                      (recur more pos (update vals a (fnil conj []) v)))
-          (str/starts-with? a "--") (fail! usage)
-          :else (recur more (conj pos a) vals))))
-
-(defn flag [opts name]
-  (second (drop-while #(not= name %) opts)))
+  ([args flags usage] (take-flags args flags #{} usage))
+  ([args flags switches usage]
+   (loop [[a & more :as args] args, pos [], vals {}]
+     (cond (empty? args) [pos vals]
+           (switches a) (recur more pos (assoc vals a true))
+           (flags a) (let [[v & more] more]
+                       (when (or (str/blank? v) (str/starts-with? v "--")) (fail! usage))
+                       (recur more pos (update vals a (fnil conj []) v)))
+           (str/starts-with? a "--") (fail! usage)
+           :else (recur more (conj pos a) vals)))))
 
 (defn secs [ms]
   (format "%.1fs" (/ ms 1000.0)))
