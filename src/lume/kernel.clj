@@ -5,7 +5,6 @@
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]
-            [lume.status :as status]
             [lume.store :as store]))
 
 (defn fail! [& msg]
@@ -72,61 +71,65 @@
     (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
            "agents ask with lume ask \"<question>\"")))
 
-;; Events: every type lume appends is declared here with the keys it must
+;; Features: what lume does, as data. A feature is a map
+;;   {:name   "item"
+;;    :events {type {:req #{keys} :human true?}}  the types it appends
+;;    :init   {..}                                 its part of the state
+;;    :fold   {type (fn [state e] state)}          how its events fold
+;;    :guards {type (fn [state e] why-or-nil)}}    what refuses an append
+;; bound per run in *features*, never a global, so parallel tests bind their
+;; own. Every type lume appends is declared by a feature with the keys it must
 ;; carry; :human types are policy, logged only when the human acts. Reading
-;; stays lenient (project skips what it doesn't know), so old logs still fold.
+;; stays lenient (project skips what no feature folds), so old logs still fold.
 
-(def events
-  {:session/started {:req #{:goal :repo}}
-   :session/gated {:req #{:gate}}
-   :session/allowed {:req #{:command} :human true}
-   :session/disallowed {:req #{:command} :human true}
-   :session/budgeted {:req #{}}
-   :session/cadence {:req #{}}
-   :item/added {:req #{:item/id :intent}}
-   :item/gated {:req #{:item/id :gate}}
-   :item/measuring {:req #{:item/id :measure}}
-   :item/closed {:req #{:item/id :disposition}}
-   :gate/ran {:req #{:gate/id :item/id :gate :exit :out}}
-   :measure/ran {:req #{:measure/id :item/id :measure :exit :out}}
-   :note/added {:req #{:note/id :text}}
-   :note/unpinned {:req #{:note/id}}
-   :ask/opened {:req #{:ask/id :question}}
-   :ask/answered {:req #{:ask/id :answer} :human true}
-   :spawn/started {:req #{:spawn/id :item/id :agent :out}}
-   :spawn/progress {:req #{:spawn/id}}
-   :spawn/exited {:req #{:spawn/id}}
-   :spawn/requested {:req #{:item/id}}
-   :spawn/permission {:req #{:spawn/id :disposition}}
-   :drive/started {:req #{:turns :agent}}
-   :drive/turn {:req #{:drive/id :n}}
-   :drive/exited {:req #{:drive/id}}
-   :drive/stopped {:req #{:why}}
-   :drive/handed-back {:req #{:drive/id :why}}
-   :drive/reloaded {:req #{:n}}
-   :notify/sent {:req #{:on :text}}
-   :notify/failed {:req #{:on :text :error}}
-   :repl/opened {:req #{:port}}})
+(def ^:dynamic *features*
+  "The features in play, in order. Unbound until a run (cli/-main) or a test binds it."
+  nil)
+
+(defn features []
+  (or *features* (throw (IllegalStateException. "no features bound: bind lume.kernel/*features*"))))
+
+(defn events
+  "Every declared event type: {type {:req #{keys} :human true?}}."
+  []
+  (apply merge (map :events (features))))
+
+(defn project
+  "Fold the log into the current state of the session: each event through the
+  folds for its type, in feature order, starting from the features' :init."
+  [events]
+  (let [fs (features)
+        folds (apply merge-with into (for [f fs [type fold] (:fold f)] {type [fold]}))]
+    (reduce (fn [s e] (reduce (fn [s fold] (fold s e)) s (get folds (:type e))))
+            (apply merge (map :init fs))
+            events)))
 
 (defn- checked
-  "e with :by filled from the actor, or a refusal if events doesn't allow it."
-  [{:keys [type] :as e}]
-  (let [{:keys [req human] :as decl} (get events type)
-        missing (sort (filter #(nil? (get e %)) req))]
+  "e with :by filled from the actor, or a refusal: no feature declares it, it
+  lacks a required key, it is the human's, or a guard refuses it in (state)."
+  [{:keys [type] :as e} state]
+  (let [{:keys [req human] :as decl} (get (events) type)
+        missing (sort (filter #(nil? (get e %)) req))
+        guards (keep #(get-in % [:guards type]) (features))]
     (cond (nil? decl) (fail! "refused: undeclared event type" (pr-str type))
           (seq missing) (fail! "refused:" (pr-str type) "needs" (str/join " " (map pr-str missing)))
           (and human (not= "human" (actor))) (fail! "refused:" (pr-str type) "is the human's, not" (str (actor) "'s"))
-          :else (merge {:by (actor)} e))))
+          :else (let [e (merge {:by (actor)} e)]
+                  (when (seq guards)
+                    (let [s (state)]
+                      (some-> (some #(% s e) guards) fail!)))
+                  e))))
 
 (defn append!
-  "store/append!, checked: the event (f events) builds must be a declared type
-  with its required keys, and a :human type only the human appends. :by is the
-  actor unless the event names one."
+  "store/append!, checked under the lock: the event (f events) builds must be
+  a declared type with its required keys, a :human type only the human
+  appends, and no feature's guard may refuse it. :by is the actor unless the
+  event names one."
   [session f]
-  (store/append! session #(some-> (f %) checked)))
+  (store/append! session (fn [events] (some-> (f events) (checked #(project events))))))
 
 (defn open-item [events id]
-  (let [item (get-in (status/project events) [:items id])]
+  (let [item (get-in (project events) [:items id])]
     (cond (nil? item) (fail! "no such item:" id)
           (not= :open (:state item)) (fail! id "is already" (name (:state item)))
           :else item)))
@@ -145,6 +148,9 @@
 
 (defn flag [opts name]
   (second (drop-while #(not= name %) opts)))
+
+(defn secs [ms]
+  (format "%.1fs" (/ ms 1000.0)))
 
 (defn clip-to [n s]
   (let [s (str/replace (str s) #"\s+" " ")]
@@ -186,12 +192,12 @@
   :tail and :out are added unless the event has its own. The id is allocated
   under the log lock."
   [session kind cmd event-for & {:keys [n] :or {n 1}}]
-  (let [root (:repo (status/project (store/read-events session)))
+  (let [root (:repo (project (store/read-events session)))
         dir (fs/create-dirs (fs/path session kind))
         tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
         runs (run-repeated session root cmd n
                            (fn [i {:keys [exit ms output]}]
-                             (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (status/secs ms) "\n"))
+                             (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (secs ms) "\n"))
                                             output)
                                    :append true)))
         {:keys [exit ms output]} (peek runs)

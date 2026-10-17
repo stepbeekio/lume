@@ -3,7 +3,8 @@
 
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
-  (:require [clojure.string :as str])
+  (:require [clojure.string :as str]
+            [lume.kernel :as kernel :refer [secs]])
   (:import (java.time Duration Instant ZoneId)
            (java.time.format DateTimeFormatter)))
 
@@ -93,76 +94,6 @@
   (let [n (str/replace (format "%.1f" (double v)) #"\.0$" "")]
     (case k :usd (format "$%.2f" (double v)) :spawns (str (long v)) n)))
 
-(defn project
-  "Fold the log into the current state of the session."
-  [events]
-  (reduce
-   (fn [s {:keys [type] :as e}]
-     (case type
-       :session/started (assoc s :goal (:goal e) :repo (:repo e))
-       :session/gated   (assoc s :default-gate (:gate e))
-       :session/allowed (update s :allow #(vec (distinct (conj % (:command e)))))
-       :session/disallowed (update s :allow #(vec (remove #{(:command e)} %)))
-       :item/added      (update s :items assoc (:item/id e)
-                                (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
-                                  (:gate e) (assoc :gate (:gate e))
-                                  (:parent e) (assoc :parent (:parent e))))
-       :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
-       :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
-       :item/measuring  (update-in s [:items (:item/id e)]
-                                   #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before])))
-       ;; Each row carries the row it's compared with: the latest earlier one
-       ;; of the same spec (command, runs and drop) that passed with numbers
-       ;; and shares a number's name with it, so a misparsed row isn't the
-       ;; baseline for a good one. One good row is kept per set of names.
-       ;; Once a spawn has started on the item, that is the latest such row
-       ;; before the spawn (its before row, :before-rows), so every row after
-       ;; it compares with the code as it was, not with the row before. A row
-       ;; a spawn took before its edits (:before-spawn) is the new before row,
-       ;; and isn't counted towards a plateau: no change was tried.
-       :measure/ran     (let [s (update-in s [:items (:item/id e)]
-                                       (fn [item]
-                                         (let [names #(set (keys (:values %)))
-                                               base (last (filter #(some (names %) (keys (:values e)))
-                                                                  (or (get-in item [:before-rows (spec e)])
-                                                                      (get-in item [:good-measures (spec e)]))))
-                                               p (plateau (get-in item [:plateaus (spec e)]) e)]
-                                           (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
-                                             (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (spec e)] p))
-                                             (and (zero? (:exit e)) (seq (:values e)))
-                                             (update-in [:good-measures (spec e)]
-                                                        (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
-                                             (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
-                          ;; Every row, newest last, as compared when it was taken: lume ledger.
-                          (update s :ledger conj (get-in s [:items (:item/id e) :last-measure])))
-       :item/closed     (update-in s [:items (:item/id e)] assoc
-                                   :state (:disposition e) :why (:why e) :closed-at (:t e))
-       :note/added      (update s :notes conj e)
-       :ask/opened      (update s :asks assoc (:ask/id e) (cond-> {:id (:ask/id e) :question (:question e) :state :open}
-                                                            (:item/id e) (assoc :item (:item/id e))))
-       ;; An answer is steering, like a note, so it joins the notes.
-       :ask/answered    (-> s
-                            (assoc-in [:asks (:ask/id e) :state] :answered)
-                            (update :notes conj (assoc (select-keys e [:ask/id :answer :t :by])
-                                                       :question (get-in s [:asks (:ask/id e) :question])
-                                                       :text (str (:ask/id e) " → " (:answer e)))))
-       :note/unpinned  (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned))))
-       :session/budgeted (update s :budget merge (select-keys e [:usd :spawns :minutes]))
-       :session/cadence (let [c (select-keys e [:batch :gate-fail :plateau])]
-                          (cond-> (assoc s :cadence c)
-                            (= "human" (:by e)) (assoc :cadence-ceiling c)))
-       :spawn/started   (-> s
-                            (assoc-in [:spawns (:spawn/id e)] e)
-                            (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e))
-                            (update-in [:items (:item/id e)] #(assoc % :before-rows (:good-measures %)))
-                            (update-in [:spent :spawns] inc))
-       :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
-       :spawn/exited    (-> s (update-in [:spawns (:spawn/id e)] merge e) (spend e))
-       :drive/exited    (spend s e)
-       s))
-   {:items {} :notes [] :ledger [] :spawns {} :allow [] :asks {} :spent {:usd 0 :spawns 0 :minutes 0}}
-   events))
-
 (defn over-budget
   "Why no more agent work may start, or nil: the first limit that spending has
   reached. Spend is the whole session's, spawns and drive turns alike."
@@ -173,6 +104,174 @@
               (str "budget reached: " (amount k (get spent k)) " of " (amount k limit) unit
                    " — only the human raises it, with lume budget --" (name k) " N"))))
         [[:usd " spent"] [:spawns " spawns"] [:minutes " minutes"]]))
+
+;; The built-in features (see lume.kernel): the events each appends and how
+;; they fold into the state status renders. Several features may fold one
+;; type; they run in the order listed.
+
+(def session-feature
+  {:name "session"
+   :events {:session/started {:req #{:goal :repo}}
+            :session/gated {:req #{:gate}}
+            :session/allowed {:req #{:command} :human true}
+            :session/disallowed {:req #{:command} :human true}}
+   :init {:allow []}
+   :fold {:session/started (fn [s e] (assoc s :goal (:goal e) :repo (:repo e)))
+          :session/gated (fn [s e] (assoc s :default-gate (:gate e)))
+          :session/allowed (fn [s e] (update s :allow #(vec (distinct (conj % (:command e))))))
+          :session/disallowed (fn [s e] (update s :allow #(vec (remove #{(:command e)} %))))}})
+
+(def item-feature
+  {:name "item"
+   :events {:item/added {:req #{:item/id :intent}}
+            :item/gated {:req #{:item/id :gate}}
+            :item/closed {:req #{:item/id :disposition}}
+            :gate/ran {:req #{:gate/id :item/id :gate :exit :out}}}
+   :init {:items {}}
+   :fold {:item/added (fn [s e]
+                        (update s :items assoc (:item/id e)
+                                (cond-> {:id (:item/id e) :intent (:intent e) :state :open :order (count (:items s))}
+                                  (:gate e) (assoc :gate (:gate e))
+                                  (:parent e) (assoc :parent (:parent e)))))
+          :item/gated (fn [s e] (assoc-in s [:items (:item/id e) :gate] (:gate e)))
+          :gate/ran (fn [s e] (assoc-in s [:items (:item/id e) :last-gate] e))
+          :item/closed (fn [s e] (update-in s [:items (:item/id e)] assoc
+                                            :state (:disposition e) :why (:why e) :closed-at (:t e)))}})
+
+(def ask-feature
+  {:name "ask"
+   :events {:ask/opened {:req #{:ask/id :question}}
+            :ask/answered {:req #{:ask/id :answer} :human true}}
+   :init {:asks {}}
+   :fold {:ask/opened (fn [s e]
+                        (update s :asks assoc (:ask/id e) (cond-> {:id (:ask/id e) :question (:question e) :state :open}
+                                                            (:item/id e) (assoc :item (:item/id e)))))
+          ;; An answer is steering, like a note, so it joins the notes.
+          :ask/answered (fn [s e]
+                          (-> s
+                              (assoc-in [:asks (:ask/id e) :state] :answered)
+                              (update :notes conj (assoc (select-keys e [:ask/id :answer :t :by])
+                                                         :question (get-in s [:asks (:ask/id e) :question])
+                                                         :text (str (:ask/id e) " → " (:answer e))))))}})
+
+(def note-feature
+  {:name "note"
+   :events {:note/added {:req #{:note/id :text}}
+            :note/unpinned {:req #{:note/id}}}
+   :init {:notes []}
+   :fold {:note/added (fn [s e] (update s :notes conj e))
+          :note/unpinned (fn [s e] (update s :notes (partial mapv #(cond-> % (= (:note/id e) (:note/id %)) (dissoc :pinned)))))}})
+
+(def spawn-feature
+  {:name "spawn"
+   :events {:spawn/started {:req #{:spawn/id :item/id :agent :out}}
+            :spawn/progress {:req #{:spawn/id}}
+            :spawn/exited {:req #{:spawn/id}}
+            :spawn/permission {:req #{:spawn/id :disposition}}}
+   :init {:spawns {}}
+   :fold {:spawn/started (fn [s e]
+                           (-> s
+                               (assoc-in [:spawns (:spawn/id e)] e)
+                               (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e))))
+          :spawn/progress (fn [s e] (assoc-in s [:spawns (:spawn/id e) :progress] e))
+          :spawn/exited (fn [s e] (update-in s [:spawns (:spawn/id e)] merge e))}})
+
+(def measure-feature
+  {:name "measure"
+   :events {:item/measuring {:req #{:item/id :measure}}
+            :measure/ran {:req #{:measure/id :item/id :measure :exit :out}}}
+   :init {:ledger []}
+   :fold {:item/measuring (fn [s e]
+                            (update-in s [:items (:item/id e)]
+                                       #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before]))))
+          ;; Each row carries the row it's compared with: the latest earlier one
+          ;; of the same spec (command, runs and drop) that passed with numbers
+          ;; and shares a number's name with it, so a misparsed row isn't the
+          ;; baseline for a good one. One good row is kept per set of names.
+          ;; Once a spawn has started on the item, that is the latest such row
+          ;; before the spawn (its before row, :before-rows), so every row after
+          ;; it compares with the code as it was, not with the row before. A row
+          ;; a spawn took before its edits (:before-spawn) is the new before row,
+          ;; and isn't counted towards a plateau: no change was tried.
+          :measure/ran (fn [s e]
+                         (let [s (update-in s [:items (:item/id e)]
+                                            (fn [item]
+                                              (let [names #(set (keys (:values %)))
+                                                    base (last (filter #(some (names %) (keys (:values e)))
+                                                                       (or (get-in item [:before-rows (spec e)])
+                                                                           (get-in item [:good-measures (spec e)]))))
+                                                    p (plateau (get-in item [:plateaus (spec e)]) e)]
+                                                (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
+                                                  (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (spec e)] p))
+                                                  (and (zero? (:exit e)) (seq (:values e)))
+                                                  (update-in [:good-measures (spec e)]
+                                                             (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
+                                                  (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
+                           ;; Every row, newest last, as compared when it was taken: lume ledger.
+                           (update s :ledger conj (get-in s [:items (:item/id e) :last-measure]))))
+          :spawn/started (fn [s e] (update-in s [:items (:item/id e)] #(assoc % :before-rows (:good-measures %))))}})
+
+(defn- within-budget [s _] (over-budget s))
+
+(def budget-feature
+  {:name "budget"
+   :events {:session/budgeted {:req #{}}}
+   :init {:spent {:usd 0 :spawns 0 :minutes 0}}
+   :fold {:session/budgeted (fn [s e] (update s :budget merge (select-keys e [:usd :spawns :minutes])))
+          :spawn/started (fn [s _] (update-in s [:spent :spawns] inc))
+          :spawn/exited spend
+          :drive/exited spend}
+   :guards {:spawn/started within-budget
+            :drive/turn within-budget
+            :spawn/requested within-budget}})
+
+;; A driver's turn may request up to its cadence's batch of spawns; :requested
+;; counts each actor's requests (a driver id is one turn).
+(def cadence-feature
+  {:name "cadence"
+   :events {:session/cadence {:req #{}}}
+   :fold {:session/cadence (fn [s e]
+                             (let [c (select-keys e [:batch :gate-fail :plateau])]
+                               (cond-> (assoc s :cadence c)
+                                 (= "human" (:by e)) (assoc :cadence-ceiling c))))
+          :spawn/requested (fn [s e] (update-in s [:requested (:by e)] (fnil inc 0)))}
+   :guards {:spawn/requested (fn [s e]
+                               (let [c (cadence s)]
+                                 (when (>= (get-in s [:requested (:by e)] 0) (:batch c))
+                                   (str "cadence " (cadence-text c) " allows " (:batch c) " spawn request(s) a turn,"
+                                        " and this turn has made them; finish the turn now"))))}})
+
+(def drive-feature
+  {:name "drive"
+   :events {:spawn/requested {:req #{:item/id}}
+            :drive/started {:req #{:turns :agent}}
+            :drive/turn {:req #{:drive/id :n}}
+            :drive/exited {:req #{:drive/id}}
+            :drive/stopped {:req #{:why}}
+            :drive/handed-back {:req #{:drive/id :why}}
+            :drive/reloaded {:req #{:n}}}})
+
+(def ntfy-feature
+  {:name "ntfy"
+   :events {:notify/sent {:req #{:on :text}}
+            :notify/failed {:req #{:on :text :error}}}})
+
+(def inspect-feature
+  {:name "inspect"
+   :events {:repl/opened {:req #{:port}}}})
+
+(def features
+  "The built-in features, in fold order. lume.cli binds kernel/*features* to these."
+  [session-feature item-feature ask-feature note-feature spawn-feature measure-feature
+   budget-feature cadence-feature drive-feature ntfy-feature inspect-feature])
+
+(defn project
+  "Fold the log into the current state of the session (kernel/project), with
+  the built-in features when none are bound: a lume repl evaluates on nREPL's
+  threads, outside the run's binding."
+  [events]
+  (binding [kernel/*features* (or kernel/*features* features)]
+    (kernel/project events)))
 
 (defn budget-text
   "Spent against each limit, e.g. $1.20/$10.00 · 7/20 spawns · 12.5 min."
@@ -246,9 +345,6 @@
        (when-let [{:keys [exit t tail] gid :gate/id} last-gate]
          (str " · " gid " " (if (zero? exit) (paint :green "pass") (paint :red (str "fail exit " exit))) " · " (ago now t)
               (when (and tail (not (zero? exit))) (str " · " (clip tail 30)))))))
-
-(defn secs [ms]
-  (format "%.1fs" (/ ms 1000.0)))
 
 (defn num-text
   "A measured number for reading: whole numbers as they are, others to 3

@@ -526,10 +526,6 @@
       (str "cadence " (status/cadence-text (status/cadence s))
            " · ceiling " (status/cadence-text (status/cadence-ceiling s))))))
 
-(defn- within-budget! [events]
-  (when-let [over (status/over-budget (status/project events))]
-    (fail! over)))
-
 ;; Questions for the human. Anyone may ask; only the human answers, and the
 ;; answer reaches status and workers alongside the notes, and LUME_NTFY.
 
@@ -689,16 +685,16 @@
         events (store/read-events session)
         item (open-item events id)
         started (kernel/append! session (fn [events]
-                                          (within-budget! events)
                                           (let [sid (next-id "s" :spawn/started events)]
                                             {:type :spawn/started :spawn/id sid :item/id id :agent agent
                                              :out (str (fs/path session "spawns" (str sid ".out")))
                                              :by (actor)})))
         {sid :spawn/id out :out} started
         done (promise)
-        hook (Thread. #(when-not (realized? done)
-                         (kernel/append! session (constantly {:type :spawn/exited :spawn/id sid
-                                                              :interrupted true}))))]
+        hook (Thread. ^Runnable (bound-fn []
+                                  (when-not (realized? done)
+                                    (kernel/append! session (constantly {:type :spawn/exited :spawn/id sid
+                                                                         :interrupted true})))))]
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (let [;; A before row is taken once the spawn has started, before the
@@ -747,23 +743,18 @@
                                            (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
-;; The cadence's batch is how many requests a turn may make.
+;; The cadence's batch is how many requests a turn may make (its guard).
 (defn spawn [session root [id & opts]]
   (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude|claude-acp|devin]"))
   (if (driver?)
-    (let [requested (fn [events] (count (filter #(and (= :spawn/requested (:type %)) (= (actor) (:by %))) events)))]
+    (do
       (kernel/append! session (fn [events]
                                 (open-item events id)
-                                (within-budget! events)
-                                (let [c (status/cadence (status/project events))]
-                                  (when (>= (requested events) (:batch c))
-                                    (fail! "cadence" (status/cadence-text c) "allows" (:batch c) "spawn request(s) a turn,"
-                                           "and this turn has made them; finish the turn now")))
                                 (cond-> {:type :spawn/requested :item/id id :by (actor)}
                                   (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
-      (let [events (store/read-events session)
-            n (requested events)
-            batch (:batch (status/cadence (status/project events)))]
+      (let [state (status/project (store/read-events session))
+            n (get-in state [:requested (actor)])
+            batch (:batch (status/cadence state))]
         (if (< n batch)
           (str id " spawn requested (" n " of " batch " this turn); requests run in order when your turn ends")
           (str id " spawn requested; it runs when your turn ends, so finish the turn now"))))
@@ -1039,8 +1030,9 @@
                 (notify! session (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
                          "lume: drive stopped" why)
                 (str "drive stopped: " why))
-        hook (Thread. #(when-not (realized? done)
-                         (kernel/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
+        hook (Thread. ^Runnable (bound-fn []
+                                  (when-not (realized? done)
+                                    (kernel/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)})))))]
     (when (= 1 from)
       (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
     (.addShutdownHook (Runtime/getRuntime) hook)
@@ -1633,7 +1625,7 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
 
 (defn -main [& args]
   (try
-    (println (run args))
+    (println (binding [kernel/*features* status/features] (run args)))
     (catch clojure.lang.ExceptionInfo e
       (if (:lume/user-error (ex-data e))
         (do (binding [*out* *err*] (println (ex-message e)))

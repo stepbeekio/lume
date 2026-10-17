@@ -26,6 +26,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" *root* root
+                  kernel/*features* status/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
@@ -95,6 +96,30 @@
     (testing "reading stays lenient: an undeclared type in the log still folds"
       (store/append! s (constantly {:type :item/renamed :item/id "i1"}))
       (is (= "declared events" (:goal (status/project (store/read-events s))))))))
+
+(deftest features-are-data
+  (let [s (new-session "features")
+        tally {:name "tally"
+               :events {:tally/counted {:req #{:n}}}
+               :init {:tally 0}
+               :fold {:tally/counted (fn [st e] (update st :tally + (:n e)))
+                      :note/added (fn [st _] (update st :tally inc))}
+               :guards {:tally/counted (fn [st e] (when (> (+ (:tally st) (:n e)) 10) "tally full"))}}]
+    (testing "a feature bound for a run declares, folds and guards its events"
+      (binding [kernel/*features* (conj status/features tally)]
+        (kernel/append! s (constantly {:type :tally/counted :n 4}))
+        (cli/note s ["also counts"])
+        (is (= 5 (:tally (kernel/project (store/read-events s)))))
+        (is (thrown-with-msg? Exception #"tally full"
+                              (kernel/append! s (constantly {:type :tally/counted :n 6}))))
+        (is (= "features" (:goal (kernel/project (store/read-events s)))) "built-in folds still run")))
+    (testing "without it, its events are undeclared and skipped when folding"
+      (is (thrown-with-msg? Exception #"undeclared event type"
+                            (kernel/append! s (constantly {:type :tally/counted :n 1}))))
+      (is (nil? (:tally (status/project (store/read-events s))))))
+    (testing "nothing bound is an error, not an empty state"
+      (binding [kernel/*features* nil]
+        (is (thrown? IllegalStateException (kernel/project [])))))))
 
 (deftest subitems-show-under-their-parent
   (let [s (new-session "tree")]
@@ -1581,7 +1606,11 @@
   (testing "every-spawn: a turn may request one spawn"
     (let [s (cadence-session nil "false" "false")]
       (is (= "d2 logged no events" (drive! s (spawn-cmds "i1" "i2"))))
-      (is (= ["i1"] (started s)))))
+      (is (= ["i1"] (started s)))
+      (binding [kernel/*actor* "d9"]
+        (cli/spawn s *root* ["i2"])
+        (is (thrown-with-msg? Exception #"^cadence every-spawn allows 1 spawn request\(s\) a turn, and this turn has made them"
+                              (cli/spawn s *root* ["i2"]))))))
   (testing "batch N: up to N requests a turn, run in order, failed gates and all"
     (let [s (cadence-session "batch 3" "false" "false" "false" "false")]
       (binding [kernel/*actor* "d9"]
