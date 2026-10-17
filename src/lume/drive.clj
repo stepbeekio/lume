@@ -124,8 +124,8 @@
       (or (first (remove str/blank? (str/split-lines err))) (str "exit " exit)))))
 
 (def ^:dynamic *reexec*
-  "Replace this process with lume from src, run with args."
-  (fn [src args] (p/exec (into ["bb" "-cp" src "-m" "lume.cli"] args))))
+  "Replace this process with lume from src, run with args and env added."
+  (fn [src args env] (p/exec {:extra-env env} (into ["bb" "-cp" src "-m" "lume.cli"] args))))
 
 (def ^:private drive-usage "usage: lume drive [--turns N] [--agent claude|claude-acp|devin] [--wait-on-ask]")
 
@@ -175,11 +175,14 @@
       :else [:turn closing])))
 
 (defn- reload!
-  "Log :drive/reloaded and re-exec the drive on src, resuming at turn n."
+  "Log :drive/reloaded and re-exec the drive on src, resuming at turn n of
+  this session: named in its env, since the drive may not be on LUME_SESSION's
+  (lume run inside a session drives a new one)."
   [session src {:keys [turns agent wait]} n]
   (kernel/append! session (constantly {:type :drive/reloaded :n n}))
   (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
-                  wait (conj "--wait-on-ask"))))
+                  wait (conj "--wait-on-ask"))
+            {"LUME_SESSION" (str session)}))
 
 (defn- turn!
   "Run driver turn n, then the spawns it requested. Returns why the drive

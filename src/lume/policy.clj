@@ -78,16 +78,20 @@
 ;; a limit; raising one is the human's, like permissions.
 (def ^:private budget-usage "usage: lume budget [--usd N] [--spawns N] [--minutes N]")
 
+(defn- budget-args
+  "budget's args as the limits they set, e.g. {:usd 10.0 :spawns 20}, or a
+  usage error."
+  [args]
+  (let [[pos flags] (take-flags args #{"--usd" "--spawns" "--minutes"} budget-usage)
+        limits (into {} (for [[flag [v & more]] flags
+                              :let [k (keyword (subs flag 2))]]
+                          [k (when-not (seq more) (if (= :spawns k) (parse-long v) (parse-double v)))]))]
+    (when (or (seq pos) (some #(or (nil? %) (neg? %)) (vals limits))) (fail! budget-usage))
+    limits))
+
 (defn budget [session args]
-  (let [usage budget-usage
-        [pos vals] (take-flags args #{"--usd" "--spawns" "--minutes"} usage)
-        limits (into {} (for [[flag [v & more]] vals
-                              :let [k (keyword (subs flag 2))
-                                    n (if (= :spawns k) (parse-long v) (parse-double v))]]
-                          (do (when (or (seq more) (nil? n) (neg? n)) (fail! usage))
-                              [k n])))
+  (let [limits (budget-args args)
         state #(kernel/state session)]
-    (when (seq pos) (fail! usage))
     (when (seq limits)
       (let [{:keys [budget]} (state)
             raised (filter (fn [[k n]] (when-let [l (get budget k)] (> n l))) limits)]

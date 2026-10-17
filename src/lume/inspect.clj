@@ -93,11 +93,21 @@
 ;; bounded as the plain log. --type matches a prefix of ns/name (note, spawn/);
 ;; --item is item show's events plus its spawns' progress; --grep searches the
 ;; event's EDN. Output stays EDN: the hint for what -n left out is a comment.
-(defn- log-filter [events {[t & ts] "--type" [iid & iids] "--item" [by & bys] "--by" [re & res] "--grep"}]
-  (when (some seq [ts iids bys res]) (fail! log-usage))
-  (let [re (when re (try (re-pattern re) (catch Exception e (fail! "bad --grep regex:" (ex-message e)))))
-        spawn-ids (when iid
-                    (set (:spawns (or (get-in (status/project events) [:items iid]) (fail! "no such item:" iid)))))
+(defn- log-args
+  "log's args as {:n :session :type :item :by :grep}, :grep a pattern, or a
+  usage error. Each flag is given at most once."
+  [args]
+  (let [[pos flags] (take-flags args #{"-n" "--session" "--type" "--item" "--by" "--grep"} log-usage)
+        {[n] "-n" [session] "--session" [t] "--type" [item] "--item" [by] "--by" [re] "--grep"} flags
+        n (if n (parse-long n) 20)]
+    (when (or (seq pos) (some #(next %) (vals flags)) (not (and n (<= 0 n)))) (fail! log-usage))
+    {:n n :session session :type t :item item :by by
+     :grep (when re (try (re-pattern re) (catch Exception e (fail! "bad --grep regex:" (ex-message e)))))}))
+
+(defn- log-filter
+  "The events matching every filter given."
+  [events {t :type iid :item by :by re :grep}]
+  (let [spawn-ids (when iid (set (get-in (status/project events) [:items iid :spawns])))
         of-item (when iid (item/item-event-pred iid spawn-ids))]
     (filterv (fn [e]
                (and (or (nil? t) (str/starts-with? (subs (str (:type e)) 1) t))
@@ -107,11 +117,11 @@
              events)))
 
 (defn show-log [root args]
-  (let [[pos {[n & ns] "-n" [id & ids] "--session" :as flags}]
-        (take-flags args #{"-n" "--session" "--type" "--item" "--by" "--grep"} log-usage)
-        n (if n (parse-long n) 20)]
-    (when (or (seq pos) (seq ns) (seq ids) (not (and n (<= 0 n)))) (fail! log-usage))
-    (let [events (log-filter (store/read-events (session-by-id root id)) flags)
+  (let [{:keys [n session item] :as q} (log-args args)
+        all (store/read-events (session-by-id root session))]
+    (when (and item (not (get-in (status/project all) [:items item])))
+      (fail! "no such item:" item))
+    (let [events (log-filter all q)
           shown (take-last n events)]
       (str/join "\n" (concat (map #(str ";; " %) (more events shown (str "earlier events — -n " (count events))))
                              (map pr-str shown))))))

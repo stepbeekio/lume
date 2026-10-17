@@ -282,35 +282,57 @@
                                 (seq allow) (conj (str "workers may run " (str/join " · " (distinct allow))))
                                 raises (conj (str "the cadence ceiling is raised: " raises)))))))
 
-(defn run-spec [root args]
+(defn- run-args
+  "run's args as {:path :goal :turns :agent}, or a usage error."
+  [args]
   (let [[[path goal & extra] {[turns & ts] "--turns" [agent & as] "--agent"}]
         (take-flags args #{"--turns" "--agent"} run-usage)
         n (if turns (parse-long turns) 10)]
     (when (or (str/blank? path) (and goal (str/blank? goal)) (seq extra) (seq ts) (seq as)
               (not (and n (<= 0 n))))
       (fail! run-usage))
-    (let [sp (cond-> (checked-spec path) goal (assoc :goal goal))
-          say #(do (println %) (flush))]
-      (when-let [policy (spec-policy sp)]
-        (human-only! (str "only the human runs a spec that sets policy (" policy "); remove it from the spec,"
-                          " or ask with lume ask \"<question>\"")
-                     (str "Start a session where " policy ".") "yes"))
-      ;; Run from inside a session (a worker or driver), the new one starts
-      ;; alongside it: the repo's current session stays the human's.
-      (let [within store/*session*
-            session (store/new-session! root :current (not within))]
-        (doseq [e (events sp root)]
-          (kernel/append! session (constantly e)))
-        (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
-        (when within
-          (say (str "not made current: run inside " (store/session-id within)
-                    "; lume status " (store/session-id session) " reads it")))
-        (binding [store/*session* (when within session)]
-          (doseq [item (->> (vals (:items (kernel/state session))) (filter :measure) (sort-by :order))]
-            (say (str "baseline " (measure/measure-row session (measure/run-measure session item)))))
-          (if (zero? n)
-            "--turns 0: not driving; lume drive, or drive by hand from lume status"
-            (drive/drive session root {:turns n :agent agent})))))))
+    {:path path :goal goal :turns n :agent agent}))
+
+(defn- confirm-policy!
+  "Refuse a spec that sets policy to any actor but the human, who confirms it."
+  [sp]
+  (when-let [policy (spec-policy sp)]
+    (human-only! (str "only the human runs a spec that sets policy (" policy "); remove it from the spec,"
+                      " or ask with lume ask \"<question>\"")
+                 (str "Start a session where " policy ".") "yes")))
+
+;; Run from inside a session (a worker or driver), the new one starts
+;; alongside it: the repo's current session stays the human's.
+(defn- start!
+  "A new session for root holding sp's events, made current unless run from
+  within one. Prints what it started."
+  [root sp path say]
+  (let [within store/*session*
+        session (store/new-session! root :current (not within))]
+    (doseq [e (events sp root)]
+      (kernel/append! session (constantly e)))
+    (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
+    (when within
+      (say (str "not made current: run inside " (store/session-id within)
+                "; lume status " (store/session-id session) " reads it")))
+    session))
+
+(defn- baseline!
+  "Run each measured item's measurement once, in order, printing its row."
+  [session say]
+  (doseq [item (->> (vals (:items (kernel/state session))) (filter :measure) (sort-by :order))]
+    (say (str "baseline " (measure/measure-row session (measure/run-measure session item))))))
+
+(defn run-spec [root args]
+  (let [{:keys [path goal turns agent]} (run-args args)
+        sp (cond-> (checked-spec path) goal (assoc :goal goal))
+        say #(do (println %) (flush))]
+    (confirm-policy! sp)
+    (let [session (start! root sp path say)]
+      (baseline! session say)
+      (if (zero? turns)
+        "--turns 0: not driving; lume drive, or drive by hand from lume status"
+        (drive/drive session root {:turns turns :agent agent})))))
 
 (def feature
   {:name "spec"

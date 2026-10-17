@@ -119,11 +119,14 @@
     (spit cli-file "(ns lume.cli)")
     (item/item-add s ["never done"])
     (binding [drive/*source* src
-              drive/*reexec* (fn [src args] (swap! execs conj [src args]) "re-exec'd")]
+              drive/*reexec* (fn [src args env] (swap! execs conj [src args env]) "re-exec'd")]
       (testing "when the source changes under it and loads, the drive re-execs on it from the next turn"
         (reset! *driver-turns* [(str (write-cli "(ns lume.cli) ;; new") "; " (lume-cmd "note" "a"))])
+        ;; i120: the re-exec names its session in the env, not inheriting
+        ;; LUME_SESSION, which is another session's when lume run started it
+        ;; inside one.
         (drive)
-        (is (= [[src ["drive" "--turns" "3" "--agent" "drive-driver" "--from" "2"]]] @execs))
+        (is (= [[src ["drive" "--turns" "3" "--agent" "drive-driver" "--from" "2"] {"LUME_SESSION" (str s)}]] @execs))
         (is (= [:drive/turn :note/added :drive/exited :drive/reloaded] (map :type (take-last 4 (store/read-events s)))))
         (is (= 1 (count @*driver-calls*)) "turn 2 runs in the new process"))
       (testing "the new process carries on from that turn, without starting another drive"
