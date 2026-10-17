@@ -68,33 +68,44 @@
 ;; the answer at the prompt; the typed-id confirmation still follows.
 (def ^:private answer-usage "usage: lume answer <id> [\"<text>\"]")
 
-(defn answer [session [id text]]
-  (when (str/blank? id) (fail! answer-usage))
-  (when-not (= "human" (actor)) (fail! "only the human answers asks; record what you think with lume note"))
-  (let [text (or text
-                 (let [state (kernel/state session)
-                       question (get-in state [:asks id :question])]
-                   (some-> (answer-why state id) fail!)
-                   (or (some-> (*read-line* (str/join "\n" (cons (str id ":") (map #(str "  " %) (wrap question (- (columns) 2)))))
-                                            "Answer: ")
-                               str/trim)
-                       (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
-                              "agents ask with lume ask \"<question>\""))))]
-    (when (str/blank? text) (fail! answer-usage))
-    (human-only! "only the human answers asks; record what you think with lume note"
-                 (str "Answer " id ": " text) id)
-    (kernel/append! session (fn [events]
-                              (or (answered-event events id text)
-                                  (fail! (answer-why (kernel/project events) id)))))
-    (str id " answered")))
+(defn- answer-args
+  "answer's args as [id text-or-nil], or a usage error."
+  [args]
+  (let [[[id text & extra]] (kernel/take-flags args #{} answer-usage)]
+    (when (or (str/blank? id) (seq extra)) (fail! answer-usage))
+    [id text]))
+
+(defn- typed-answer!
+  "The answer the human types after reading ask id in full, or a refusal."
+  [session id]
+  (let [state (kernel/state session)
+        question (get-in state [:asks id :question])]
+    (some-> (answer-why state id) fail!)
+    (or (some-> (*read-line* (str/join "\n" (cons (str id ":") (map #(str "  " %) (wrap question (- (columns) 2)))))
+                             "Answer: ")
+                str/trim)
+        (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
+               "agents ask with lume ask \"<question>\""))))
+
+(defn answer [session args]
+  (let [[id text] (answer-args args)]
+    (when-not (= "human" (actor)) (fail! "only the human answers asks; record what you think with lume note"))
+    (let [text (or text (typed-answer! session id))]
+      (when (str/blank? text) (fail! answer-usage))
+      (human-only! "only the human answers asks; record what you think with lume note"
+                   (str "Answer " id ": " text) id)
+      (kernel/append! session (fn [events]
+                                (or (answered-event events id text)
+                                    (fail! (answer-why (kernel/project events) id)))))
+      (str id " answered"))))
 
 ;; Ask show: what status clips. The question in full, who asked and when, the
 ;; item it concerns (a plateau's, or the asking worker's), and the answer.
 (def ^:private ask-show-usage "usage: lume ask show <id>")
 
-(defn ask-show [session [id]]
-  (when (str/blank? id) (fail! ask-show-usage))
-  (let [events (kernel/read-events session)
+(defn ask-show [session args]
+  (let [[id] (kernel/positionals args 1 ask-show-usage)
+        events (kernel/read-events session)
         opened (or (get-in (kernel/project events) [:asks id])
                    (fail! "no such ask:" id))
         answered (kernel/find-event events :ask/answered :ask/id id)

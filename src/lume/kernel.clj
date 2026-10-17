@@ -313,6 +313,13 @@
            (str/starts-with? a "--") (fail! usage)
            :else (recur more (conj pos a) vals)))))
 
+(defn positionals
+  "args as exactly n non-blank positionals and no flags, or a usage error."
+  [args n usage]
+  (let [[pos] (take-flags args #{} usage)]
+    (when (or (not= n (count pos)) (some str/blank? pos)) (fail! usage))
+    pos))
+
 (defn secs [ms]
   (format "%.1fs" (/ ms 1000.0)))
 

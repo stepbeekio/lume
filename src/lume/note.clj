@@ -22,29 +22,34 @@
   [e]
   (str (if (:pinned e) "pinned " "noted ") (:note/id e)))
 
-(defn note [session [a b]]
-  (let [pin (= "--pin" a)
-        text (if pin b a)]
-    (when (str/blank? text) (fail! note-usage))
+(defn- note-args
+  "note's args as {:text :pin}, or a usage error."
+  [args]
+  (let [[[text & extra] {pin "--pin"}] (kernel/take-flags args #{} #{"--pin"} note-usage)]
+    (when (or (str/blank? text) (seq extra)) (fail! note-usage))
+    {:text text :pin (boolean pin)}))
+
+(defn note [session args]
+  (let [{:keys [text pin]} (note-args args)]
     (added-line (add! session text :pin pin))))
 
 (defn- pinned? [events id]
   (some #(and (= id (:note/id %)) (:pinned %)) (:notes (kernel/project events))))
 
-(defn unpin [session [id]]
-  (when (str/blank? id) (fail! unpin-usage))
-  (kernel/append! session (fn [events]
-                            (when-not (pinned? events id) (fail! "no pinned note:" id))
-                            {:type :note/unpinned :note/id id}))
-  (str "unpinned " id))
+(defn unpin [session args]
+  (let [[id] (kernel/positionals args 1 unpin-usage)]
+    (kernel/append! session (fn [events]
+                              (when-not (pinned? events id) (fail! "no pinned note:" id))
+                              {:type :note/unpinned :note/id id}))
+    (str "unpinned " id)))
 
 ;; Note show: what status clips. The text in full, who noted it and when, and
 ;; whether it's pinned.
 (def ^:private note-show-usage "usage: lume note show <id>")
 
-(defn note-show [session [id]]
-  (when (str/blank? id) (fail! note-show-usage))
-  (let [events (kernel/read-events session)
+(defn note-show [session args]
+  (let [[id] (kernel/positionals args 1 note-show-usage)
+        events (kernel/read-events session)
         added (or (kernel/find-event events :note/added :note/id id)
                   (fail! "no such note:" id))
         unpinned (kernel/find-event events :note/unpinned :note/id id)
@@ -86,7 +91,6 @@
              :lines (fn [s _ _] (map #(str "[" (clock (:t %)) " " (:by %) "] " (clip 80 (:text %)))
                                      (reverse (remove :pinned (:notes s)))))}]
    :prompt prompt
-   ;; note show needs an id: with anything else, show is the text.
    :commands [{:path ["note"] :needs :session :usage note-usage
                :run (fn [{:keys [session]} args] (note session args))
                :help "lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out"}
@@ -94,5 +98,5 @@
                :run (fn [{:keys [session]} args] (unpin session args))
                :help "lume note --unpin <id>                      let a pinned note age out like the rest"}
               {:path ["note" "show"] :needs :session :usage note-show-usage
-               :run (fn [{:keys [session]} args] (if (= 1 (count args)) (note-show session args) (note session (cons "show" args))))
+               :run (fn [{:keys [session]} args] (note-show session args))
                :help "lume note show <id>                         one note in full: text, who noted it and when, pinned or not"}]})

@@ -298,9 +298,9 @@
 
 (def ^:private measure-usage "usage: lume measure <id>")
 
-(defn measure [session [id]]
-  (when (str/blank? id) (fail! measure-usage))
-  (let [item (or (get-in (kernel/state session) [:items id]) (fail! "no such item:" id))]
+(defn measure [session args]
+  (let [[id] (kernel/positionals args 1 measure-usage)
+        item (or (get-in (kernel/state session) [:items id]) (fail! "no such item:" id))]
     (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
     (measure-row session (run-measure session item))))
 

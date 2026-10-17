@@ -33,12 +33,12 @@
 
 (def ^:private item-gate-usage "usage: lume item gate <id> \"<cmd>\"")
 
-(defn item-gate [session [id gate]]
-  (when (str/blank? gate) (fail! item-gate-usage))
-  (kernel/append! session (fn [events]
-                            (open-item events id)
-                            {:type :item/gated :item/id id :gate gate}))
-  (str id " gate " gate))
+(defn item-gate [session args]
+  (let [[id gate] (kernel/positionals args 2 item-gate-usage)]
+    (kernel/append! session (fn [events]
+                              (open-item events id)
+                              {:type :item/gated :item/id id :gate gate}))
+    (str id " gate " gate)))
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
@@ -120,9 +120,9 @@
 
 (def ^:private item-show-usage "usage: lume item show <id>")
 
-(defn item-show [session [id]]
-  (when (str/blank? id) (fail! item-show-usage))
-  (let [events (kernel/read-events session)
+(defn item-show [session args]
+  (let [[id] (kernel/positionals args 1 item-show-usage)
+        events (kernel/read-events session)
         item (or (get-in (kernel/project events) [:items id]) (fail! "no such item:" id))
         related (filter (item-event-pred id (set (:spawns item))) events)
         shown (take-last 20 related)]

@@ -3,7 +3,7 @@
   what differs and nothing inside any repo."
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
-            [lume.kernel :refer [*default-agent*]]))
+            [lume.kernel :refer [*default-agent* fail! take-flags]]))
 
 ;; A user-level skill that teaches any agent session to work through lume. It names
 ;; no agent: lume.agents/setup says where each agent keeps it.
@@ -89,8 +89,17 @@ If there is no session, don't start one unprompted; ask the human for the goal.
   it directly; use the commands.
 ")
 
-(defn install [[a b]]
-  (let [agent (keyword (if (= "--agent" a) b *default-agent*))
+(def ^:private install-usage "usage: lume install [--agent claude|claude-acp|devin]")
+
+(defn- install-agent
+  "install's args as the agent to set up, or a usage error."
+  [args]
+  (let [[pos {[agent & agents] "--agent"}] (take-flags args #{"--agent"} install-usage)]
+    (when (or (seq pos) (seq agents)) (fail! install-usage))
+    (keyword (or agent *default-agent*))))
+
+(defn install [args]
+  (let [agent (install-agent args)
         {:keys [files manual]} ((requiring-resolve 'lume.agents/setup) agent skill)]
     (str/join "\n"
               (concat
@@ -105,7 +114,7 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 
 (def feature
   {:name "install"
-   :commands [{:path ["install"] :needs :none :usage "usage: lume install [--agent claude|claude-acp|devin]"
+   :commands [{:path ["install"] :needs :none :usage install-usage
                :run (fn [_ args] (install args))
                :help "lume install [--agent A]                    set up agents on this machine (a lume skill); safe to re-run.
                                             Agents: claude, claude-acp, devin; LUME_AGENT sets the default (claude)"}]})

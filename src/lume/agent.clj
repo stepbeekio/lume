@@ -23,17 +23,17 @@
 
 (def ^:private permissions-why "only the human changes permissions; ask with lume ask \"<question>\"")
 
-(defn allow [session [command]]
-  (when (str/blank? command) (fail! allow-usage))
-  (human-only! permissions-why (str "Workers may run: " command ".") "yes")
-  (kernel/append! session (constantly {:type :session/allowed :command command}))
-  (str "workers may run " command))
+(defn allow [session args]
+  (let [[command] (kernel/positionals args 1 allow-usage)]
+    (human-only! permissions-why (str "Workers may run: " command ".") "yes")
+    (kernel/append! session (constantly {:type :session/allowed :command command}))
+    (str "workers may run " command)))
 
-(defn revoke [session [command]]
-  (when (str/blank? command) (fail! revoke-usage))
-  (human-only! permissions-why (str "Workers may no longer run: " command ".") "yes")
-  (kernel/append! session (constantly {:type :session/disallowed :command command}))
-  (str "workers may no longer run " command))
+(defn revoke [session args]
+  (let [[command] (kernel/positionals args 1 revoke-usage)]
+    (human-only! permissions-why (str "Workers may no longer run: " command ".") "yes")
+    (kernel/append! session (constantly {:type :session/disallowed :command command}))
+    (str "workers may no longer run " command)))
 
 (defn prompt-lines
   "What the bound features add to a worker's prompt for item: each :prompt

@@ -43,9 +43,25 @@
     (is (re-find #"^n3 unpinned\nnoted .*\nunpinned \S+ by human\nwas lasting$" (note/note-show s ["n3"])))
     (binding [store/*session* s]
       (is (str/starts-with? (kernel/run ["note" "show" "n2"]) "n2 pinned"))
-      (is (= "noted n4" (kernel/run ["note" "show"])) "a note that just says show is still a note"))
+      (is (thrown-with-msg? Exception #"usage: lume note show <id>" (kernel/run ["note" "show"])))
+      (is (thrown-with-msg? Exception #"usage: lume note show <id>" (kernel/run ["note" "show" "n1" "n2"]))))
     (is (thrown-with-msg? Exception #"no such note: n9" (note/note-show s ["n9"])))
     (is (thrown-with-msg? Exception #"usage: lume note show <id>" (note/note-show s [])))))
+
+(deftest stray-positionals-are-usage-errors
+  (let [s (new-session "goal")
+        id (item/item-add s ["one"])]
+    (is (thrown-with-msg? Exception #"usage: lume note \[--pin\]" (note/note s ["fix" "the" "build"])))
+    (is (thrown-with-msg? Exception #"usage: lume note \[--pin\]" (note/note s ["--pin" "a" "b"])))
+    (is (= "pinned n1" (note/note s ["--pin" "fix the build"])))
+    (is (thrown-with-msg? Exception #"usage: lume note --unpin <id>" (note/unpin s ["n1" "n2"])))
+    (binding [store/*session* s]
+      (doseq [args [["item" "gate" id "bb" "test"] ["item" "show" id "x"] ["measure" id "x"]
+                    ["allow" "bb" "test"] ["allow" "--revoke" "bb" "test"] ["ask" "show" "a1" "x"]
+                    ["answer" "a1" "yes" "x"] ["on" "--remove" "r1" "x"] ["install" "extra"]
+                    ["install" "--agent" "claude" "--agent" "devin"]]]
+        (is (thrown-with-msg? Exception #"^usage: lume " (kernel/run args)) (str/join " " args))))
+    (is (= (str id " gate bb test") (item/item-gate s [id "bb test"])))))
 
 (deftest pinned-notes-outlive-the-window
   (let [s (new-session "goal")

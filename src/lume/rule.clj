@@ -42,8 +42,9 @@
 (defn on [session args]
   (if (empty? args) (rules-text (kernel/state session)) (add! session args)))
 
-(defn remove! [session [id]]
-  (let [rule (or (get-in (kernel/state session) [:rules id]) (fail! "no such rule:" (str id)))]
+(defn remove! [session args]
+  (let [[id] (kernel/positionals args 1 remove-usage)
+        rule (or (get-in (kernel/state session) [:rules id]) (fail! "no such rule:" id))]
     (human-only! "only the human changes rules; ask with lume ask \"<question>\""
                  (str "Remove " (rule-line rule) ".") "yes")
     (kernel/append! session (constantly {:type :rule/removed :rule/id id}))
