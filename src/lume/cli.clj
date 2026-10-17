@@ -196,12 +196,11 @@
                                                          [(subs label 0 (min 30 (count label))) l]))))]
                           {"Actions" (str/join "; " (map #(apply button %) buttons))})))))
 
-(defn- notify-asks-by!
-  "Send the asks who (a spawn or drive turn) opened: its process can't."
-  [session who]
-  (doseq [e (store/read-events session)
-          :when (and (= :ask/opened (:type e)) (= who (:by e)))]
-    (notify-ask! session e)))
+(def ^:private ntfy-reactions
+  "ntfy's :reactions: send each ask opened and each drive stop. A worker's or
+  driver's events react when it exits, in the lume that started it."
+  [{:on :ask/opened :run (fn [e] (notify-ask! kernel/*session* e))}
+   {:on :drive/stopped :run (fn [e] (notify! kernel/*session* e "lume: drive stopped" (:why e)))}])
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
@@ -292,7 +291,6 @@
         :else (let [opened (kernel/append! session (fn [events]
                                                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
                                                       :question question :by (actor)}))]
-                (notify-ask! session opened)
                 (:ask/id opened))))
 
 ;; With no text, at a terminal, the human reads the question in full and types
@@ -460,7 +458,7 @@
                                                        steps (assoc :steps steps))))]
       (deliver done true)
       (.removeShutdownHook (Runtime/getRuntime) hook)
-      (notify-asks-by! session sid)
+      (kernel/react-for! session sid)
       (str before-row sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
            (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))
            "\n" out
@@ -771,8 +769,7 @@
         done (promise)
         stop! (fn [why]
                 (deliver done true)
-                (notify! session (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
-                         "lume: drive stopped" why)
+                (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
                 (str "drive stopped: " why))
         hook (Thread. ^Runnable (bound-fn []
                                   (when-not (realized? done)
@@ -817,7 +814,7 @@
               ;; Logged after reading what the turn did, so it never counts as the turn's work.
               (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
                                                          turn)))
-              (notify-asks-by! session did)
+              (kernel/react-for! session did)
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
               (if (and (empty? logged) (not closing))
                 (stop! (str did " logged no events"))
@@ -1331,7 +1328,7 @@ lume ask                                    open asks in full, wrapped to the te
     (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
     (mapv #(-> (get named % {:name %})
                (update :commands (fn [own] (or own (get commands % []))))
-               (cond-> (= "ntfy" %) (assoc :reactions [{:on :ask/opened :run (fn [session e] (notify-ask! session e))}])))
+               (cond-> (= "ntfy" %) (assoc :reactions ntfy-reactions)))
           order)))
 
 (defn -main [& args]

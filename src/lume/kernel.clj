@@ -127,13 +127,57 @@
                       (some-> (some #(% s e) guards) fail!)))
                   e))))
 
+;; Reactions: a feature's :reactions [{:on type-or-prefix :run (fn [e])}] run
+;; after append! writes an event, in the appending process, with *session*
+;; bound to the event's session. :on is a type (:ask/opened) or a namespace
+;; (:ask matches every :ask/… type). A reaction's own appends react in turn,
+;; nested at most max-depth deep. Workers and drivers never run reactions,
+;; since secrets like LUME_NTFY are stripped from them (child-env): the spawn
+;; or drive turn that started one runs them for its events when it exits.
+
+(def max-depth 3)
+
+(def ^:dynamic *depth* 0)
+
+(def ^:dynamic *session*
+  "The session whose event the running reactions see; nil outside them."
+  nil)
+
+(def ^:dynamic *spawned-as*
+  "A spawn or drive id when this process is a worker or driver lume started
+  (LUME_SPAWNED_AS), else nil: then reactions wait for the parent. Tests bind it."
+  (not-empty (System/getenv "LUME_SPAWNED_AS")))
+
+(defn- reacts? [on type]
+  (or (= on type)
+      (and (nil? (namespace on)) (= (name on) (namespace type)))))
+
+(defn react!
+  "Run every reaction matching e, unless this process is a worker or driver
+  or the reactions are nested max-depth deep."
+  [session e]
+  (when (and (not *spawned-as*) (< *depth* max-depth))
+    (binding [*depth* (inc *depth*) *session* session]
+      (doseq [{:keys [on run]} (mapcat :reactions (features))
+              :when (reacts? on (:type e))]
+        (run e)))))
+
+(defn react-for!
+  "Run the reactions for the events who (a worker or driver this process
+  started, now exited) appended: its own process couldn't."
+  [session who]
+  (doseq [e (store/read-events session) :when (= who (:by e))]
+    (react! session e)))
+
 (defn append!
   "store/append!, checked under the lock: the event (f events) builds must be
   a declared type with its required keys, a :human type only the human
   appends, and no feature's guard may refuse it. :by is the actor unless the
-  event names one."
+  event names one. Once written, the event's reactions run (outside the lock)."
   [session f]
-  (store/append! session (fn [events] (some-> (f events) (checked #(project events))))))
+  (let [e (store/append! session (fn [events] (some-> (f events) (checked #(project events)))))]
+    (when e (react! session e))
+    e))
 
 ;; Commands are data too: a feature's :commands are
 ;;   {:path ["item" "measure"]   the words that name it
@@ -234,14 +278,6 @@
       (fail! (if id
                (str "no session " id " for this repo; lume ls lists them")
                "no session for this repo; run lume init \"<goal>\""))))
-
-;; Reactions, for now run by the code that appended the event rather than by
-;; append!: a feature's :reactions [{:on type :run (fn [session e])}]. ntfy's
-;; sends an ask opened outside lume ask, e.g. a measurement's plateau ask.
-(defn react! [session e]
-  (doseq [{:keys [on run]} (mapcat :reactions (features))
-          :when (= on (:type e))]
-    (run session e)))
 
 ;; The ntfy URLs never reach a child process (n8: env leaks into workers): a
 ;; worker that could read the notification topic could read an ask's code,

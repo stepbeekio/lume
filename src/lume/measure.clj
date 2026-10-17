@@ -247,7 +247,7 @@
                                     before-spawn (assoc :before-spawn before-spawn))]))
                          :n runs)]
     (if-let [ask (plateau-ask! session ran)]
-      (do (kernel/react! session ask) (assoc ran :ask ask))
+      (assoc ran :ask ask)
       ran)))
 
 (defn try-measure

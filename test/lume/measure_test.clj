@@ -20,7 +20,7 @@
     (let [home (str (fs/create-temp-dir {:prefix "lume-home"}))
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
-        (binding [store/*home* home store/*session* nil kernel/*actor* "human" *root* root
+        (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
                   kernel/*features* cli/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   cli/*ntfy* nil]

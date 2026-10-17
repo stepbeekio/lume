@@ -28,7 +28,7 @@
     (let [home (str (fs/create-temp-dir {:prefix "lume-home"}))
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
-        (binding [store/*home* home store/*session* nil kernel/*actor* "human" *root* root
+        (binding [store/*home* home store/*session* nil kernel/*actor* "human" kernel/*spawned-as* nil *root* root
                   kernel/*features* cli/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
@@ -1043,6 +1043,37 @@
           (is (= {:type :notify/sent :on :drive/stopped :text "d2 logged no events"}
                  (select-keys (last (notices s)) [:type :on :text])))))
       (finally (httpkit/server-stop! server)))))
+
+(defmethod agents/command :noter [_ _prompt _opts]
+  ["sh" "-c" (lume-cmd "note" "from the worker")])
+
+;; i90: reactions run after append!, in the appending process, except in
+;; workers and drivers, whose parent runs them when they exit.
+(deftest reactions-follow-appends
+  (let [fired (atom [])
+        pinger {:name "pinger"
+                :events {:pinger/ping {:req #{:n}}}
+                :reactions [{:on :note
+                             :run (fn [e] (swap! fired conj [(:text e) (:by e) (store/session-id kernel/*session*)]))}
+                            {:on :pinger/ping
+                             :run (fn [e] (kernel/append! kernel/*session* (constantly {:type :pinger/ping :n (inc (:n e))})))}]}]
+    (binding [kernel/*features* (conj cli/features pinger)]
+      (let [s (new-session "goal")
+            sid (store/session-id s)
+            id (cli/item-add s ["note from a worker"])]
+        (testing "a direct append reacts once; :on a namespace matches its types"
+          (note/note s ["by hand"])
+          (is (= [["by hand" "human" sid]] @fired)))
+        (testing "a worker's append reacts once, in its spawn, when it exits"
+          (cli/spawn s *root* [id "--agent" "noter"])
+          (is (= [["by hand" "human" sid] ["from the worker" "s1" sid]] @fired)))
+        (testing "a worker or driver process runs no reactions"
+          (binding [kernel/*spawned-as* "s9"] (note/note s ["inside a worker"]))
+          (is (= 2 (count @fired))))
+        (testing "reactions nest at most max-depth deep"
+          (kernel/append! s (constantly {:type :pinger/ping :n 1}))
+          (is (= (range 1 (+ 2 kernel/max-depth))
+                 (keep #(when (= :pinger/ping (:type %)) (:n %)) (store/read-events s)))))))))
 
 (defmethod agents/command :env-peek [_ _prompt _opts]
   ["sh" "-c" "echo \"ntfy=[$LUME_NTFY$LUME_NTFY_REPLY$LUME_NTFY_OTHER]\""])
