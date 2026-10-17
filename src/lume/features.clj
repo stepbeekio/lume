@@ -12,10 +12,11 @@
             [lume.note :as note]
             [lume.ntfy :as ntfy]
             [lume.policy :as policy]
+            [lume.rule :as rule]
             [lume.session :as session]
             [lume.spec :as spec]))
 
 (def all
   [install/feature session/feature item/feature ask/feature note/feature measure/feature agent/feature
-   policy/budget-feature policy/cadence-feature drive/feature ntfy/feature spec/feature inspect/feature
+   policy/budget-feature policy/cadence-feature drive/feature ntfy/feature rule/feature spec/feature inspect/feature
    clean/feature])

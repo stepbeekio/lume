@@ -137,6 +137,16 @@ lume drive
 
 Pushing is up to you. Drivers commit, but they can't push.
 
+### Rules
+
+`lume on <event-pattern> "<cmd>"` runs a shell command in the repo after each matching event. The pattern is an event type (`gate/ran`) or a namespace (`ask`, for every `ask/…` event). The event reaches the command in its env: the whole event as EDN in `LUME_EVENT`, and each plain value as `LUME_EVENT_<KEY>` (`:exit` is `LUME_EVENT_EXIT`, `:item/id` is `LUME_EVENT_ITEM_ID`). For example, to hear about every failed gate on your phone:
+
+```
+lume on gate/ran '[ "$LUME_EVENT_EXIT" = 0 ] || curl -s -d "gate failed on $LUME_EVENT_ITEM_ID: $LUME_EVENT_TAIL" "$LUME_NTFY"'
+```
+
+Rules are yours, like `lume allow`: adding or removing one needs a terminal and a typed `yes`. They run in your own lume process, with your env (`LUME_NTFY` included), never inside a worker or driver; a worker's events fire your rules in the `lume spawn` or `lume drive` that started it, when the worker exits. A rule's command acts as the rule (`LUME_ACTOR=r1`), so what it logs says which rule did it. Each run is logged as `:rule/ran` with its exit, time and last line of output (in full under the session's `rules/`). A rule that fails or hangs (killed after 60s, exit 124) never fails the command that triggered it. What a rule logs can fire rules in turn, up to a depth cap; a rule that would run past it logs `:rule/capped` instead. `lume on` lists the rules with each one's last run; `lume on --remove r1` drops one.
+
 ## Commands
 
 ```
@@ -173,6 +183,9 @@ lume ask "<question>"          agents ask; only you answer
 lume ask show <id>             one ask in full: question, who asked and when, its item, its answer
 lume answer <id> "<text>"
 lume allow [--revoke] "<cmd>"  only you grant permissions
+lume on <event-pattern> "<cmd>"
+                               only you: run <cmd> after each matching event (gate/ran, ask, ...)
+lume on [--remove <id>]        list rules with their last run, or drop one (only you)
 lume check <spec.edn>          validate a harness spec: every problem, exit 1 on any
 lume spec [--all]              this session's harness as spec EDN
 lume run <spec.edn> ["<goal>"] [--turns N]

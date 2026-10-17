@@ -137,14 +137,19 @@
 ;; Reactions: a feature's :reactions [{:on type-or-prefix :run (fn [e])}] run
 ;; after append! writes an event, in the appending process, with *session*
 ;; bound to the event's session. :on is a type (:ask/opened) or a namespace
-;; (:ask matches every :ask/… type). A reaction's own appends react in turn,
-;; nested at most max-depth deep. Workers and drivers never run reactions,
-;; since secrets like LUME_NTFY are stripped from them (child-env): the spawn
-;; or drive turn that started one runs them for its events when it exits.
+;; (:ask matches every :ask/… type). :reactions may instead be a fn of the
+;; session's state returning them, for reactions the log declares (rules).
+;; A reaction's own appends react in turn, nested at most max-depth deep; a
+;; reaction that runs lume in a subprocess passes *depth* on as LUME_DEPTH.
+;; Workers and drivers never run reactions, since secrets like LUME_NTFY are
+;; stripped from them (child-env): the spawn or drive turn that started one
+;; runs them for its events when it exits.
 
 (def max-depth 3)
 
-(def ^:dynamic *depth* 0)
+(def ^:dynamic *depth*
+  "How deep in reactions this append is: LUME_DEPTH from a parent's reaction, else 0."
+  (or (some-> (System/getenv "LUME_DEPTH") not-empty parse-long) 0))
 
 (def ^:dynamic *session*
   "The session whose event the running reactions see; nil outside them."
@@ -165,9 +170,10 @@
   [session e]
   (when (and (not *spawned-as*) (< *depth* max-depth))
     (binding [*depth* (inc *depth*) *session* session]
-      (doseq [{:keys [on run]} (mapcat :reactions (features))
-              :when (reacts? on (:type e))]
-        (run e)))))
+      (let [state (delay (project (store/read-events session)))]
+        (doseq [{:keys [on run]} (mapcat #(let [r (:reactions %)] (if (fn? r) (r @state) r)) (features))
+                :when (reacts? on (:type e))]
+          (run e))))))
 
 (defn react-for!
   "Run the reactions for the events who (a worker or driver this process
