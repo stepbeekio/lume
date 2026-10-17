@@ -306,7 +306,16 @@
   (str (clock (:t e)) " " (namespace (:type e)) "/" (name (:type e)) " "
        (clip (str/join " " (keep e [:drive/id :item/id :spawn/id :gate/id :measure/id :note/id :ask/id :disposition :exit :intent :gate :measure :command :text :question :answer :goal :why])) 70)))
 
-(defn- render* [session-id events now past]
+;; Replay: a decision is a drive turn or a spawn, and ends with its exit event.
+(defn decision? [e] (#{:drive/exited :spawn/exited} (:type e)))
+
+(defn decision-text
+  "What a decision did, in one line: its id, exit, then its result."
+  [e]
+  (str (or (:drive/id e) (:spawn/id e)) " " (if (:interrupted e) "interrupted" (str "exit " (:exit e)))
+       (when-let [r (:result e)] (str " · " r))))
+
+(defn- render* [session-id events now past replay]
   (let [{:keys [goal repo items notes spawns allow asks default-gate budget spent] :as state} (project events)
         cadence-line (when (:cadence state)
                        (str "cadence " (cadence-text (cadence state))
@@ -333,7 +342,10 @@
     (str/join
      "\n"
      (concat
-      [(str "lume status · " session-id (when past " (not current)") (when repo (str " · " repo)))]
+      [(if-let [{:keys [of]} replay]
+         (str "lume replay · " session-id " · event " (count events) " of " of
+              (when-let [t (:t (last events))] (str " · " (clock t))))
+         (str "lume status · " session-id (when past " (not current)") (when repo (str " · " repo))))]
       (section "goal" [(clip goal (- width 8))])
       (section "asks" ask-lines)
       (when (or (seq allow) default-gate cadence-line)
@@ -369,19 +381,27 @@
                                     (reverse (remove :pinned notes)))))
       ;; Progress is shown on its spawn; in recent it would crowd out everything else.
       (section "recent" (map event-line (take-last 3 (remove #(= :spawn/progress (:type %)) events))))
-      (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
-                       "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
-                       "lume ask \"<question>\" · lume ask (read open asks) · lume answer <id> (human only) · lume log"])))))
+      ;; In a replay the commands to run next don't apply; what the decision just
+      ;; ending did takes their room.
+      (if replay
+        (when (decision? (last events))
+          (section "decided" (wrap (decision-text (last events)) (- width 8) 3 " — lume log")))
+        (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
+                         "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
+                         "lume ask \"<question>\" · lume ask (read open asks) · lume answer <id> (human only) · lume log"]))))))
 
 (defn render
   "Status as text. Every section is capped, so it stays one screen however
   long the session runs: at most 40 lines with every section full. Plain
   unless {:color true}; colour adds escapes only, never visible width.
-  {:past true} marks a session that isn't the repo's current one."
+  {:past true} marks a session that isn't the repo's current one.
+  {:replay {:of M}} renders the session as it stood after these events, the
+  first N of M: the header says so, and the decision they end with replaces
+  the next commands."
   ([session-id events now] (render session-id events now {}))
-  ([session-id events now {:keys [color past]}]
+  ([session-id events now {:keys [color past replay]}]
    (binding [*color* (boolean color)]
-     (render* session-id events now past))))
+     (render* session-id events now past replay))))
 
 ;; lume ls: a session as one line. The outcome is what the session is doing or
 ;; how it ended, most pressing first.

@@ -686,6 +686,69 @@
         (is (str/includes? prompt "- a1 ship on fridays? → never\n"))
         (is (not (str/includes? prompt "which db")))))))
 
+(deftest replay-renders-from-the-log-alone
+  (let [s (new-session "replay me")
+        sid (store/session-id s)
+        _ (cli/item-add s ["first" "--gate" "true"])
+        _ (store/append! s (constantly {:type :drive/turn :drive/id "d1" :n 1 :by "human"}))
+        _ (store/append! s (constantly {:type :drive/exited :drive/id "d1" :exit 0 :result "spawn i1 next"}))
+        _ (cli/spawn s *root* ["i1" "--agent" "test"])
+        _ (cli/note s ["after the spawn"])
+        events (store/read-events s)
+        m (count events)
+        [d1 s1] (keep-indexed #(when (status/decision? %2) (inc %1)) events)
+        fresh (str (fs/create-temp-dir {:prefix "lume-replay"}))]
+    (try
+      ;; Only log.edn crosses over: no current file, no spawn output, no lock.
+      (binding [store/*home* fresh]
+        (let [dir (fs/path (store/repo-dir *root*) "sessions" sid)]
+          (fs/create-dirs dir)
+          (fs/copy (fs/path s "log.edn") (fs/path dir "log.edn")))
+        (let [replay #(status/strip-color (cli/replay *root* (cons sid %)))]
+          (testing "no flags: the decisions, each with the event that replays it"
+            (let [[a b footer] (str/split-lines (replay []))]
+              (is (str/starts-with? a (str d1 " ")))
+              (is (str/ends-with? a "d1 exit 0 · spawn i1 next"))
+              (is (str/starts-with? b (str s1 " ")))
+              (is (str/ends-with? b "s1 exit 3 · done by s1"))
+              (is (str/starts-with? footer (str "lume replay --at N: the screen after event N (of " m ")"))))
+            (let [[hint row :as lines] (str/split-lines (replay ["-n" "1"]))]
+              (is (= 3 (count lines)))
+              (is (= "+1 earlier decisions — -n 2" hint))
+              (is (str/starts-with? row (str s1 " ")))))
+          (testing "--at N: status as it stood, with the decision that ended there"
+            (let [out (replay ["--at" (str s1)])]
+              (is (str/starts-with? out (str "lume replay · " sid " · event " s1 " of " m " · ")))
+              (is (str/includes? out "decided s1 exit 3 · done by s1"))
+              (is (str/includes? out "s1 exit 3 · 0s ago") "ages read as they did at event N")
+              (is (not (str/includes? out "after the spawn")) "later events aren't in it")
+              (is (not (str/includes? out "lume item add")) "no next commands in a replay"))
+            (let [out (replay ["--at" "1"])]
+              (is (str/includes? out "goal    replay me"))
+              (is (not (str/includes? out "i1"))))
+            (is (str/includes? (replay ["--at" (str m)]) "after the spawn"))
+            (is (not (str/includes? (replay ["--at" (str m)]) "decided")) "the last event is a note"))
+          (testing "--step: the screen after each decision, at a terminal"
+            (let [shown (atom [])]
+              (binding [cli/*read-line* (fn [screen prompt] (swap! shown conj [screen prompt]) "")]
+                (is (= "end of replay: 2 decisions" (replay ["--step"]))))
+              (is (= [(str "decision 1 of 2 · event " d1 " of " m) (str "decision 2 of 2 · event " s1 " of " m)]
+                     (map #(re-find #"decision \d of \d · event \d+ of \d+" (second %)) @shown)))
+              (is (str/includes? (status/strip-color (first (second @shown))) "decided s1 exit 3")))
+            (binding [cli/*read-line* (constantly "q")]
+              (is (= (str "stopped at event " d1 " — lume replay --at " d1) (replay ["--step"]))))
+            (binding [cli/*read-line* (constantly "")]
+              (is (= "end of replay: 1 decision" (replay ["--step" "--at" (str (inc d1))])) "--at sets where stepping starts"))
+            (is (= (replay []) (replay ["--step"])) "no terminal: the list instead"))
+          (testing "out of range or stray args are refused"
+            (is (thrown-with-msg? Exception #"outside the log: events 1\.\." (replay ["--at" "0"])))
+            (is (thrown-with-msg? Exception #"outside the log" (replay ["--at" (str (inc m))])))
+            (is (thrown-with-msg? Exception #"usage: lume replay" (replay ["--at" "x"])))
+            (is (thrown-with-msg? Exception #"usage: lume replay" (replay ["extra"])))
+            (is (thrown-with-msg? Exception #"no session nope" (cli/replay *root* ["nope"]))))))
+      (finally (fs/delete-tree fresh)))
+    (is (= events (store/read-events s)) "replay writes nothing")))
+
 (deftest log-queries-filter-then-bound
   (let [s (new-session "goal")
         root *root*

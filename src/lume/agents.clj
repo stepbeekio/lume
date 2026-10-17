@@ -344,7 +344,9 @@ Run `lume status` first. It is one screen:
 `lume item show <id>` prints an item's full intent, gate and history when status clips it;
 `lume ask show <id>` does the same for an ask (who asked, its item, its answer).
 `lume ls` lists the repo's sessions, newest first; `lume status <session>` and
-`lume log --session <session>` read a past one without touching it. `lume clean`
+`lume log --session <session>` read a past one without touching it. `lume replay`
+lists a session's decisions (drive turns, spawns), each with its event number N;
+`lume replay --at N` is status as it stood then, with what that decision did. `lume clean`
 deletes sessions and is the human's; never run it.
 If there is no session, don't start one unprompted; ask the human for the goal.
 

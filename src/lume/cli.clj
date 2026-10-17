@@ -1125,6 +1125,59 @@
                    {:color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))
                     :past (not= (store/session-id session) (some-> (store/current-session root) store/session-id))})))
 
+;; Replay: the session as it stood after its first N events, from the log
+;; alone, with the clock stopped at event N so ages read as they did then. A
+;; decision is a drive turn or a spawn; --step shows the screen after each in
+;; turn, for a human at a terminal. Agents get the list of decisions instead,
+;; each with the N that replays it.
+
+(def ^:private replay-usage "usage: lume replay [<session>] [--at N] [--step] [-n N] [--color]")
+
+(defn- decision-index [events from n]
+  (let [ds (filter (fn [[_ e]] (status/decision? e)) (drop from (map-indexed (fn [i e] [(inc i) e]) events)))
+        shown (take-last n ds)]
+    (if (empty? ds)
+      (str "no decisions" (when (pos? from) (str " after event " from)) " (drive turns or spawns); "
+           (count events) " events — lume replay --at N")
+      (str/join "\n" (concat (when (> (count ds) (count shown))
+                               [(str "+" (- (count ds) (count shown)) " earlier decisions — -n " (count ds))])
+                             (for [[i e] shown]
+                               (clip-to 100 (str/replace (str i " " (subs (:t e) 0 16) " " (status/decision-text e)) #"\s+" " ")))
+                             [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
+
+(defn replay [root args]
+  (let [[[id & stray] {[at & ats] "--at" [n & ns] "-n"}]
+        (take-flags (remove #{"--color" "--step"} args) #{"--at" "-n"} replay-usage)
+        step (some #{"--step"} args)
+        color (color? (some #{"--color"} args) (terminal?) (System/getenv "NO_COLOR"))
+        n (if n (parse-long n) 20)
+        at (when at (or (parse-long at) (fail! replay-usage)))
+        _ (when (or (seq stray) (seq ats) (seq ns) (not (and n (<= 0 n)))) (fail! replay-usage))
+        session (session-by-id root id)
+        sid (store/session-id session)
+        events (store/read-events session)
+        m (count events)
+        _ (when (and at (not (<= 1 at m))) (fail! (str "--at " at " is outside the log: events 1.." m)))
+        screen (fn [i] (status/render sid (subvec events 0 i) (Instant/parse (:t (nth events (dec i))))
+                                      {:color color :replay {:of m}}))]
+    (cond
+      (and at (not step)) (screen at)
+      (not step) (decision-index events 0 n)
+      :else
+      (let [ds (keep-indexed (fn [i e] (when (and (status/decision? e) (>= (inc i) (or at 1))) (inc i))) events)]
+        (loop [[i & more] ds, k 1]
+          (cond
+            (nil? i) (if (= 1 k) (decision-index events (dec (or at 1)) n) (str "end of replay: " (dec k) (if (= 2 k) " decision" " decisions")))
+            :else
+            (let [typed (*read-line* (str (when color "\u001b[2J\u001b[H") (screen i))
+                                     (str "decision " k " of " (count ds) " · event " i " of " m
+                                          " · enter: next, q: quit "))]
+              (cond (nil? typed) (if (= 1 k)
+                                   (decision-index events (dec (or at 1)) n) ; no terminal to step at
+                                   (str "stopped at event " i))
+                    (= "q" (str/trim typed)) (str "stopped at event " i " — lume replay --at " i)
+                    :else (recur more (inc k))))))))))
+
 (def usage
   "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
 lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
@@ -1174,6 +1227,9 @@ lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--gr
                                             raw events as EDN (default last 20), of a past session by id;
                                             filters combine: type prefix (note, spawn/), an item's events,
                                             actor, regex over the event; a ;; line counts what -n left out
+lume replay [<session>] [--at N] [--step]   status as it stood after event N, from the log alone; no flags:
+                                            the decisions (drive turns, spawns), each with its N (-n, 20);
+                                            --step: the screen after each decision in turn, at a terminal
 lume clean [--session <id>] [--yes]         remove every trace of lume for this repo (or one session):
                                             its state, refs/lume/*, worktrees; lists them, refused without --yes")
 
@@ -1218,6 +1274,7 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
       "drive" (drive (session) @root (rest args))
       "log" (if (#{"-h" "--help"} sub) log-usage (show-log @root (rest args)))
       "ls" (if (#{"-h" "--help"} sub) ls-usage (ls @root (rest args)))
+      "replay" (if (#{"-h" "--help"} sub) replay-usage (replay @root (rest args)))
       "clean" (if (#{"-h" "--help"} sub) clean-usage (clean @root (rest args)))
       (nil "help" "-h" "--help") usage
       (fail! "unknown command:" cmd "\n\n" usage))))
