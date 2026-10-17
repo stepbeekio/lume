@@ -125,7 +125,7 @@
   [name lines s]
   (let [ls (try (map str (lines s)) (catch Exception x [(str "status failed: " (ex-message x))]))]
     (if (> (count ls) section-cap)
-      [(first ls) (str "+" (dec (count ls)) " more — lume " name)]
+      (into [(first ls)] (kernel/more ls [(first ls)] (str "more — lume " name)))
       (vec ls))))
 
 (defn- contained

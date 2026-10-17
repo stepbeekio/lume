@@ -2,7 +2,7 @@
   "Work items: lume item add, gate, close and show, and gates. An item's gate
   is a shell command whose exit code decides done."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [ago clip fail! next-id open-item paint run-in-repo!]]
+            [lume.kernel :as kernel :refer [ago clip fail! more next-id open-item paint run-in-repo!]]
             [lume.measure :as measure]
             [lume.status :as status]))
 
@@ -116,8 +116,7 @@
                 (str "intent  " (clip 2000 (:intent item)))
                 (str "gate    " (or (:gate item) "none"))]
                (when (:measure item) [(str "measure " (measure/spec-text item))])
-               (when (> (count related) (count shown))
-                 [(str "+" (- (count related) (count shown)) " earlier events — lume log --item " id " -n N")])
+               (more related shown (str "earlier events — lume log --item " id " -n N"))
                (map item-event-line shown)))))
 
 ;; Status: open items as a tree, each with each feature's :item-lines under

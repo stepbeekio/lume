@@ -19,7 +19,7 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [lume.drive :as drive]
-            [lume.kernel :as kernel :refer [clip fail! human-only! take-flags]]
+            [lume.kernel :as kernel :refer [clip fail! human-only! more take-flags]]
             [lume.measure :as measure]
             [lume.policy :as policy]
             [lume.store :as store]))
@@ -240,8 +240,7 @@
     (when (seq ps)
       (fail! (str/join "\n" (concat [(str path ": " (count ps) (if (= 1 (count ps)) " problem" " problems"))]
                                    (map #(str "  " (clip 200 (problem-text %))) shown)
-                                   (when (> (count ps) (count shown))
-                                     [(str "  +" (- (count ps) (count shown)) " more")])))))
+                                   (map #(str "  " %) (more ps shown "more"))))))
     s))
 
 (defn- items-text [items]

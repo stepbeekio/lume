@@ -5,7 +5,7 @@
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [clip clock paint]]))
+            [lume.kernel :as kernel :refer [clip clock more paint]]))
 
 ;; Rendering
 
@@ -77,17 +77,15 @@
 
 (def ^:private default-cap 5)
 
-(defn- cut [n more lines]
+(defn- cut [n hint lines]
   (if (some sequential? lines)
     (let [groups (map #(if (sequential? %) % [%]) lines)]
       (if (<= (reduce + (map count groups)) n)
         (apply concat groups)
-        (let [shown (count (take-while #(< % n) (reductions + (map count groups))))]
-          (concat (apply concat (take shown groups))
-                  [(str "+" (- (count groups) shown) " more " more)]))))
-    (if (> (count lines) n)
-      (concat (take n lines) [(str "+" (- (count lines) n) " more " more)])
-      lines)))
+        (let [shown (take (count (take-while #(< % n) (reductions + (map count groups)))) groups)]
+          (concat (apply concat shown) (more groups shown (str "more " hint))))))
+    (let [shown (take n lines)]
+      (concat shown (more lines shown (str "more " hint))))))
 
 ;; A line that's too wide loses its colour with its tail: escapes can't be cut safely.
 (defn- fit [n s]

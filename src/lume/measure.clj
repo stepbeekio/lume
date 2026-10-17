@@ -6,7 +6,7 @@
   calls run-measure and measure-row for that."
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
-            [lume.kernel :as kernel :refer [ago clip fail! next-id open-item paint
+            [lume.kernel :as kernel :refer [ago clip fail! more next-id open-item paint
                                             run-in-repo! run-repeated secs sh-out take-flags]]))
 
 ;; A measurement spec is its command and how it repeats; rows compare only
@@ -324,10 +324,9 @@
                    shown specs)]
     (if (empty? rows)
       (if id (str id " has no measurement rows") "no measurement rows")
-      (str/join "\n" (concat (when (> (count rows) (count shown))
-                               [(str "+" (- (count rows) (count shown)) " earlier rows — lume ledger"
-                                     (str/join (map #(str " " %) (remove nil? [id (when sid (str "--session " sid))])))
-                                     " -n " (count rows))])
+      (str/join "\n" (concat (more rows shown (str "earlier rows — lume ledger"
+                                                   (str/join (map #(str " " %) (remove nil? [id (when sid (str "--session " sid))])))
+                                                   " -n " (count rows)))
                              lines)))))
 
 (def feature

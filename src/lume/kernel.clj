@@ -325,6 +325,13 @@
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
+(defn more
+  "The footer for a bounded list: [\"+K <hint>\"] when shown leaves K of all
+  out, else nil. Concat it where the list was cut; hint says how to see the rest."
+  [all shown hint]
+  (let [k (- (count all) (count shown))]
+    (when (pos? k) [(str "+" k " " hint)])))
+
 (defn ago [now t]
   (let [secs (.getSeconds (Duration/between (Instant/parse t) now))]
     (cond (< secs 60) (str secs "s ago")

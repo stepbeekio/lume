@@ -4,7 +4,7 @@
   (:require [clojure.string :as str]
             [lume.ask :as ask]
             [lume.item :as item]
-            [lume.kernel :as kernel :refer [*read-line* ago clip clock fail! session-by-id take-flags]]
+            [lume.kernel :as kernel :refer [*read-line* ago clip clock fail! more session-by-id take-flags]]
             [lume.measure :as measure]
             [lume.status :as status]
             [lume.store :as store])
@@ -73,8 +73,7 @@
       "no sessions for this repo; run lume init \"<goal>\" or lume run <spec.edn>"
       (str/join "\n" (concat (for [s shown]
                                (session-line (store/session-id s) (store/read-events s) now (= (store/session-id s) current)))
-                             (when (> (count sessions) (count shown))
-                               [(str "+" (- (count sessions) (count shown)) " more — lume ls --all")]))))))
+                             (more sessions shown "more — lume ls --all"))))))
 
 (def ^:private log-usage
   "usage: lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]")
@@ -103,8 +102,7 @@
     (when (or (seq pos) (seq ns) (seq ids) (not (and n (<= 0 n)))) (fail! log-usage))
     (let [events (log-filter (store/read-events (session-by-id root id)) flags)
           shown (take-last n events)]
-      (str/join "\n" (concat (when (> (count events) (count shown))
-                               [(str ";; +" (- (count events) (count shown)) " earlier events — -n " (count events))])
+      (str/join "\n" (concat (map #(str ";; " %) (more events shown (str "earlier events — -n " (count events))))
                              (map pr-str shown))))))
 
 ;; Replay: the session as it stood after its first N events, from the log
@@ -121,8 +119,7 @@
     (if (empty? ds)
       (str "no decisions" (when (pos? from) (str " after event " from)) " (drive turns or spawns); "
            (count events) " events — lume replay --at N")
-      (str/join "\n" (concat (when (> (count ds) (count shown))
-                               [(str "+" (- (count ds) (count shown)) " earlier decisions — -n " (count ds))])
+      (str/join "\n" (concat (more ds shown (str "earlier decisions — -n " (count ds)))
                              (for [[i e] shown]
                                (clip 100 (str i " " (subs (:t e) 0 16) " " (status/decision-text e))))
                              [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
