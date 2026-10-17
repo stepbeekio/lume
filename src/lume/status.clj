@@ -21,11 +21,13 @@
 
 (defn spec-text
   "The command, then how it repeats, then the numbers where higher is better,
-  e.g. bb bench ×10 drop 1 higher score."
-  [{:keys [measure higher] :as m}]
+  then whether a spawn takes a before row, e.g. bb bench ×10 drop 1 higher
+  score before."
+  [{:keys [measure higher before] :as m}]
   (let [{:keys [runs drop]} (spec m)]
     (str measure (when (> runs 1) (str " ×" runs)) (when (pos? drop) (str " drop " drop))
-         (when (seq higher) (str " higher " (str/join "," higher))))))
+         (when (seq higher) (str " higher " (str/join "," higher)))
+         (when before " before"))))
 
 (defn direction-text
   "Which way is better, as the plateau ask says it."
@@ -100,23 +102,29 @@
        :item/gated      (assoc-in s [:items (:item/id e) :gate] (:gate e))
        :gate/ran        (assoc-in s [:items (:item/id e) :last-gate] e)
        :item/measuring  (update-in s [:items (:item/id e)]
-                                   #(merge (dissoc % :runs :drop :higher) (select-keys e [:measure :runs :drop :higher])))
+                                   #(merge (dissoc % :runs :drop :higher :before) (select-keys e [:measure :runs :drop :higher :before])))
        ;; Each row carries the row it's compared with: the latest earlier one
        ;; of the same spec (command, runs and drop) that passed with numbers
        ;; and shares a number's name with it, so a misparsed row isn't the
        ;; baseline for a good one. One good row is kept per set of names.
+       ;; Once a spawn has started on the item, that is the latest such row
+       ;; before the spawn (its before row, :before-rows), so every row after
+       ;; it compares with the code as it was, not with the row before. A row
+       ;; a spawn took before its edits (:before-spawn) is the new before row,
+       ;; and isn't counted towards a plateau: no change was tried.
        :measure/ran     (let [s (update-in s [:items (:item/id e)]
                                        (fn [item]
                                          (let [names #(set (keys (:values %)))
                                                base (last (filter #(some (names %) (keys (:values e)))
-                                                                  (get-in item [:good-measures (spec e)])))
+                                                                  (or (get-in item [:before-rows (spec e)])
+                                                                      (get-in item [:good-measures (spec e)]))))
                                                p (plateau (get-in item [:plateaus (spec e)]) e)]
-                                           (cond-> (-> item
-                                                       (assoc :last-measure (cond-> e base (assoc :base base)) :plateau p)
-                                                       (assoc-in [:plateaus (spec e)] p))
+                                           (cond-> (assoc item :last-measure (cond-> e base (assoc :base base)))
+                                             (not (:before-spawn e)) (-> (assoc :plateau p) (assoc-in [:plateaus (spec e)] p))
                                              (and (zero? (:exit e)) (seq (:values e)))
                                              (update-in [:good-measures (spec e)]
-                                                        (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))))))]
+                                                        (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))
+                                             (:before-spawn e) (#(assoc % :before-rows (:good-measures %)))))))]
                           ;; Every row, newest last, as compared when it was taken: lume ledger.
                           (update s :ledger conj (get-in s [:items (:item/id e) :last-measure])))
        :item/closed     (update-in s [:items (:item/id e)] assoc
@@ -138,6 +146,7 @@
        :spawn/started   (-> s
                             (assoc-in [:spawns (:spawn/id e)] e)
                             (update-in [:items (:item/id e) :spawns] (fnil conj []) (:spawn/id e))
+                            (update-in [:items (:item/id e)] #(assoc % :before-rows (:good-measures %)))
                             (update-in [:spent :spawns] inc))
        :spawn/progress  (assoc-in s [:spawns (:spawn/id e) :progress] e)
        :spawn/exited    (-> s (update-in [:spawns (:spawn/id e)] merge e) (spend e))
@@ -251,8 +260,8 @@
   "A ledger row's numbers: name=value pairs (name↑ where higher is better),
   each with its change against the row's :base when it has one, then wall
   time, then a failure, then which row it was compared with (unless :vs is
-  false)."
-  [{:keys [values spread ms exit base runs drop failed-run higher] :or {drop 0}} & {:keys [vs] :or {vs true}}]
+  false), then the spawn it was taken before, if it's a before row."
+  [{:keys [values spread ms exit base runs drop failed-run higher before-spawn] :or {drop 0}} & {:keys [vs] :or {vs true}}]
   (str (if (seq values)
          (str/join " " (map (fn [[k v]]
                               (str k (when (some #{k} higher) "↑") "=" (num-text v) (change v (get (:values base) k))
@@ -263,7 +272,8 @@
        " · " (secs ms)
        (when (and runs (not failed-run)) (str " · " (if (pos? drop) (str (- runs drop) " of " runs) runs) " runs"))
        (when-not (zero? exit) (str " · fail exit " exit (when failed-run (str " in run " failed-run " of " runs))))
-       (when (and vs base) (str " · vs " (:measure/id base)))))
+       (when (and vs base) (str " · vs " (:measure/id base)))
+       (when before-spawn (str " · before " before-spawn))))
 
 (defn env-text
   "Where a row was taken, e.g. on asahi load 0.21 at a3d907a/msslzuos."

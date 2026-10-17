@@ -1029,6 +1029,43 @@
           (is (re-find #"\nm2 i5 t=2 · \d+\.\ds · vs m1\ni5 left open to decide · g3 pass · lume item close i5 done\|dropped \"<why>\"$" out) out))
         (is (= :open (state id)))))))
 
+;; i69: an experiment's rows compare with the code before the spawn's edits.
+(deftest a-spawn-has-a-before-row
+  (let [s (new-session "goal")
+        id (cli/item-add s ["fewer lines" "--gate" "true"])
+        item #(get-in (status/project (store/read-events s)) [:items id])]
+    (spit (str (fs/path *root* "made")) "start\n")
+    (is (= "i1 measure echo t=$(wc -l < made) before" (cli/item-measure s [id "echo t=$(wc -l < made)" "--before"])))
+    (is (re-matches #"m1 i1 t=1 · \d+\.\ds" (cli/measure s [id])))
+    (is (re-matches #"m2 i1 t=1 · \d+\.\ds · vs m1" (cli/measure s [id])) "before any spawn, the row before is the base")
+    (testing "--before: a spawn measures first, then after, a pair"
+      (let [out (cli/spawn s *root* [id "--agent" "writes"])]
+        (is (re-find #"^m3 i1 t=1 · \d+\.\ds · vs m2 · before s1\ns1 i1 exit 0" out) out)
+        (is (re-find #"\nm4 i1 t=2\(\+1\) · \d+\.\ds · vs m3\ni1 left open to decide · g1 pass" out) out))
+      (is (= "s1" (:before-spawn (first (filter #(= "m3" (:measure/id %)) (store/read-events s)))))))
+    (testing "every later row compares with the before row, not the row before it"
+      (spit (str (fs/path *root* "made")) "more\n" :append true)
+      (is (re-matches #"m5 i1 t=3\(\+2\) · \d+\.\ds · vs m3" (cli/measure s [id]))))
+    (testing "a before row isn't counted towards a plateau"
+      (is (= "m5" (:counted (:plateau (item)))))
+      (is (= 3 (:stale (:plateau (item)))) "m2, m4 and m5 after the best, m1"))
+    (testing "without --before, the base is the latest row before the spawn"
+      (is (= "i1 measure echo t=$(wc -l < made)" (cli/item-measure s [id "echo t=$(wc -l < made)"])))
+      (let [out (cli/spawn s *root* [id "--agent" "writes"])]
+        (is (re-find #"^s2 i1 exit 0" out) out)
+        (is (re-find #"\nm6 i1 t=4\(\+1\) · \d+\.\ds · vs m5\n" out) out))
+      (is (re-matches #"m7 i1 t=4\(\+1\) · \d+\.\ds · vs m5" (cli/measure s [id]))))
+    (testing ":before in a spec: checked, folded back, and started from"
+      (is (= [[[:items 0 :before] "must be true or false, got 1"]]
+             (spec/problems {:goal "g" :items [{:intent "x" :measure "m" :before 1}]})))
+      (is (= [[[:items 0] ":runs, :drop, :higher and :before need a :measure"]]
+             (spec/problems {:goal "g" :items [{:intent "x" :before true}]})))
+      (is (= {:type :item/measuring :item/id "i1" :measure "m" :before true}
+             (second (filter #(= "i1" (:item/id %)) (spec/events {:goal "g" :items [{:intent "x" :measure "m" :before true}]} "/r")))))
+      (cli/item-measure s [id "echo t=1" "--before"])
+      (is (= [{:intent "fewer lines" :gate "true" :measure "echo t=1" :before true}]
+             (:items (spec/from-state (status/project (store/read-events s)))))))))
+
 (deftest the-default-agent-is-lume-agent
   (let [s (new-session "goal")]
     (cli/item-add s ["do it"])
@@ -1396,7 +1433,7 @@
                 "  [:budget :usd] must be a non-negative number, got -1"
                 "  [:cadence :batch] must be a positive whole number, got 0"
                 "  [:cadence :gate-fail] must be true or false, got \"yes\""
-                "  [:items 0] :runs, :drop and :higher need a :measure"
+                "  [:items 0] :runs, :drop, :higher and :before need a :measure"
                 "  [:items 0 :drop] must be less than :runs (3), got 3"
                 "  [:items 1] must be a map with :intent, got \"y\""
                 "  [:items 2 :intent] is required"

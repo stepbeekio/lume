@@ -148,10 +148,12 @@
 ;; A measurement runs after every spawn on the item, and on demand with lume measure.
 ;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
 ;; Lower is better unless a number is named with --higher (repeatable).
+;; --before has each spawn measure first too, so it yields a before/after pair.
 (defn item-measure [session args]
-  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]..."
+  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]"
+        before (boolean (some #{"--before"} args))
         [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher"}]
-        (take-flags args #{"--runs" "--drop" "--higher"} usage)
+        (take-flags (remove #{"--before"} args) #{"--runs" "--drop" "--higher"} usage)
         runs (if runs (parse-long runs) 1)
         drop (if drop (parse-long drop) 0)
         higher (vec (sort (distinct higher)))]
@@ -163,8 +165,9 @@
                              (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
                                (> runs 1) (assoc :runs runs)
                                (pos? drop) (assoc :drop drop)
-                               (seq higher) (assoc :higher higher))))
-    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher}))))
+                               (seq higher) (assoc :higher higher)
+                               before (assoc :before true))))
+    (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher :before before}))))
 
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
@@ -313,14 +316,15 @@
   "Run the item's measurement --runs times, drop the first --drop, and log one
   :measure/ran row, which is returned (with :ask if it opened a plateau ask).
   A failed run ends the measurement; the row has the runs kept so far and the
-  failing run's exit."
-  [session {:keys [id measure runs] :or {runs 1} :as item}]
+  failing run's exit. :before-spawn sid marks a spawn's before row."
+  [session {:keys [id measure runs] :or {runs 1} :as item} & {:keys [before-spawn]}]
   (let [env (environment (:repo (status/project (store/read-events session))))
         ran (run-in-repo session "measures" measure
                          (fn [events ran]
                            (let [mid (next-id "m" :measure/ran events)]
-                             [mid (merge {:type :measure/ran :measure/id mid :item/id id :env env}
-                                         (measure-fields ran item))]))
+                             [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :env env}
+                                                 (measure-fields ran item))
+                                    before-spawn (assoc :before-spawn before-spawn))]))
                          :n runs)]
     (if-let [ask (plateau-ask! session ran)] (assoc ran :ask ask) ran)))
 
@@ -646,7 +650,11 @@
                                                              :interrupted true}))))]
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
-    (let [t0 (System/currentTimeMillis)
+    (let [;; A before row is taken once the spawn has started, before the
+          ;; worker runs, so every row after it compares with it.
+          before-row (when (and (:measure item) (:before item))
+                       (str (measure-row session (run-measure session item :before-spawn sid)) "\n"))
+          t0 (System/currentTimeMillis)
           before (worktree-fingerprint root)
           ;; A worker may run the session's allowed commands, and its own gate.
           allowed (distinct (cond-> (:allow (status/project events)) (:gate item) (conj (:gate item))))
@@ -663,7 +671,7 @@
                                                       steps (assoc :steps steps))))]
       (deliver done true)
       (.removeShutdownHook (Runtime/getRuntime) hook)
-      (str sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
+      (str before-row sid " " id " exit " exit " in " (quot (:ms exited) 1000) "s"
            (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))
            "\n" out
            ;; Measure what the worker left, then: the worker may have closed the
@@ -1310,11 +1318,12 @@ lume status [<session>] [--color]           one screen: goal, items, notes, rece
                                             a past session's by id (lume ls)
 lume item add \"<intent>\" [--gate \"<cmd>\"]   add a work item; the gate's exit code decides done
 lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
-lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]...
+lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]
                                             measure an item after each spawn: output's name=number pairs
                                             (or else its last number) and wall time become a ledger row;
                                             N runs, first K dropped, give medians and min..max; lower is
-                                            better unless --higher names it (shown name↑)
+                                            better unless --higher names it (shown name↑); rows after a
+                                            spawn compare with its before row; --before takes one first
 lume measure <id>                           run the item's measurement now and print its row (a baseline)
 lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
                                             numbers with change vs the row compared, spread, wall time, exit
