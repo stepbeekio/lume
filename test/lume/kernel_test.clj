@@ -736,6 +736,41 @@
     (is (= "s1" (:by (last (filter #(= :note/added (:type %)) (store/read-events s)))))
         "a worker's lume calls are logged as its spawn id even when its settings set LUME_ACTOR")))
 
+(defmethod agents/command :writes [_ _prompt _opts]
+  ["sh" "-c" "echo more >> made"])
+
+(defmethod agents/command :asks [_ _prompt _opts]
+  ["sh" "-c" (str "echo more >> made; " (lume-cmd "ask" "which way?"))])
+
+(defmethod agents/command :commits [_ _prompt _opts]
+  ["sh" "-c" "git -c user.name=t -c user.email=t@t commit -qm x"])
+
+;; i59: a passing gate says nothing about a spawn that did no work.
+(deftest idle-spawns-leave-items-open
+  (let [s (new-session "goal")
+        sh (fn [& args] (apply p/shell {:dir *root* :out :string :err :string} "git" args))
+        state #(get-in (status/project (store/read-events s)) [:items % :state])]
+    (sh "init" "-q")
+    (spit (str (fs/path *root* "made")) "start\n")
+    (testing "a spawn that changes nothing, even in an already dirty repo, leaves the item open with a note"
+      (let [id (cli/item-add s ["no-op" "--gate" "true"])]
+        (is (re-find #"\ni1 left open: s1 changed nothing in the repo · noted n1$" (cli/spawn s *root* [id "--agent" "test"])))
+        (is (= :open (state id)))
+        (is (= "i1 left open, not gated: s1 changed nothing in the repo"
+               (:text (last (filter #(= :note/added (:type %)) (store/read-events s))))))))
+    (testing "a spawn that changes a file is gated as before"
+      (let [id (cli/item-add s ["write" "--gate" "true"])]
+        (is (str/ends-with? (cli/spawn s *root* [id "--agent" "writes"]) "i2 done · g1 pass"))
+        (is (= :done (state id)))))
+    (testing "a spawn that asks leaves the item open, though it changed files"
+      (let [id (cli/item-add s ["ask" "--gate" "true"])]
+        (is (str/includes? (cli/spawn s *root* [id "--agent" "asks"]) "i3 left open: s3 asked a1"))
+        (is (= :open (state id)))))
+    (testing "a commit is a change"
+      (sh "add" "-A")
+      (let [id (cli/item-add s ["commit" "--gate" "true"])]
+        (is (str/ends-with? (cli/spawn s *root* [id "--agent" "commits"]) "i4 done · g2 pass"))))))
+
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])

@@ -556,6 +556,36 @@
             (recur prog logged at)))
         prog))))
 
+(defn- worktree-fingerprint
+  "A hash of the repo's git HEAD, its changed paths and their contents, so a
+  spawn that changed nothing can be told apart from one that did. Read-only
+  (no index refresh), and nil when the repo isn't a git repo (jj colocates
+  one) or git can't answer."
+  [root]
+  (when (fs/exists? (fs/path root ".git"))
+    (try
+      (let [{:keys [exit out]} (p/shell {:dir root :in "" :out :string :err :string :continue true}
+                                        "git" "--no-optional-locks" "status" "--porcelain=v1" "-z" "-uall")]
+        (when (zero? exit)
+          (let [md (java.security.MessageDigest/getInstance "SHA-256")
+                add #(.update md ^bytes %)]
+            (add (.getBytes (str (sh-out root "git" "rev-parse" "HEAD") "\n" out)))
+            (doseq [entry (str/split out #"\x00")
+                    :let [f (fs/path root (subs entry (min 3 (count entry))))]
+                    :when (fs/regular-file? f)]
+              (add (fs/read-all-bytes f)))
+            (apply str (map #(format "%02x" %) (.digest md))))))
+      (catch Exception _ nil))))
+
+(defn- idle-why
+  "Why a spawn's item shouldn't close on its gate, or nil: it opened an ask,
+  or the repo is exactly as it was before it ran."
+  [session sid before after]
+  (let [asks (keep #(when (and (= :ask/opened (:type %)) (= sid (:by %))) (:ask/id %))
+                   (store/read-events session))]
+    (cond (seq asks) (str sid " asked " (str/join ", " asks))
+          (and before (= before after)) (str sid " changed nothing in the repo"))))
+
 (defn- run-spawn [session root id opts]
   (let [agent (keyword (or (flag opts "--agent") "claude"))
         events (store/read-events session)
@@ -574,6 +604,7 @@
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (let [t0 (System/currentTimeMillis)
+          before (worktree-fingerprint root)
           ;; A worker may run the session's allowed commands, and its own gate.
           allowed (distinct (cond-> (:allow (status/project events)) (:gate item) (conj (:gate item))))
           proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
@@ -593,14 +624,17 @@
            (when-let [r (:result exited)] (str " · " (str/replace (str r) #"\s+" " ")))
            "\n" out
            ;; Measure what the worker left, then: the worker may have closed the
-           ;; item itself; otherwise its gate decides.
+           ;; item itself; if it asked or changed nothing, a passing gate says
+           ;; nothing about its work, so the item stays open; otherwise its gate decides.
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (:measure item)
                (str "\n" (measure-row session (run-measure session item)))))
            (let [item (get-in (status/project (store/read-events session)) [:items id])]
              (when (and (:gate item) (= :open (:state item)))
-               (str "\n" (try (item-close session [id "done" (str "gate passed after " sid)])
-                              (catch clojure.lang.ExceptionInfo e (ex-message e))))))))))
+               (str "\n" (if-let [why (idle-why session sid before (worktree-fingerprint root))]
+                           (str id " left open: " why " · " (note session [(str id " left open, not gated: " why)]))
+                           (try (item-close session [id "done" (str "gate passed after " sid)])
+                                (catch clojure.lang.ExceptionInfo e (ex-message e)))))))))))
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
 ;; The cadence's batch is how many requests a turn may make.
