@@ -186,8 +186,18 @@
 
 (def ^:dynamic *ntfy-reply*
   "The ntfy topic URL a drive --wait-on-ask reads answers from:
-  LUME_NTFY_REPLY, else nil. Tests bind it."
+  LUME_NTFY_REPLY, else nil (LUME_NTFY's topic). Tests bind it."
   (not-empty (System/getenv "LUME_NTFY_REPLY")))
+
+(def ^:dynamic *sent*
+  "nil, or an atom of the ids ntfy gave the messages this process POSTed: a
+  drive reading replies on the topic it notifies skips its own posts."
+  nil)
+
+(defn- reply-url
+  "Where answers come from: LUME_NTFY_REPLY, else LUME_NTFY's own topic."
+  []
+  (or *ntfy-reply* *ntfy*))
 
 ;; The ntfy URLs never reach a child process (n8: env leaks into workers): a
 ;; worker that could read the notification topic could read an ask's code,
@@ -216,10 +226,15 @@
   any other headers. nil when it was accepted, else why not."
   [url title message & [headers]]
   (try (let [[url auth] (ntfy-target url)
-             {:keys [status]} ((requiring-resolve 'babashka.http-client/post)
-                               url {:headers (merge {"Title" title} headers auth) :body message
-                                    :timeout 5000 :throw false})]
-         (when-not (<= 200 status 299) (str "HTTP " status)))
+             {:keys [status body]} ((requiring-resolve 'babashka.http-client/post)
+                                    url {:headers (merge {"Title" title} headers auth) :body message
+                                         :timeout 5000 :throw false})]
+         (if (<= 200 status 299)
+           (when-let [id (and *sent* (:id (try ((requiring-resolve 'cheshire.core/parse-string) (str body) true)
+                                               (catch Exception _ nil))))]
+             (swap! *sent* conj id)
+             nil)
+           (str "HTTP " status)))
        (catch Exception e (str (.getSimpleName (class e)) (some->> (ex-message e) (str ": "))))))
 
 (defn- notify!
@@ -256,11 +271,11 @@
 (defn- notify-ask!
   "Send an ask, unless a waiting drive will. With a reply code, the message
   says how to answer it and a yes/no ask carries buttons that post the
-  answer to LUME_NTFY_REPLY; the code and that URL are never logged."
+  answer to the reply topic; the code and that URL are never logged."
   [session {id :ask/id :keys [question] :as opened} & [code]]
   (when (or code *ask-notices*)
     (let [item (ask-item (store/read-events session) opened)
-          [reply auth] (when code (ntfy-target *ntfy-reply*))
+          [reply auth] (when code (ntfy-target (reply-url)))
           button (fn [label answer]
                    (str/join ", " (concat ["http" label reply "method=POST"]
                                           (for [[k v] auth] (str "headers." k "=" v))
@@ -979,9 +994,10 @@
 
 ;; Answers from the phone: a drive --wait-on-ask doesn't hand back on an open
 ;; ask. It sends the ask with a one-time code, held only in its memory, and
-;; reads LUME_NTFY_REPLY until a reply names the ask and quotes its code
-;; ("a12 <code> <answer>"), so a leaked URL can't answer and a stale reply
-;; can't land on a newer ask. A good reply is the human's answer.
+;; reads the reply topic (LUME_NTFY_REPLY, else LUME_NTFY's) until a reply
+;; names the ask and quotes its code ("a12 <code> <answer>"), so a leaked URL
+;; can't answer and a stale reply can't land on a newer ask. A good reply is
+;; the human's answer. On a shared topic the drive skips its own posts.
 
 (def ^:dynamic *reconnect-ms*
   "How long the reply subscriber waits before reconnecting. Tests bind it."
@@ -1009,7 +1025,7 @@
 
 (defn- ntfy-subscribe!
   "Stream the ntfy topic at url, from now on, into :queue: each message as
-  {:message text}, each failure as {:error why}. It runs on a daemon thread,
+  {:id id :message text}, each failure as {:error why}. It runs on a daemon thread,
   reconnecting after a dropped stream from the last message it saw, until
   (:stop) is called. A stream silent for *idle-ms* (no message, no
   keepalive) is dropped by a watchdog, so a half-dead connection can't block
@@ -1039,7 +1055,7 @@
                                          m (try (parse line true) (catch Exception _ nil))]
                                    :when (= "message" (:event m))]
                              (reset! since (:id m))
-                             (.put q {:message (str (:message m))}))
+                             (.put q {:id (:id m) :message (str (:message m))}))
                            (.put q {:error (str "HTTP " status)}))))
                      (catch Exception e
                        (when (and @running (not @dropped))
@@ -1083,22 +1099,24 @@
   "Send every open ask that has no code yet its own, then wait until a reply
   answers one (logged :ask/answered :by human :via :ntfy) or they're answered
   some other way (lume answer at a terminal). codes is an atom, {id code};
-  replies delivers the reply subscriber."
+  replies delivers the reply subscriber. Messages whose id is in *sent* are
+  the drive's own, echoed on a shared topic, and skipped."
   [session codes replies say]
   (let [opened (into {} (keep #(when (= :ask/opened (:type %)) [(:ask/id %) %]) (store/read-events session)))]
     (doseq [id (open-ask-ids session) :when (not (@codes id))]
       (let [code (reply-code)]
         (swap! codes assoc id code)
         (notify-ask! session (opened id) code)
-        (say (str "waiting on " id " for an answer on LUME_NTFY_REPLY, or lume answer " id)))))
+        (say (str "waiting on " id " for an answer on ntfy, or lume answer " id)))))
   (let [q (:queue @replies)]
     (loop [last-error nil]
       (swap! codes select-keys (open-ask-ids session))
       (when (seq @codes)
-        (let [{:keys [message error]} (.poll ^java.util.concurrent.LinkedBlockingQueue q 1 java.util.concurrent.TimeUnit/SECONDS)
+        (let [{:keys [message error] :as m} (.poll ^java.util.concurrent.LinkedBlockingQueue q 1 java.util.concurrent.TimeUnit/SECONDS)
+              message (when-not (contains? @*sent* (:id m)) message)
               [id answer :as ok] (when message (reply-answer @codes message))]
           (cond
-            error (do (when (not= error last-error) (say (str "LUME_NTFY_REPLY: " error "; retrying")))
+            error (do (when (not= error last-error) (say (str "ntfy replies: " error "; retrying")))
                       (recur error))
             (vector? ok) (do (swap! codes dissoc id)
                              (when (store/append! session (fn [events]
@@ -1106,7 +1124,7 @@
                                                               {:type :ask/answered :ask/id id :answer answer
                                                                :by "human" :via :ntfy})))
                                (say (str id " answered from ntfy"))))
-            message (do (say (str "ignored a reply on LUME_NTFY_REPLY: " ok)) (recur last-error))
+            message (do (say (str "ignored a reply on ntfy: " ok)) (recur last-error))
             :else (recur last-error)))))))
 
 (def ^:private drive-usage "usage: lume drive [--turns N] [--agent claude|claude-acp|devin] [--wait-on-ask]")
@@ -1121,10 +1139,10 @@
         agent (or (flag opts "--agent") *default-agent*)
         from (parse-long (or (flag opts "--from") "1"))
         _ (when-not (and turns (pos? turns) from (pos? from)) (fail! drive-usage))
-        _ (when (and wait (not (and *ntfy* *ntfy-reply*)))
-            (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent) and LUME_NTFY_REPLY (where answers come from)"))
+        _ (when (and wait (not *ntfy*))
+            (fail! "--wait-on-ask needs LUME_NTFY (where asks are sent, and answers read unless LUME_NTFY_REPLY is set)"))
         codes (atom {})
-        replies (delay (ntfy-subscribe! *ntfy-reply*))
+        replies (delay (ntfy-subscribe! (reply-url)))
         src *source*
         loaded (atom (fingerprint src))
         say #(do (println %) (flush))
@@ -1140,7 +1158,7 @@
       (store/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
     (.addShutdownHook (Runtime/getRuntime) hook)
     ;; Waiting, the drive sends asks itself, with their codes.
-    (push-thread-bindings {#'*ask-notices* (not wait)})
+    (push-thread-bindings {#'*ask-notices* (not wait) #'*sent* (atom #{})})
     (try
       (loop [n from]
         (let [events (store/read-events session)
@@ -1660,7 +1678,8 @@ lume drive [--turns N] [--agent A] [--wait-on-ask]
                                             workers run the drive's agent. LUME_NTFY=<ntfy topic URL>: each
                                             ask opened and each drive stop is POSTed there (logged :notify/*).
                                             --wait-on-ask: on an open ask, send it with a one-time code and wait
-                                            for 'aN <code> <answer>' on LUME_NTFY_REPLY (or lume answer), then go on
+                                            for 'aN <code> <answer>' on that topic (LUME_NTFY_REPLY, if set,
+                                            is a separate reply topic) or lume answer, then go on
 lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
 lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
 lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]
