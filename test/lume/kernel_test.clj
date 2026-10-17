@@ -9,7 +9,8 @@
             [lume.cli :as cli]
             [lume.spec :as spec]
             [lume.status :as status]
-            [lume.store :as store])
+            [lume.store :as store]
+            [org.httpkit.server :as httpkit])
   (:import (java.time Instant)))
 
 (def ^:dynamic *root* nil)
@@ -25,7 +26,7 @@
       (try
         (binding [store/*home* home store/*session* nil cli/*actor* "human" *root* root
                   cli/*confirm* (constantly true) cli/*read-line* (constantly nil)
-                  cli/*source* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
+                  cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
                   agents/*claude-home* (str (fs/path home "claude"))
                   agents/*devin-home* (str (fs/path home "devin"))]
@@ -1154,6 +1155,55 @@
   (reset! *driver-calls* [])
   (with-out-str (is (string? (cli/drive s *root* ["--agent" "driver" "--turns" "3"]))))
   (last (keep :why (store/read-events s))))
+
+(defmethod agents/command :asker [_ _prompt _opts]
+  ["sh" "-c" (lume-cmd "ask" "from the worker?")])
+
+(deftest hand-backs-notify-the-human
+  (let [got (atom [])
+        status (atom 200)
+        server (httpkit/run-server (fn [r]
+                                     (swap! got conj [(get-in r [:headers "title"]) (slurp (:body r))])
+                                     {:status @status})
+                                   {:port 0 :legacy-return-value? false})
+        url (str "http://localhost:" (httpkit/server-port server) "/secret-topic")
+        notices (fn [s] (filter #(#{:notify/sent :notify/failed} (:type %)) (store/read-events s)))]
+    (try
+      (let [s (new-session "goal")
+            id (cli/item-add s ["ask from a worker"])]
+        (testing "unset LUME_NTFY sends and logs nothing"
+          (cli/ask s ["quiet?"])
+          (is (empty? @got))
+          (is (empty? (notices s))))
+        (binding [cli/*ntfy* url]
+          (testing "an ask is sent and logged, without the URL"
+            (is (= "a2" (cli/ask s ["which db?"])))
+            (is (= [["lume: ask a2 from human" (str "which db?\nlume answer a2\n" (store/session-id s))]] @got))
+            (is (= {:type :notify/sent :on :ask/opened :ask/id "a2" :text "which db?\nlume answer a2" :by "human"}
+                   (select-keys (last (notices s)) [:type :on :ask/id :item/id :text :by])))
+            (is (not (str/includes? (slurp (str (fs/path s "log.edn"))) "secret-topic"))))
+          (testing "a worker's ask names its item: LUME_NTFY reaches the spawn"
+            (cli/spawn s *root* [id "--agent" "asker"])
+            (is (= "lume: ask a3 on i1 from s1" (first (last @got))))
+            (is (= {:ask/id "a3" :item/id "i1" :by "s1"} (select-keys (last (notices s)) [:ask/id :item/id :by]))))
+          (testing "a failed send is logged and never fails the command"
+            (reset! status 500)
+            (is (= "a4" (cli/ask s ["still there?"])))
+            (is (= {:type :notify/failed :ask/id "a4" :error "HTTP 500"}
+                   (select-keys (last (notices s)) [:type :ask/id :error])))
+            (binding [cli/*ntfy* "http://localhost:1/nothing-listens"]
+              (is (= "a5" (cli/ask s ["anyone?"])))
+              (is (= :notify/failed (:type (last (notices s)))))))))
+      (testing "a drive's stop is sent"
+        (reset! status 200)
+        (let [s (new-session "goal")]
+          (cli/item-add s ["do it" "--gate" "false"])
+          (binding [cli/*ntfy* url]
+            (drive! s (lume-cmd "note" "looked")))
+          (is (re-find #"^lume: drive stopped$" (first (last @got))))
+          (is (= {:type :notify/sent :on :drive/stopped :text "d2 logged no events"}
+                 (select-keys (last (notices s)) [:type :on :text])))))
+      (finally (httpkit/server-stop! server)))))
 
 (deftest drive-runs-driver-turns
   (testing "a driver's spawn is a request, run after its turn"

@@ -169,6 +169,56 @@
                                before (assoc :before true))))
     (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher :before before}))))
 
+;; Hand-backs reach the human remotely: when an ask opens or a drive stops,
+;; lume POSTs a short message to the ntfy topic URL in LUME_NTFY and logs
+;; :notify/sent or :notify/failed. Unset is a no-op, and a failed send never
+;; fails the command. The URL is a secret, so it's never logged.
+
+(def ^:dynamic *ntfy*
+  "The ntfy topic URL hand-backs are POSTed to: LUME_NTFY, else nil (no
+  notifications). Children get it as LUME_NTFY, so a test binding reaches
+  the lume calls its spawns make. Tests bind it."
+  (not-empty (System/getenv "LUME_NTFY")))
+
+(defn- child-env
+  "env for a process lume starts, carrying *ntfy* (empty for none)."
+  [env]
+  (assoc env "LUME_NTFY" (or *ntfy* "")))
+
+(defn- ntfy-post
+  "POST message to an ntfy topic, titled title (ASCII: it's a header). nil
+  when it was accepted, else why not."
+  [url title message]
+  (try (let [{:keys [status]} ((requiring-resolve 'babashka.http-client/post)
+                               url {:headers {"Title" title} :body message :timeout 5000 :throw false})]
+         (when-not (<= 200 status 299) (str "HTTP " status)))
+       (catch Exception e (str (.getSimpleName (class e)) (some->> (ex-message e) (str ": "))))))
+
+(defn- notify!
+  "Tell the human about event e (an :ask/opened or :drive/stopped) if
+  LUME_NTFY is set, and log the send. Never throws."
+  [session e title text]
+  (when-let [url *ntfy*]
+    (try (let [why (ntfy-post url title (str text "\n" (store/session-id session)))]
+           (store/append! session (constantly (merge {:type (if why :notify/failed :notify/sent) :on (:type e)}
+                                                     (select-keys e [:ask/id :item/id :drive/id])
+                                                     {:text text}
+                                                     (when why {:error why})
+                                                     {:by (actor)}))))
+         (catch Exception _ nil))))
+
+(defn- ask-item
+  "The item an ask concerns: a plateau's, or the asking worker's."
+  [events opened]
+  (or (:item/id opened)
+      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
+
+(defn- notify-ask! [session {id :ask/id :keys [question] :as opened}]
+  (let [item (ask-item (store/read-events session) opened)]
+    (notify! session (cond-> opened item (assoc :item/id item))
+             (str "lume: ask " id (when item (str " on " item)) " from " (:by opened))
+             (str question "\nlume answer " id))))
+
 ;; Gates and measurements: shell commands run in the repo, their output kept
 ;; under the session. A gate's exit code decides done; a measurement's output
 ;; is numbers, one ledger row per run.
@@ -180,7 +230,7 @@
   (reduce (fn [runs i]
             (let [t0 (System/currentTimeMillis)
                   {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
-                                                                   :extra-env {"LUME_SESSION" session}})
+                                                                   :extra-env (child-env {"LUME_SESSION" session})})
                   run {:exit exit :ms (- (System/currentTimeMillis) t0) :output out}
                   r (conj runs run)]
               (on-run i run)
@@ -329,7 +379,9 @@
                                                  (measure-fields ran item))
                                     before-spawn (assoc :before-spawn before-spawn))]))
                          :n runs)]
-    (if-let [ask (plateau-ask! session ran)] (assoc ran :ask ask) ran)))
+    (if-let [ask (plateau-ask! session ran)]
+      (do (notify-ask! session ask) (assoc ran :ask ask))
+      ran)))
 
 (defn try-measure
   "Run cmd exactly as an item's measurement would (sh -c in the repo, runs,
@@ -520,12 +572,7 @@
     (fail! over)))
 
 ;; Questions for the human. Anyone may ask; only the human answers, and the
-;; answer reaches status and workers alongside the notes.
-(defn- ask-item
-  "The item an ask concerns: a plateau's, or the asking worker's."
-  [events opened]
-  (or (:item/id opened)
-      (some #(when (and (= :spawn/started (:type %)) (= (:by opened) (:spawn/id %))) (:item/id %)) events)))
+;; answer reaches status and workers alongside the notes, and LUME_NTFY.
 
 ;; With no question: what status clips, for the human to read and answer. Open
 ;; asks in full, oldest first, wrapped to the terminal.
@@ -551,9 +598,11 @@
 (defn ask [session [question & extra]]
   (cond (and (nil? question) (nil? extra)) (open-asks session (columns))
         (or (str/blank? question) (seq extra)) (fail! "usage: lume ask \"<question>\"")
-        :else (:ask/id (store/append! session (fn [events]
-                                                {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
-                                                 :question question :by (actor)})))))
+        :else (let [opened (store/append! session (fn [events]
+                                                    {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
+                                                     :question question :by (actor)}))]
+                (notify-ask! session opened)
+                (:ask/id opened))))
 
 ;; With no text, at a terminal, the human reads the question in full and types
 ;; the answer at the prompt; the typed-id confirmation still follows.
@@ -702,7 +751,7 @@
           proc (p/process ((requiring-resolve 'lume.agents/command) agent (worker-prompt events item) {:allow allowed})
                           {:dir root :in ""
                            :err :write :err-file (fs/file (str out ".err"))
-                           :extra-env {"LUME_SESSION" session "LUME_ACTOR" sid "LUME_SPAWNED_AS" sid}})
+                           :extra-env (child-env {"LUME_SESSION" session "LUME_ACTOR" sid "LUME_SPAWNED_AS" sid})})
           {:keys [steps]} (follow! session sid agent proc out)
           {:keys [exit]} @proc
           summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))
@@ -795,7 +844,7 @@
                                      {:dir root :in ""
                                       :out :write :out-file (fs/file out)
                                       :err :write :err-file (fs/file (str out ".err"))
-                                      :extra-env {"LUME_SESSION" session "LUME_ACTOR" did "LUME_SPAWNED_AS" did}})]
+                                      :extra-env (child-env {"LUME_SESSION" session "LUME_ACTOR" did "LUME_SPAWNED_AS" did})})]
       (assoc ((requiring-resolve 'lume.agents/summarize) agent (slurp (fs/file out)))
              :exit exit :out (str out) :ms (- (System/currentTimeMillis) t0)))))
 
@@ -879,7 +928,8 @@
         done (promise)
         stop! (fn [why]
                 (deliver done true)
-                (store/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
+                (notify! session (store/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
+                         "lume: drive stopped" why)
                 (str "drive stopped: " why))
         hook (Thread. #(when-not (realized? done)
                          (store/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
@@ -1392,7 +1442,8 @@ lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                             latest cadence is the human's
 lume spawn <id> [--agent A]                 run a worker on an item, in the foreground (a driver's is a request)
 lume drive [--turns N] [--agent A]          driver turns until an ask is open, a budget is reached, no items are open, or N (10) run;
-                                            workers run the drive's agent
+                                            workers run the drive's agent. LUME_NTFY=<ntfy topic URL>: each
+                                            ask opened and each drive stop is POSTed there (logged :notify/*)
 lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
 lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
 lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]

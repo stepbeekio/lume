@@ -112,6 +112,8 @@ watch -n 2 --color lume status --color
 
 Status is coloured at a terminal (set `NO_COLOR` to turn that off). `watch` isn't a terminal to lume, so pass `--color` to both.
 
+Or don't watch at all: set `LUME_NTFY` to an [ntfy](https://ntfy.sh) topic URL (`export LUME_NTFY=https://ntfy.sh/<secret-topic>`) and subscribe to it on your phone. Each ask that opens (an agent's `lume ask`, a plateau's) and each drive that stops sends a short message with the ask id, question, item and session. Each send is logged as `:notify/sent`, or `:notify/failed` with why; a failed send never fails the command. The URL is never logged, since anyone who knows the topic can read it. Unset, nothing is sent.
+
 When it stops on a question:
 
 ```
