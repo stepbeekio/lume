@@ -72,6 +72,59 @@
     (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
            "agents ask with lume ask \"<question>\"")))
 
+;; Events: every type lume appends is declared here with the keys it must
+;; carry; :human types are policy, logged only when the human acts. Reading
+;; stays lenient (project skips what it doesn't know), so old logs still fold.
+
+(def events
+  {:session/started {:req #{:goal :repo}}
+   :session/gated {:req #{:gate}}
+   :session/allowed {:req #{:command} :human true}
+   :session/disallowed {:req #{:command} :human true}
+   :session/budgeted {:req #{}}
+   :session/cadence {:req #{}}
+   :item/added {:req #{:item/id :intent}}
+   :item/gated {:req #{:item/id :gate}}
+   :item/measuring {:req #{:item/id :measure}}
+   :item/closed {:req #{:item/id :disposition}}
+   :gate/ran {:req #{:gate/id :item/id :gate :exit :out}}
+   :measure/ran {:req #{:measure/id :item/id :measure :exit :out}}
+   :note/added {:req #{:note/id :text}}
+   :note/unpinned {:req #{:note/id}}
+   :ask/opened {:req #{:ask/id :question}}
+   :ask/answered {:req #{:ask/id :answer} :human true}
+   :spawn/started {:req #{:spawn/id :item/id :agent :out}}
+   :spawn/progress {:req #{:spawn/id}}
+   :spawn/exited {:req #{:spawn/id}}
+   :spawn/requested {:req #{:item/id}}
+   :spawn/permission {:req #{:spawn/id :disposition}}
+   :drive/started {:req #{:turns :agent}}
+   :drive/turn {:req #{:drive/id :n}}
+   :drive/exited {:req #{:drive/id}}
+   :drive/stopped {:req #{:why}}
+   :drive/handed-back {:req #{:drive/id :why}}
+   :drive/reloaded {:req #{:n}}
+   :notify/sent {:req #{:on :text}}
+   :notify/failed {:req #{:on :text :error}}
+   :repl/opened {:req #{:port}}})
+
+(defn- checked
+  "e with :by filled from the actor, or a refusal if events doesn't allow it."
+  [{:keys [type] :as e}]
+  (let [{:keys [req human] :as decl} (get events type)
+        missing (sort (filter #(nil? (get e %)) req))]
+    (cond (nil? decl) (fail! "refused: undeclared event type" (pr-str type))
+          (seq missing) (fail! "refused:" (pr-str type) "needs" (str/join " " (map pr-str missing)))
+          (and human (not= "human" (actor))) (fail! "refused:" (pr-str type) "is the human's, not" (str (actor) "'s"))
+          :else (merge {:by (actor)} e))))
+
+(defn append!
+  "store/append!, checked: the event (f events) builds must be a declared type
+  with its required keys, and a :human type only the human appends. :by is the
+  actor unless the event names one."
+  [session f]
+  (store/append! session #(some-> (f %) checked)))
+
 (defn open-item [events id]
   (let [item (get-in (status/project events) [:items id])]
     (cond (nil? item) (fail! "no such item:" id)
@@ -143,10 +196,10 @@
                                    :append true)))
         {:keys [exit ms output]} (peek runs)
         tail (last (remove str/blank? (str/split-lines output)))
-        ran (store/append! session (fn [events]
-                                     (let [[id e] (event-for events runs)]
-                                       (cond-> (merge {:exit exit :ms ms} e
-                                                      {:out (str (fs/path dir (str id ".out"))) :by (actor)})
-                                         tail (assoc :tail tail)))))]
+        ran (append! session (fn [events]
+                               (let [[id e] (event-for events runs)]
+                                 (cond-> (merge {:exit exit :ms ms} e
+                                                {:out (str (fs/path dir (str id ".out"))) :by (actor)})
+                                   tail (assoc :tail tail)))))]
     (fs/move tmp (:out ran))
     ran))

@@ -65,6 +65,37 @@
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["--gate" "bb test"])))
       (is (thrown-with-msg? Exception #"usage" (cli/item-add s ["one" "two"]))))))
 
+(deftest appends-are-checked
+  (let [s (new-session "declared events")
+        logged #(count (store/read-events s))
+        n (logged)]
+    (testing "an undeclared type is refused"
+      (is (thrown-with-msg? Exception #"undeclared event type :item/renamed"
+                            (kernel/append! s (constantly {:type :item/renamed :item/id "i1"})))))
+    (testing "a missing required key is refused"
+      (is (thrown-with-msg? Exception #":item/added needs :intent"
+                            (kernel/append! s (constantly {:type :item/added :item/id "i1"}))))
+      (is (thrown-with-msg? Exception #"needs :intent"
+                            (kernel/append! s (constantly {:type :item/added :item/id "i1" :intent nil})))))
+    (testing "a human type from any other actor is refused"
+      (doseq [who ["s1" "d1" "claude"]]
+        (binding [kernel/*actor* who]
+          (is (thrown-with-msg? Exception (re-pattern (str "is the human's, not " who "'s"))
+                                (kernel/append! s (constantly {:type :session/allowed :command "bb test"}))))
+          (is (thrown-with-msg? Exception #"human's"
+                                (kernel/append! s (constantly {:type :ask/answered :ask/id "a1" :answer "y"})))))))
+    (is (= n (logged)) "nothing refused reached the log")
+    (testing ":by is the actor unless the event names one; nil writes nothing"
+      (binding [kernel/*actor* "s1"]
+        (is (= "s1" (:by (kernel/append! s (constantly {:type :note/added :note/id "n9" :text "x"})))))
+        (is (= "s2" (:by (kernel/append! s (constantly {:type :spawn/exited :spawn/id "s2" :by "s2"}))))))
+      (is (= "human" (:by (kernel/append! s (constantly {:type :session/allowed :command "bb test"})))))
+      (is (nil? (kernel/append! s (constantly nil))))
+      (is (= (+ n 3) (logged))))
+    (testing "reading stays lenient: an undeclared type in the log still folds"
+      (store/append! s (constantly {:type :item/renamed :item/id "i1"}))
+      (is (= "declared events" (:goal (status/project (store/read-events s))))))))
+
 (deftest subitems-show-under-their-parent
   (let [s (new-session "tree")]
     (cli/item-add s ["parent"])

@@ -10,6 +10,7 @@
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
+            [lume.kernel :as kernel]
             [lume.store :as store]))
 
 (defmulti command
@@ -257,9 +258,9 @@
               (emit! {:type "permission" :tool (or (get call "name") (get call "kind")) :kind (get call "kind")
                       :subject (acp-subject call) :allowed permit?})
               (when session
-                (store/append! session (constantly {:type :spawn/permission :spawn/id spawn
-                                                    :tool (or (get call "name") (get call "kind")) :command (acp-subject call)
-                                                    :disposition (if permit? :allow :reject) :by spawn})))
+                (kernel/append! session (constantly {:type :spawn/permission :spawn/id spawn
+                                                     :tool (or (get call "name") (get call "kind")) :command (acp-subject call)
+                                                     :disposition (if permit? :allow :reject) :by spawn})))
               (recur more sid cost))
 
             (and id method)

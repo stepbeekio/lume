@@ -34,11 +34,11 @@
       (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
                    (str "Workers will be allowed to run: " (str/join " · " allows) ".") "yes"))
     (let [session (store/new-session! root)]
-      (store/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
+      (kernel/append! session (constantly {:type :session/started :goal goal :repo root :by (actor)}))
       (when gate
-        (store/append! session (constantly {:type :session/gated :gate gate :by (actor)})))
+        (kernel/append! session (constantly {:type :session/gated :gate gate :by (actor)})))
       (doseq [command allows]
-        (store/append! session (constantly {:type :session/allowed :command command :by (actor)})))
+        (kernel/append! session (constantly {:type :session/allowed :command command :by (actor)})))
       (str "session " (store/session-id session) " started"
            (when gate (str " · default gate " gate))
            (when (seq allows) (str " · workers may run " (str/join " · " allows)))))))
@@ -51,20 +51,20 @@
         (take-flags args #{"--gate" "--parent"} usage)]
     (when (or (str/blank? intent) (seq extra) (seq gates) (seq parents)) (fail! usage))
     ;; Without --gate the item gets the session's default gate, written on the event.
-    (let [e (store/append! session (fn [events]
-                                     (when parent (open-item events parent))
-                                     (let [gate (or gate (:default-gate (status/project events)))]
-                                       (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
-                                                :intent intent :by (actor)}
-                                         gate (assoc :gate gate)
-                                         parent (assoc :parent parent)))))]
+    (let [e (kernel/append! session (fn [events]
+                                      (when parent (open-item events parent))
+                                      (let [gate (or gate (:default-gate (status/project events)))]
+                                        (cond-> {:type :item/added :item/id (next-id "i" :item/added events)
+                                                 :intent intent :by (actor)}
+                                          gate (assoc :gate gate)
+                                          parent (assoc :parent parent)))))]
       (:item/id e))))
 
 (defn item-gate [session [id gate]]
   (when (str/blank? gate) (fail! "usage: lume item gate <id> \"<cmd>\""))
-  (store/append! session (fn [events]
-                           (open-item events id)
-                           {:type :item/gated :item/id id :gate gate :by (actor)}))
+  (kernel/append! session (fn [events]
+                            (open-item events id)
+                            {:type :item/gated :item/id id :gate gate :by (actor)}))
   (str id " gate " gate))
 
 ;; A measurement runs after every spawn on the item, and on demand with lume measure.
@@ -82,13 +82,13 @@
     (when (or (str/blank? cmd) (seq extra) (seq rs) (seq ds)) (fail! usage))
     (when-not (and runs drop (pos? runs) (<= 0 drop) (< drop runs))
       (fail! "--runs must be a positive whole number and --drop less than it;" usage))
-    (store/append! session (fn [events]
-                             (open-item events id)
-                             (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
-                               (> runs 1) (assoc :runs runs)
-                               (pos? drop) (assoc :drop drop)
-                               (seq higher) (assoc :higher higher)
-                               before (assoc :before true))))
+    (kernel/append! session (fn [events]
+                              (open-item events id)
+                              (cond-> {:type :item/measuring :item/id id :measure cmd :by (actor)}
+                                (> runs 1) (assoc :runs runs)
+                                (pos? drop) (assoc :drop drop)
+                                (seq higher) (assoc :higher higher)
+                                before (assoc :before true))))
     (str id " measure " (status/spec-text {:measure cmd :runs runs :drop drop :higher higher :before before}))))
 
 ;; Hand-backs reach the human remotely: when an ask opens or a drive stops,
@@ -151,11 +151,11 @@
   [session e title text & {:keys [secret headers]}]
   (when-let [url *ntfy*]
     (try (let [why (ntfy-post url title (str/join "\n" (remove nil? [text secret (store/session-id session)])) headers)]
-           (store/append! session (constantly (merge {:type (if why :notify/failed :notify/sent) :on (:type e)}
-                                                     (select-keys e [:ask/id :item/id :drive/id])
-                                                     {:text text}
-                                                     (when why {:error why})
-                                                     {:by (actor)}))))
+           (kernel/append! session (constantly (merge {:type (if why :notify/failed :notify/sent) :on (:type e)}
+                                                      (select-keys e [:ask/id :item/id :drive/id])
+                                                      {:text text}
+                                                      (when why {:error why})
+                                                      {:by (actor)}))))
          (catch Exception _ nil))))
 
 (defn- ask-item
@@ -298,19 +298,19 @@
   unless the item is closed or an ask about it is already open. A row that
   didn't count (failed, or no numbers) never asks."
   [session {id :item/id mid :measure/id}]
-  (store/append! session
-                 (fn [events]
-                   (let [s (status/project events)
-                         k (:plateau (status/cadence s))
-                         {:keys [stale best-id higher counted]} (get-in s [:items id :plateau])]
-                     (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
-                                (= :open (get-in s [:items id :state]))
-                                (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
-                       {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
-                        :question (str id " plateaued: " stale " measurement rows without a new best"
-                                       (when best-id (str " (best " best-id ", " (status/direction-text (sort higher)) ")"))
-                                       "; keep going, change approach, or stop?")
-                        :by (actor)})))))
+  (kernel/append! session
+                  (fn [events]
+                    (let [s (status/project events)
+                          k (:plateau (status/cadence s))
+                          {:keys [stale best-id higher counted]} (get-in s [:items id :plateau])]
+                      (when (and k (= mid counted) (pos? stale) (zero? (mod stale k))
+                                 (= :open (get-in s [:items id :state]))
+                                 (not-any? #(and (= :open (:state %)) (= id (:item %))) (vals (:asks s))))
+                        {:type :ask/opened :ask/id (next-id "a" :ask/opened events) :item/id id :measure/id mid
+                         :question (str id " plateaued: " stale " measurement rows without a new best"
+                                        (when best-id (str " (best " best-id ", " (status/direction-text (sort higher)) ")"))
+                                        "; keep going, change approach, or stop?")
+                         :by (actor)})))))
 
 (defn- measure-fields
   "A row's fields from its runs: the kept runs summarized, the spec, and which
@@ -407,12 +407,12 @@
               (fail! id "not done: gate" (gate-summary ran)))
           restored (when revert
                      (revert! (:repo (status/project events)) id (get-in (status/project events) [:items id])))]
-      (store/append! session (fn [events]
-                               (open-item events id)
-                               (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
-                                        :why why :by (actor)}
-                                 ran (assoc :gate/id (:gate/id ran))
-                                 restored (merge restored))))
+      (kernel/append! session (fn [events]
+                                (open-item events id)
+                                (cond-> {:type :item/closed :item/id id :disposition (keyword disposition)
+                                         :why why :by (actor)}
+                                  ran (assoc :gate/id (:gate/id ran))
+                                  restored (merge restored))))
       (str id " " disposition (when ran (str " · " (gate-summary ran)))
            (when restored
              (str " · restored " (if (:jj-commit restored) (str "jj " (:jj-commit restored)) (str "git " (:commit restored)))
@@ -432,19 +432,19 @@
     (case a
       "--unpin"
       (do (when (str/blank? b) (fail! usage))
-          (store/append! session (fn [events]
-                                   (when-not (some #(and (= b (:note/id %)) (:pinned %))
-                                                   (:notes (status/project events)))
-                                     (fail! "no pinned note:" b))
-                                   {:type :note/unpinned :note/id b :by (actor)}))
+          (kernel/append! session (fn [events]
+                                    (when-not (some #(and (= b (:note/id %)) (:pinned %))
+                                                    (:notes (status/project events)))
+                                      (fail! "no pinned note:" b))
+                                    {:type :note/unpinned :note/id b :by (actor)}))
           (str "unpinned " b))
       (let [pin (= "--pin" a)
             text (if pin b a)]
         (when (str/blank? text) (fail! usage))
-        (let [e (store/append! session (fn [events]
-                                         (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
-                                                  :text text :by (actor)}
-                                           pin (assoc :pinned true))))]
+        (let [e (kernel/append! session (fn [events]
+                                          (cond-> {:type :note/added :note/id (next-id "n" :note/added events)
+                                                   :text text :by (actor)}
+                                            pin (assoc :pinned true))))]
           (str (if pin "pinned " "noted ") (:note/id e)))))))
 
 ;; Note show: what status clips. The text in full, who noted it and when, and
@@ -471,8 +471,8 @@
     (when (str/blank? command) (fail! "usage: lume allow [--revoke] \"<cmd>\""))
     (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
                  (str (if revoke "Workers may no longer run: " "Workers may run: ") command ".") "yes")
-    (store/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
-                                        :command command :by (actor)}))
+    (kernel/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
+                                         :command command :by (actor)}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
 ;; Budgets: the substrate, not the driver, bounds spend. Anyone may lower or add
@@ -494,7 +494,7 @@
           (human-only! "only the human raises a budget; lower it, or ask with lume ask \"<question>\""
                        (str "Raise the budget: " (str/join " · " (map (fn [[k n]] (str (name k) " " (budget k) " → " n)) raised)) ".")
                        "yes"))
-        (store/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
+        (kernel/append! session (constantly (assoc limits :type :session/budgeted :by (actor))))))
     (let [s (state)]
       (str "budget " (status/budget-text s) (when-let [over (status/over-budget s)] (str "\n" over))))))
 
@@ -521,7 +521,7 @@
           (human-only! (str "only the human hands back less often (" raises "); hand back more often,"
                             " or ask with lume ask \"<question>\"")
                        (str "Raise the cadence ceiling: " raises ".") "yes"))
-        (store/append! session (constantly (assoc c :type :session/cadence :by (actor))))))
+        (kernel/append! session (constantly (assoc c :type :session/cadence :by (actor))))))
     (let [s (state)]
       (str "cadence " (status/cadence-text (status/cadence s))
            " · ceiling " (status/cadence-text (status/cadence-ceiling s))))))
@@ -557,9 +557,9 @@
 (defn ask [session [question & extra]]
   (cond (and (nil? question) (nil? extra)) (open-asks session (columns))
         (or (str/blank? question) (seq extra)) (fail! "usage: lume ask \"<question>\"")
-        :else (let [opened (store/append! session (fn [events]
-                                                    {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
-                                                     :question question :by (actor)}))]
+        :else (let [opened (kernel/append! session (fn [events]
+                                                     {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
+                                                      :question question :by (actor)}))]
                 (notify-ask! session opened)
                 (:ask/id opened))))
 
@@ -584,9 +584,9 @@
     (when (str/blank? text) (fail! "usage: lume answer <id> [\"<text>\"]"))
     (human-only! "only the human answers asks; record what you think with lume note"
                  (str "Answer " id ": " text) id)
-    (store/append! session (fn [events]
-                             (open-ask events)
-                             {:type :ask/answered :ask/id id :answer text :by (actor)}))
+    (kernel/append! session (fn [events]
+                              (open-ask events)
+                              {:type :ask/answered :ask/id id :answer text :by (actor)}))
     (str id " answered")))
 
 ;; Ask show: what status clips. The question in full, who asked and when, the
@@ -648,8 +648,8 @@
           (.write w (str line "\n"))
           (.flush w)
           (if due
-            (do (store/append! session (constantly (merge {:type :spawn/progress :spawn/id sid}
-                                                          (cond-> prog (:last prog) (update :last clip-last)))))
+            (do (kernel/append! session (constantly (merge {:type :spawn/progress :spawn/id sid}
+                                                           (cond-> prog (:last prog) (update :last clip-last)))))
                 (recur prog prog now))
             (recur prog logged at)))
         prog))))
@@ -688,17 +688,17 @@
   (let [agent (keyword (or (flag opts "--agent") *default-agent*))
         events (store/read-events session)
         item (open-item events id)
-        started (store/append! session (fn [events]
-                                         (within-budget! events)
-                                         (let [sid (next-id "s" :spawn/started events)]
-                                           {:type :spawn/started :spawn/id sid :item/id id :agent agent
-                                            :out (str (fs/path session "spawns" (str sid ".out")))
-                                            :by (actor)})))
+        started (kernel/append! session (fn [events]
+                                          (within-budget! events)
+                                          (let [sid (next-id "s" :spawn/started events)]
+                                            {:type :spawn/started :spawn/id sid :item/id id :agent agent
+                                             :out (str (fs/path session "spawns" (str sid ".out")))
+                                             :by (actor)})))
         {sid :spawn/id out :out} started
         done (promise)
         hook (Thread. #(when-not (realized? done)
-                         (store/append! session (constantly {:type :spawn/exited :spawn/id sid
-                                                             :interrupted true}))))]
+                         (kernel/append! session (constantly {:type :spawn/exited :spawn/id sid
+                                                              :interrupted true}))))]
     (fs/create-dirs (fs/parent out))
     (.addShutdownHook (Runtime/getRuntime) hook)
     (let [;; A before row is taken once the spawn has started, before the
@@ -716,10 +716,10 @@
           {:keys [steps]} (follow! session sid agent proc out)
           {:keys [exit]} @proc
           summary ((requiring-resolve 'lume.agents/summarize) agent (slurp out))
-          exited (store/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit
-                                                                    :ms (- (System/currentTimeMillis) t0)}
-                                                                   summary)
-                                                      steps (assoc :steps steps))))]
+          exited (kernel/append! session (constantly (cond-> (merge {:type :spawn/exited :spawn/id sid :exit exit
+                                                                     :ms (- (System/currentTimeMillis) t0)}
+                                                                    summary)
+                                                       steps (assoc :steps steps))))]
       (deliver done true)
       (.removeShutdownHook (Runtime/getRuntime) hook)
       (notify-asks-by! session sid)
@@ -752,15 +752,15 @@
   (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude|claude-acp|devin]"))
   (if (driver?)
     (let [requested (fn [events] (count (filter #(and (= :spawn/requested (:type %)) (= (actor) (:by %))) events)))]
-      (store/append! session (fn [events]
-                               (open-item events id)
-                               (within-budget! events)
-                               (let [c (status/cadence (status/project events))]
-                                 (when (>= (requested events) (:batch c))
-                                   (fail! "cadence" (status/cadence-text c) "allows" (:batch c) "spawn request(s) a turn,"
-                                          "and this turn has made them; finish the turn now")))
-                               (cond-> {:type :spawn/requested :item/id id :by (actor)}
-                                 (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
+      (kernel/append! session (fn [events]
+                                (open-item events id)
+                                (within-budget! events)
+                                (let [c (status/cadence (status/project events))]
+                                  (when (>= (requested events) (:batch c))
+                                    (fail! "cadence" (status/cadence-text c) "allows" (:batch c) "spawn request(s) a turn,"
+                                           "and this turn has made them; finish the turn now")))
+                                (cond-> {:type :spawn/requested :item/id id :by (actor)}
+                                  (flag opts "--agent") (assoc :agent (keyword (flag opts "--agent"))))))
       (let [events (store/read-events session)
             n (requested events)
             batch (:batch (status/cadence (status/project events)))]
@@ -835,8 +835,8 @@
         (let [why (when (seq more) (hand-back-early (store/read-events session) since id))]
           (if why
             (let [skipped (mapv :item/id more)]
-              (store/append! session (constantly {:type :drive/handed-back :drive/id did :why why
-                                                  :skipped skipped :by (actor)}))
+              (kernel/append! session (constantly {:type :drive/handed-back :drive/id did :why why
+                                                   :skipped skipped :by (actor)}))
               (say (str did " handed back: " why "; skipped " (str/join " " skipped))))
             (recur more)))))))
 
@@ -1002,11 +1002,14 @@
           (cond
             error (do (when (not= error last-error) (say (str "ntfy replies: " error "; retrying")))
                       (recur error))
+            ;; The reply carried the ask's one-time code, which only the human
+            ;; was sent, so it is the human answering, whoever runs the drive.
             (vector? ok) (do (swap! codes dissoc id)
-                             (when (store/append! session (fn [events]
-                                                            (when (= :open (get-in (status/project events) [:asks id :state]))
-                                                              {:type :ask/answered :ask/id id :answer answer
-                                                               :by "human" :via :ntfy})))
+                             (when (binding [kernel/*actor* "human"]
+                                     (kernel/append! session (fn [events]
+                                                               (when (= :open (get-in (status/project events) [:asks id :state]))
+                                                                 {:type :ask/answered :ask/id id :answer answer
+                                                                  :via :ntfy}))))
                                (say (str id " answered from ntfy"))))
             message (do (say (str "ignored a reply on ntfy: " ok)) (recur last-error))
             :else (recur last-error)))))))
@@ -1033,13 +1036,13 @@
         done (promise)
         stop! (fn [why]
                 (deliver done true)
-                (notify! session (store/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
+                (notify! session (kernel/append! session (constantly {:type :drive/stopped :why why :by (actor)}))
                          "lume: drive stopped" why)
                 (str "drive stopped: " why))
         hook (Thread. #(when-not (realized? done)
-                         (store/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
+                         (kernel/append! session (constantly {:type :drive/stopped :why "interrupted" :by (actor)}))))]
     (when (= 1 from)
-      (store/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
+      (kernel/append! session (constantly {:type :drive/started :turns turns :agent (keyword agent) :by (actor)})))
     (.addShutdownHook (Runtime/getRuntime) hook)
     ;; Waiting, the drive sends asks itself, with their codes.
     (push-thread-bindings {#'*ask-notices* (not wait) #'*sent* (atom #{})})
@@ -1066,18 +1069,18 @@
             (and idle (> n turns)) (stop! (str "no open items, and no turn left to review " closing "'s changes: they're uncommitted"))
             (> n turns) (stop! (str turns " turns run"))
             (and changed (not broken))
-            (do (store/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
+            (do (kernel/append! session (constantly {:type :drive/reloaded :n n :by (actor)}))
                 (*reexec* src (cond-> ["drive" "--turns" (str turns) "--agent" agent "--from" (str n)]
                                 wait (conj "--wait-on-ask"))))
             :else
-            (let [{did :drive/id} (store/append! session (fn [events]
-                                                           {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
-                                                            :n n :by (actor)}))
+            (let [{did :drive/id} (kernel/append! session (fn [events]
+                                                            {:type :drive/turn :drive/id (next-id "d" :drive/turn events)
+                                                             :n n :by (actor)}))
                   {:keys [exit result out] :as turn} (drive-turn session root (keyword agent) did allow closing)
                   logged (rest (drop-while #(not= did (:drive/id %)) (store/read-events session)))]
               ;; Logged after reading what the turn did, so it never counts as the turn's work.
-              (store/append! session (constantly (merge {:type :drive/exited :drive/id did}
-                                                        turn)))
+              (kernel/append! session (constantly (merge {:type :drive/exited :drive/id did}
+                                                         turn)))
               (notify-asks-by! session did)
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
               (if (and (empty? logged) (not closing))
@@ -1359,7 +1362,7 @@
       (let [within store/*session*
             session (store/new-session! root :current (not within))]
         (doseq [e ((requiring-resolve 'lume.spec/events) sp root)]
-          (store/append! session (constantly (assoc e :by (actor)))))
+          (kernel/append! session (constantly (assoc e :by (actor)))))
         (say (str "session " (store/session-id session) " started from " path " · " (items-text (:items sp))))
         (when within
           (say (str "not made current: run inside " (store/session-id within)
@@ -1487,7 +1490,7 @@
   (let [server ((requiring-resolve 'babashka.nrepl.server/start-server!) {:port port :quiet true})
         port (.getLocalPort ^java.net.ServerSocket (:socket server))
         ;; The one write: the log shows prototyping happened, e.g. before a spec.
-        _ (store/append! session (constantly {:type :repl/opened :port port :by (actor)}))
+        _ (kernel/append! session (constantly {:type :repl/opened :port port :by (actor)}))
         n (repl-ns! ns session)]
     {:server server
      :port port
