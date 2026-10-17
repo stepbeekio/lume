@@ -296,10 +296,21 @@
         (is (re-matches #"m8 i1 build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · vs m6" (run! "echo build_s=9.5 hits=3")))
         (let [line (some #(when (str/includes? % "measure ") %)
                          (str/split-lines (status/render "sess" (store/read-events s) (Instant/now))))]
-          (is (re-find #"m8 vs m6 build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · " line) line))))
+          (is (re-find #"m8 vs m6 build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · " line) line))
+        (testing "a row is compared with the latest that shares a number's name"
+          (is (re-matches #"m9 i1 value=915454175 · \d+\.\ds" (run! "echo value=915454175")) "a misparse has no baseline")
+          (is (re-matches #"m10 i1 build_s=9\.12\(-0\.377\) hits=3 · \d+\.\ds · vs m8"
+                          (run! "echo build_s=9.1234567 hits=3"))
+              "skips the misparse; numbers round to 3 significant digits"))))
+    (testing "spreads round too, but never a digit before the point"
+      (is (= "n=1235 secs=0.764[0.699..0.773] · 0.0s"
+             (status/measure-text {:values {"secs" 0.7635452455 "n" 1234.567} :spread {"secs" [0.699478972 0.772594053]}
+                                   :ms 0 :exit 0}))))
+    (testing "lume measure --help prints usage"
+      (is (= "usage: lume measure <id>" (cli/run ["measure" "--help"]))))
     (testing "a closed item can still be measured"
       (cli/item-close s [id "dropped" "x"])
-      (is (str/starts-with? (cli/measure s [id]) "m9 i1 ")))))
+      (is (str/starts-with? (cli/measure s [id]) "m11 i1 ")))))
 
 (deftest measurements-repeat
   (testing "a row of runs is each number's median and its spread"

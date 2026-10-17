@@ -313,8 +313,10 @@
                                ran (assoc :gate/id (:gate/id ran)))))
     (str id " " disposition (when ran (str " · " (gate-summary ran))))))
 
+(def ^:private measure-usage "usage: lume measure <id>")
+
 (defn measure [session [id]]
-  (when (str/blank? id) (fail! "usage: lume measure <id>"))
+  (when (str/blank? id) (fail! measure-usage))
   (let [item (or (get-in (status/project (store/read-events session)) [:items id]) (fail! "no such item:" id))]
     (when-not (:measure item) (fail! id "has no measurement; set one with lume item measure" id "\"<cmd>\""))
     (measure-row session (run-measure session item))))
@@ -1016,7 +1018,7 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                "show" (item-show (session) more)
                "measure" (item-measure (session) more)
                (fail! "usage: lume item add|gate|measure|close|show ..."))
-      "measure" (measure (session) (rest args))
+      "measure" (if (#{"-h" "--help"} sub) measure-usage (measure (session) (rest args)))
       "note" (note (session) (rest args))
       "ask" (if (and (= "show" sub) (= 2 (count (rest args))))
               (ask-show (session) (drop 2 args))

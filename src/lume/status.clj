@@ -102,15 +102,21 @@
        :item/measuring  (update-in s [:items (:item/id e)]
                                    #(merge (dissoc % :runs :drop :higher) (select-keys e [:measure :runs :drop :higher])))
        ;; Each row carries the row it's compared with: the latest earlier one
-       ;; of the same spec (command, runs and drop) that passed with numbers.
+       ;; of the same spec (command, runs and drop) that passed with numbers
+       ;; and shares a number's name with it, so a misparsed row isn't the
+       ;; baseline for a good one. One good row is kept per set of names.
        :measure/ran     (update-in s [:items (:item/id e)]
                                    (fn [item]
-                                     (let [base (get-in item [:good-measures (spec e)])
+                                     (let [names #(set (keys (:values %)))
+                                           base (last (filter #(some (names %) (keys (:values e)))
+                                                              (get-in item [:good-measures (spec e)])))
                                            p (plateau (get-in item [:plateaus (spec e)]) e)]
                                        (cond-> (-> item
                                                    (assoc :last-measure (cond-> e base (assoc :base base)) :plateau p)
                                                    (assoc-in [:plateaus (spec e)] p))
-                                         (and (zero? (:exit e)) (seq (:values e))) (assoc-in [:good-measures (spec e)] e)))))
+                                         (and (zero? (:exit e)) (seq (:values e)))
+                                         (update-in [:good-measures (spec e)]
+                                                    (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))))))
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -205,9 +211,18 @@
 (defn secs [ms]
   (format "%.1fs" (/ ms 1000.0)))
 
+(defn num-text
+  "A measured number for reading: whole numbers as they are, others to 3
+  significant digits, never rounding away a digit before the point."
+  [v]
+  (if (or (not (number? v)) (integer? v) (Double/isNaN v) (Double/isInfinite v))
+    (str v)
+    (let [d (bigdec v)]
+      (-> d (.round (java.math.MathContext. (max 3 (- (.precision d) (.scale d))))) .stripTrailingZeros .toPlainString))))
+
 (defn- change [v b]
   (when (and (number? v) (number? b) (not= v b))
-    (let [d (-> (bigdec (- v b)) (.round (java.math.MathContext. 4)) .stripTrailingZeros .toPlainString)]
+    (let [d (num-text (- v b))]
       (str "(" (when-not (str/starts-with? d "-") "+") d ")"))))
 
 (defn measure-text
@@ -218,8 +233,9 @@
   [{:keys [values spread ms exit base runs drop failed-run higher] :or {drop 0}} & {:keys [vs] :or {vs true}}]
   (str (if (seq values)
          (str/join " " (map (fn [[k v]]
-                              (str k (when (some #{k} higher) "↑") "=" v (change v (get (:values base) k))
-                                   (when-let [[lo hi] (get spread k)] (when (not= lo hi) (str "[" lo ".." hi "]")))))
+                              (str k (when (some #{k} higher) "↑") "=" (num-text v) (change v (get (:values base) k))
+                                   (when-let [[lo hi] (get spread k)]
+                                     (when (not= lo hi) (str "[" (num-text lo) ".." (num-text hi) "]")))))
                             (sort values)))
          "no numbers")
        " · " (secs ms)
