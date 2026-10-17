@@ -798,7 +798,7 @@
                       :item/measuring (status/spec-text e)
                       (str/join " " (keep #(when-some [v (e %)] (case % :exit (str "exit " v) (if (keyword? v) (name v) v)))
                                           [:spawn/id :gate/id :note/id :ask/id :disposition :exit
-                                           :gate :measure :text :question :answer :why :result :tail]))))
+                                           :command :gate :measure :text :question :answer :why :result :tail]))))
        (when (:by e) (str " [" (:by e) "]"))))
 
 (defn item-show [session [id]]

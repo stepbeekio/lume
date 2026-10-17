@@ -5,9 +5,12 @@
   into progress while it runs, and its whole output into a short summary for
   the log."
   (:require [babashka.fs :as fs]
+            [babashka.process :as p]
             [cheshire.core :as json]
             [clojure.edn :as edn]
-            [clojure.string :as str]))
+            [clojure.java.io :as io]
+            [clojure.string :as str]
+            [lume.store :as store]))
 
 (defmulti command
   "argv that runs `agent` on `prompt`, in the current directory. `opts` has
@@ -109,6 +112,182 @@
                           (assoc :last (tool-call (last tools))))
           (not (str/blank? text)) (assoc prog :last text)
           :else prog)))
+
+;; Claude Code over ACP (Agent Client Protocol, JSON-RPC on stdio), through
+;; @agentclientprotocol/claude-agent-acp. Message shapes are checked against a
+;; real transcript, test/data/acp-transcript.jsonl (dev/acp_record.clj).
+;;
+;; The spawn's child is a bridge, `bb -m lume.agents acp <opts> <prompt>`, that
+;; runs the ACP agent, prints one JSON line per session/update (so progress and
+;; summarize stay line-based), answers each permission request from the allow
+;; list, logging it as a :spawn/permission event, and ends with a result line.
+
+(def ^:dynamic *acp-agent*
+  "argv of the ACP agent; nil finds it. Tests bind a fake."
+  nil)
+
+(defn acp-agent-argv []
+  (or *acp-agent*
+      (when-let [bin (not-empty (System/getenv "LUME_ACP_AGENT"))] [bin])
+      (when-let [bin (fs/which "claude-agent-acp")] [(str bin)])
+      ;; npm -g with prefix ~/.npm-global, which isn't on a spawn's PATH (n127).
+      (let [bin (fs/path (fs/home) ".npm-global" "bin" "claude-agent-acp")]
+        (when (fs/executable? bin) [(str bin)]))
+      (throw (ex-info "no ACP agent: install @agentclientprotocol/claude-agent-acp (npm -g), or set LUME_ACP_AGENT to its path"
+                      {:lume/user-error true}))))
+
+(defn- lume-src []
+  (str (fs/parent (fs/parent (io/file (io/resource "lume/agents.clj"))))))
+
+(defmethod command :claude-acp [_ prompt {:keys [allow role]}]
+  ["bb" "-cp" (lume-src) "-m" "lume.agents" "acp"
+   (pr-str {:agent (acp-agent-argv) :allow (vec allow) :role role}) prompt])
+
+(defn- allowed-command?
+  "Whether shell `cmd` is only allowed commands: each part of a pipeline or
+  list must start with an allowed prefix (or be head, tail, grep or wc), and
+  nothing may substitute or redirect, bar 2>&1."
+  [prefixes cmd]
+  (let [cmd (str/replace (str/trim cmd) "2>&1" "")
+        parts (map str/trim (str/split cmd #"&&|\|\||;|\|"))
+        ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
+                             (concat prefixes ["head" "tail" "grep" "wc"])))]
+    (boolean (and (not (re-find #"[`$<>\n]" cmd))
+                  (every? ok? parts)))))
+
+(defn acp-permit?
+  "Whether to allow a session/request_permission. Workers may edit and run the
+  allowed commands, plus lume; drivers may run lume, jj and the allowed commands
+  but never edit or push. Both may read and search."
+  [{:keys [allow role]} {:strs [toolCall]}]
+  (let [{:strs [kind rawInput]} toolCall
+        cmd (get rawInput "command")
+        driver (= :driver role)]
+    (case kind
+      "execute" (and (string? cmd)
+                     (allowed-command? (concat ["lume" "bin/lume"] (when driver ["jj"]) allow) cmd)
+                     (not (and driver (re-find #"\bgit\s+push\b" cmd))))
+      ("edit" "delete" "move") (not driver)
+      ("read" "search") true
+      false)))
+
+(defn- acp-answer [permit? {:strs [options]}]
+  (if-let [opt (first (filter #(= (if permit? "allow_once" "reject_once") (get % "kind")) options))]
+    {:outcome "selected" :optionId (get opt "optionId")}
+    {:outcome "cancelled"}))
+
+;; What a permission is for: the command, or the tool and its file.
+(defn- acp-subject [{:strs [name title rawInput]}]
+  (or (get rawInput "command")
+      (str/join " " (remove nil? [name (or (get rawInput "file_path") title)]))))
+
+(defn acp-bridge
+  "Run the ACP agent on `prompt` in the current directory, printing lines to
+  *out*. `opts` has :agent (argv), :allow and :role, and :session and :spawn
+  to log permission decisions to. Returns the exit code."
+  [{:keys [agent session spawn] :as opts} prompt]
+  (let [proc (p/process agent {:err :inherit})
+        w (io/writer (:in proc))
+        send! (fn [m] (.write w (str (json/generate-string m) "\n")) (.flush w))
+        emit! (fn [m] (println (json/generate-string m)) (flush))
+        ;; Text comes in chunks; each message is printed whole, once it ends.
+        text (atom nil)
+        flush-text! (fn [] (when-let [{:keys [id parts]} @text]
+                             (emit! {:sessionUpdate "agent_message_chunk" :messageId id
+                                     :content {:type "text" :text (apply str parts)}})))]
+    (try
+      (send! {:jsonrpc "2.0" :id 0 :method "initialize"
+              :params {:protocolVersion 1
+                       :clientCapabilities {:fs {:readTextFile false :writeTextFile false} :terminal false}}})
+      (loop [lines (line-seq (io/reader (:out proc))) sid nil cost nil]
+        ;; rest, not [line & more]: destructuring would read ahead a line the
+        ;; agent won't send until we answer this one.
+        (let [line (first lines)
+              more (rest lines)
+              {:strs [id method params result error]} (when line (try (json/parse-string line) (catch Exception _ nil)))
+              finish (fn [m code]
+                       (flush-text!)
+                       (emit! (cond-> (assoc m :type "result" :sessionId sid :text (some-> @text :parts (#(apply str %))))
+                                cost (assoc :costUsd cost)))
+                       code)]
+          (cond
+            (nil? line) (finish {:error "the ACP agent exited before the prompt finished"} 1)
+
+            (= "session/request_permission" method)
+            (let [permit? (acp-permit? opts params)
+                  call (get params "toolCall")
+                  answer (acp-answer permit? params)]
+              (send! {:jsonrpc "2.0" :id id :result {:outcome answer}})
+              (emit! {:type "permission" :tool (get call "name") :kind (get call "kind")
+                      :subject (acp-subject call) :allowed permit?})
+              (when session
+                (store/append! session (constantly {:type :spawn/permission :spawn/id spawn
+                                                    :tool (get call "name") :command (acp-subject call)
+                                                    :disposition (if permit? :allow :reject) :by spawn})))
+              (recur more sid cost))
+
+            (and id method)
+            (do (send! {:jsonrpc "2.0" :id id :error {:code -32601 :message (str "lume: no " method)}})
+                (recur more sid cost))
+
+            (= "session/update" method)
+            (let [{:strs [sessionUpdate messageId content] :as u} (get params "update")
+                  cost (or (when (= "USD" (get-in u ["cost" "currency"])) (get-in u ["cost" "amount"])) cost)]
+              (if (= "agent_message_chunk" sessionUpdate)
+                (do (when (not= messageId (:id @text))
+                      (flush-text!)
+                      (reset! text {:id messageId :parts []}))
+                    (swap! text update :parts conj (get content "text")))
+                (when-not (#{"available_commands_update" "usage_update"} sessionUpdate)
+                  (emit! u)))
+              (recur more sid cost))
+
+            error (finish {:error (get error "message")} 1)
+
+            (= 0 id) (do (send! {:jsonrpc "2.0" :id 1 :method "session/new"
+                                 :params {:cwd (str (fs/cwd)) :mcpServers []}})
+                         (recur more sid cost))
+            (= 1 id) (let [sid (get result "sessionId")]
+                       (send! {:jsonrpc "2.0" :id 2 :method "session/prompt"
+                               :params {:sessionId sid :prompt [{:type "text" :text prompt}]}})
+                       (recur more sid cost))
+            (= 2 id) (finish {:stopReason (get result "stopReason")} 0)
+
+            :else (recur more sid cost))))
+      (catch java.io.IOException e
+        (emit! {:type "result" :error (str "the ACP agent's pipe closed: " (ex-message e))})
+        1)
+      (finally (p/destroy-tree proc)))))
+
+(defn- acp-result [out]
+  (->> (str/split-lines (str out)) (keep parse) (filter #(= "result" (get % "type"))) last))
+
+(defmethod summarize :claude-acp [_ out]
+  (if-let [{:strs [text sessionId costUsd stopReason error]} (acp-result out)]
+    (cond-> {:result (or error text) :agent-session sessionId}
+      costUsd (assoc :cost-usd costUsd)
+      (not= "end_turn" stopReason) (assoc :agent-error true))
+    (summarize :default out)))
+
+;; Steps are tool calls; :last is the latest call's title, or text when the agent is talking.
+(defmethod progress :claude-acp [_ prog line]
+  (let [{:strs [sessionUpdate title content]} (parse line)]
+    (case sessionUpdate
+      "tool_call" (cond-> (update prog :steps (fnil inc 0)) title (assoc :last title))
+      "tool_call_update" (cond-> prog title (assoc :last title))
+      "agent_message_chunk" (let [t (get content "text")]
+                              (cond-> prog (not (str/blank? t)) (assoc :last t)))
+      prog)))
+
+(defn -main [& [cmd opts prompt]]
+  (case cmd
+    "acp" (System/exit (acp-bridge (assoc (edn/read-string opts)
+                                          :session (not-empty (System/getenv "LUME_SESSION"))
+                                          :spawn (System/getenv "LUME_SPAWNED_AS"))
+                                   prompt))
+    (binding [*out* *err*]
+      (println "usage: bb -m lume.agents acp <opts-edn> <prompt>")
+      (System/exit 2))))
 
 ;; Install: a user-level skill that teaches any Claude session to work through lume.
 ;; Tests bind *claude-home* to a temp dir; nothing else should touch the real one.

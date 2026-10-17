@@ -1,0 +1,9 @@
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=validate-cwd durationMs=0 totalMs=0
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=settings durationMs=7 totalMs=7
+[session/query] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 resume=none apiType=native baseUrl=native
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=prepare-query durationMs=6 totalMs=13
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=sdk-initialize durationMs=480 totalMs=493
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=models durationMs=1 totalMs=494
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=modes durationMs=0 totalMs=494
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=agents durationMs=0 totalMs=495
+[session/create] sessionId=a4b0ead2-46e4-40df-bb2e-fb6ce5336a71 phase=register durationMs=1 totalMs=496

@@ -4,7 +4,7 @@
             [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing use-fixtures]]
+            [clojure.test :refer [are deftest is testing use-fixtures]]
             [lume.agents :as agents]
             [lume.cli :as cli]
             [lume.spec :as spec]
@@ -202,6 +202,61 @@
            (agents/summarize :claude (str/join "\n" lines))))
     (testing "output that isn't stream-json falls back to the last line"
       (is (= {:result "boom"} (agents/summarize :claude "boom"))))))
+
+;; ACP: a fake agent replays a real transcript (dev/acp_record.clj) and logs what lume sent.
+(defn- fake-acp [log]
+  ["bb" (str (fs/absolutize "test/fake_acp.clj")) (str (fs/absolutize "test/data/acp-transcript.jsonl")) log])
+
+(defn- acp-permission [{:keys [kind command file]}]
+  {"toolCall" {"kind" kind "rawInput" (cond-> {} command (assoc "command" command) file (assoc "file_path" file))}})
+
+(deftest acp-permissions-follow-the-allow-list
+  (let [worker {:allow ["bb test"]}
+        driver {:allow ["bb test"] :role :driver}]
+    (are [opts req ok] (= ok (agents/acp-permit? opts (acp-permission req)))
+      worker {:kind "execute" :command "bb test"} true
+      worker {:kind "execute" :command "bb test 2>&1 | tail -20"} true
+      worker {:kind "execute" :command "lume note hi"} true
+      worker {:kind "execute" :command "bb testing"} false
+      worker {:kind "execute" :command "bb test && rm -rf ."} false
+      worker {:kind "execute" :command "bb test $(rm -rf .)"} false
+      worker {:kind "execute" :command "bb test > out"} false
+      worker {:kind "execute" :command "jj st"} false
+      worker {:kind "edit" :file "a.clj"} true
+      worker {:kind "fetch"} false
+      driver {:kind "execute" :command "jj st"} true
+      driver {:kind "execute" :command "jj git push"} false
+      driver {:kind "edit" :file "a.clj"} false
+      driver {:kind "read" :file "a.clj"} true)))
+
+(deftest acp-bridge-replays-a-real-transcript
+  (doseq [[role option] [[nil "allow-once"] [:driver "reject"]]]
+    (let [log (str (fs/path *root* (str "acp-" (name (or role :worker)) ".log")))
+          out (with-out-str (is (= 0 (agents/acp-bridge {:agent (fake-acp log) :role role} "hi"))))
+          sent (map json/parse-string (str/split-lines (slurp log)))]
+      (testing (str (or role :worker) " answers the Write permission with " option)
+        (is (= ["initialize" "session/new" "session/prompt" nil] (map #(get % "method") sent)))
+        (is (= option (get-in (last sent) ["result" "outcome" "optionId"]))))
+      (is (= {:steps 2 :last "I ran `echo hello` and saved its output, \"hello\", to `hello.txt`."}
+             (reduce #(agents/progress :claude-acp %1 %2) {} (str/split-lines out))))
+      (is (= {:result "I ran `echo hello` and saved its output, \"hello\", to `hello.txt`."
+              :agent-session "a4b0ead2-46e4-40df-bb2e-fb6ce5336a71" :cost-usd 0.10858539999999998}
+             (agents/summarize :claude-acp out)))))
+  (testing "an agent that exits early is an error"
+    (let [out (with-out-str (is (= 1 (agents/acp-bridge {:agent ["true"]} "hi"))))]
+      (is (:agent-error (agents/summarize :claude-acp out))))))
+
+(deftest acp-spawn-logs-permissions-and-exits
+  (binding [agents/*acp-agent* (fake-acp (str (fs/path *root* "acp.log")))]
+    (let [s (new-session "goal")
+          id (cli/item-add s ["write hello"])]
+      (is (re-find #"^s1 i1 exit 0 in \d+s · I ran" (cli/spawn s *root* [id "--agent" "claude-acp"])))
+      (let [events (store/read-events s)]
+        (is (= {:type :spawn/permission :spawn/id "s1" :tool "Write" :disposition :allow :by "s1"
+                :command "Write /tmp/lume-acp-5489780834565444210/hello.txt"}
+               (dissoc (first (filter #(= :spawn/permission (:type %)) events)) :t)))
+        (is (= {:exit 0 :steps 2 :cost-usd 0.10858539999999998 :agent-session "a4b0ead2-46e4-40df-bb2e-fb6ce5336a71"}
+               (select-keys (last (filter #(= :spawn/exited (:type %)) events)) [:exit :steps :cost-usd :agent-session])))))))
 
 (deftest gates-decide-done
   (let [s (new-session "goal")

@@ -12,15 +12,16 @@
 (require '[babashka.fs :as fs]
          '[babashka.process :as p]
          '[cheshire.core :as json]
-         '[clojure.java.io :as io])
+         '[clojure.java.io :as io]
+         '[clojure.string :as str])
 
 (def agent-bin (or (System/getenv "LUME_ACP_AGENT")
                    (str (fs/path (fs/home) ".npm-global" "bin" "claude-agent-acp"))))
 (def out-file (or (first *command-line-args*) "test/data/acp-transcript.jsonl"))
-(def dir (str (fs/create-temp-dir {:prefix "lume-acp-"})))
+(def work-dir (str (fs/create-temp-dir {:prefix "lume-acp-"})))
 (fs/create-dirs (fs/parent (fs/absolutize out-file)))
 
-(def proc (p/process [agent-bin] {:dir dir :err (io/file (str out-file ".stderr"))}))
+(def proc (p/process [agent-bin] {:dir work-dir :err (io/file (str out-file ".stderr"))}))
 (def in (io/writer (:in proc)))
 (def out (io/writer out-file))
 (def lock (Object.))
@@ -51,7 +52,9 @@
 
 (future
   (doseq [line (line-seq (io/reader (:out proc)))]
-    (record "< " line)
+    ;; _auth/status_update carries the account's email; keep it out of the repo.
+    (when-not (str/includes? line "\"method\":\"_auth/")
+      (record "< " line))
     (when-let [msg (try (json/parse-string line) (catch Exception _ nil))]
       (handle msg)))
   (deliver done :eof))
@@ -67,7 +70,7 @@
         :params {:protocolVersion 1
                  :clientCapabilities {:fs {:readTextFile false :writeTextFile false} :terminal false}}})
 (await-response 0)
-(send! {:jsonrpc "2.0" :id 1 :method "session/new" :params {:cwd dir :mcpServers []}})
+(send! {:jsonrpc "2.0" :id 1 :method "session/new" :params {:cwd work-dir :mcpServers []}})
 (let [sid (get-in (await-response 1) ["result" "sessionId"])]
   (when-not sid
     (println "no sessionId from session/new; see" out-file)
