@@ -327,6 +327,28 @@
   (let [s (str/replace (str s) #"\s+" " ")]
     (if (> (count s) n) (str (subs s 0 (dec n)) "…") s)))
 
+(def width "Status's width: no line is longer." 100)
+
+(defn wrap
+  "Lines of at most n, broken at spaces (a word longer than n is cut). With
+  max-lines, the last line kept is clipped and ends in tail when there is more."
+  ([s n] (wrap s n nil nil))
+  ([s n max-lines tail]
+   (let [lines (loop [words (str/split (str/trim (str/replace (str s) #"\s+" " ")) #" ")
+                      line nil, out []]
+                 (if-let [[w & more] (seq words)]
+                   (cond (nil? line) (if (> (count w) n)
+                                       (recur (cons (subs w n) more) nil (conj out (subs w 0 n)))
+                                       (recur more w out))
+                         (<= (+ (count line) 1 (count w)) n) (recur more (str line " " w) out)
+                         :else (recur words nil (conj out line)))
+                   (cond-> out line (conj line))))]
+     (if (and max-lines (> (count lines) max-lines))
+       (let [last-n (- n (count tail))]
+         (conj (vec (take (dec max-lines) lines))
+               (str (clip last-n (str/join " " (drop (dec max-lines) lines))) tail)))
+       lines))))
+
 (defn more
   "The footer for a bounded list: [\"+K <hint>\"] when shown leaves K of all
   out, else nil. Concat it where the list was cut; hint says how to see the rest."

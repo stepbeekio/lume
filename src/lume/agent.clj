@@ -10,8 +10,7 @@
                                             next-id open-item paint sh sh-out sha256-hex take-flags timed]]
             [lume.measure :as measure]
             [lume.note :as note]
-            [lume.policy :as policy :refer [cadence cadence-ceiling cadence-text]]
-            [lume.status :as status]))
+            [lume.policy :as policy]))
 
 ;; lume.agents loads on first use, via requiring-resolve: most lume calls
 ;; (note, item, ask, a driver's spawn request) are short processes that don't
@@ -31,6 +30,12 @@
                                          :command command}))
     (str (if revoke "workers may no longer run " "workers may run ") command)))
 
+(defn prompt-lines
+  "What the bound features add to a worker's prompt for item: each :prompt
+  (fn [state item] lines), in feature order."
+  [state item]
+  (mapcat #((:prompt %) state item) (filter :prompt (kernel/features))))
+
 (defn- worker-prompt [events item]
   (let [{:keys [goal] :as state} (kernel/project events)]
     (str/join "\n"
@@ -38,7 +43,7 @@
                ["You are a worker in a lume session."
                 (str "Session goal: " goal)
                 (str "Your work item (" (:id item) "): " (:intent item))]
-               (status/prompt-lines state item)
+               (prompt-lines state item)
                ["Work in the current directory. Record findings with `lume note \"<text>\"`"
                 (str "and follow-up work with `lume item add \"<intent>\"` (add `--parent " (:id item)
                      "` if it emerged from this item).")
@@ -227,10 +232,7 @@
 ;; cadence), and each open item's latest spawn.
 
 (defn- allow-lines [{:keys [allow default-gate] :as state} _ _]
-  (let [cadence-line (when (:cadence state)
-                       (str "cadence " (cadence-text (cadence state))
-                            (when (not= (cadence state) (cadence-ceiling state))
-                              (str " (ceiling " (cadence-text (cadence-ceiling state)) ")"))))]
+  (let [cadence-line (policy/cadence-line state)]
     (when (or (seq allow) default-gate cadence-line)
       [(str/join " · " (cond->> allow
                          default-gate (cons (str "default gate " default-gate))

@@ -5,43 +5,12 @@
   Deliberately naive. Whenever a driver wanted something this didn't show,
   that's a work item."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [clip clock more paint]]))
+            [lume.kernel :as kernel :refer [clip clock more paint width wrap]]))
 
 ;; Rendering
 
-(def width "Status's width: no line is longer." 100)
-
 (defn strip-color [s]
   (str/replace s #"\u001b\[[0-9;]*m" ""))
-
-(defn wrap
-  "Lines of at most n, broken at spaces (a word longer than n is cut). With
-  max-lines, the last line kept is clipped and ends in tail when there is more."
-  ([s n] (wrap s n nil nil))
-  ([s n max-lines tail]
-   (let [lines (loop [words (str/split (str/trim (str/replace (str s) #"\s+" " ")) #" ")
-                      line nil, out []]
-                 (if-let [[w & more] (seq words)]
-                   (cond (nil? line) (if (> (count w) n)
-                                       (recur (cons (subs w n) more) nil (conj out (subs w 0 n)))
-                                       (recur more w out))
-                         (<= (+ (count line) 1 (count w)) n) (recur more (str line " " w) out)
-                         :else (recur words nil (conj out line)))
-                   (cond-> out line (conj line))))]
-     (if (and max-lines (> (count lines) max-lines))
-       (let [last-n (- n (count tail))]
-         (conj (vec (take (dec max-lines) lines))
-               (str (clip last-n (str/join " " (drop (dec max-lines) lines))) tail)))
-       lines))))
-
-;; Replay: a decision is a drive turn or a spawn, and ends with its exit event.
-(defn decision? [e] (#{:drive/exited :spawn/exited} (:type e)))
-
-(defn decision-text
-  "What a decision did, in one line: its id, exit, then its result."
-  [e]
-  (str (or (:drive/id e) (:spawn/id e)) " " (if (:interrupted e) "interrupted" (str "exit " (:exit e)))
-       (when-let [r (:result e)] (str " · " r))))
 
 (defn tree
   "Items in order, each followed by its children (:parent), as [item depth]
@@ -123,8 +92,8 @@
       ;; In a replay the commands to run next don't apply; what the decision just
       ;; ending did takes their room.
       (if replay
-        (when (decision? (last events))
-          (section "decided" (wrap (decision-text (last events)) (- width 8) 3 " — lume log")))
+        (when-let [decided (:decided replay)]
+          (section "decided" (wrap decided (- width 8) 3 " — lume log")))
         (section "next" ["lume item add \"<intent>\" [--gate \"<cmd>\"] · lume item gate <id> \"<cmd>\" · lume spawn <id>"
                          "lume item close <id> done|dropped \"<why>\" (done runs the gate) · lume note [--pin] \"<text>\""
                          "lume ask \"<question>\" · lume ask (read open asks) · lume answer <id> (human only) · lume log"]))))))
@@ -136,17 +105,11 @@
   and 4 more from extensions (lume.ext).
   Plain unless {:color true}; colour adds escapes only, never visible width.
   {:past true} marks a session that isn't the repo's current one.
-  {:replay {:of M}} renders the session as it stood after these events, the
-  first N of M: the header says so, and the decision they end with replaces
-  the next commands."
+  {:replay {:of M :decided text}} renders the session as it stood after these
+  events, the first N of M: the header says so, and :decided, what the decision
+  they end with did, replaces the next commands."
   ([session-id events now] (render session-id events now {}))
   ([session-id events now {:keys [color past replay]}]
    (binding [kernel/*color* (boolean color)
              kernel/*features* (or kernel/*features* (built-in))]
      (render* session-id events now past replay))))
-
-(defn prompt-lines
-  "What the bound features add to a worker's prompt for item: each :prompt
-  (fn [state item] lines), in feature order."
-  [state item]
-  (mapcat #((:prompt %) state item) (filter :prompt (kernel/features))))

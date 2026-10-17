@@ -239,8 +239,21 @@
           (finally (when (realized? replies) ((:stop @replies)))
                    (finished!)))))))
 
+;; The fold: :drive is the latest drive, {:running :why :turn}, its stop's why
+;; once stopped and the id of its last turn.
+
+(defn- started [s _] (assoc s :drive {:running true}))
+
+(defn- stopped [s {:keys [why]}] (update s :drive assoc :running false :why why))
+
+(defn- turned [s e] (assoc-in s [:drive :turn] (:drive/id e)))
+
 (def feature
   {:name "drive"
+   :init {:drive nil}
+   :fold {:drive/started started
+          :drive/stopped stopped
+          :drive/turn turned}
    :events {:spawn/requested {:req #{:item/id}}
             :drive/started {:req #{:turns :agent}}
             :drive/turn {:req #{:drive/id :n}}

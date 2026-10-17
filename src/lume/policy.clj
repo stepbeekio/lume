@@ -33,6 +33,15 @@
                   gate-fail (conj "on gate-fail")
                   plateau (conj (str "on plateau " plateau)))))
 
+(defn cadence-line
+  "The session's cadence for status, with the ceiling when it differs, or nil
+  if none was set."
+  [state]
+  (when (:cadence state)
+    (str "cadence " (cadence-text (cadence state))
+         (when (not= (cadence state) (cadence-ceiling state))
+           (str " (ceiling " (cadence-text (cadence-ceiling state)) ")")))))
+
 (defn cadence-raises
   "How cadence c hands back less often than the ceiling allows, as text, or nil."
   [ceiling c]

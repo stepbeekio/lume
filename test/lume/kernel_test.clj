@@ -703,7 +703,7 @@
         _ (note/note s ["after the spawn"])
         events (store/read-events s)
         m (count events)
-        [d1 s1] (keep-indexed #(when (status/decision? %2) (inc %1)) events)
+        [d1 s1] (keep-indexed #(when (inspect/decision? %2) (inc %1)) events)
         fresh (str (fs/create-temp-dir {:prefix "lume-replay"}))]
     (try
       ;; Only log.edn crosses over: no current file, no spawn output, no lock.

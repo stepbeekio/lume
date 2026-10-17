@@ -2,6 +2,7 @@
   (:require [babashka.fs :as fs]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [lume.agent :as agent]
             [lume.features :as features]
             [lume.item :as item]
             [lume.kernel :as kernel]
@@ -58,7 +59,7 @@
       (is (< (str/index-of out "pinned  n1") (str/index-of out "open    i1"))))
     (testing "workers see every pinned note and the last 10 others"
       (let [state (status/project (store/read-events s))
-            prompt (str (str/join "\n" (status/prompt-lines state (get-in state [:items id]))) "\n")]
+            prompt (str (str/join "\n" (agent/prompt-lines state (get-in state [:items id]))) "\n")]
         (is (str/includes? prompt "Pinned notes:\n- run bb test before done\n"))
         (is (str/includes? prompt "- chatter 3\n"))
         (is (not (str/includes? prompt "- chatter 2\n")))

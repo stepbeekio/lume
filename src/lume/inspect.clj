@@ -42,15 +42,14 @@
 
 ;; A session as one line. The outcome is what the session is doing or how it
 ;; ended, most pressing first.
-(defn- outcome [events {:keys [items spawns] :as state}]
-  (let [drive (last (filter #(#{:drive/started :drive/stopped} (:type %)) events))
-        running (->> (vals spawns) (remove #(or (:interrupted %) (contains? % :exit))) (sort-by :t) last)
+(defn- outcome [{:keys [items spawns drive] :as state}]
+  (let [running (->> (vals spawns) (remove #(or (:interrupted %) (contains? % :exit))) (sort-by :t) last)
         ask (first (ask/open-asks state))]
-    (cond (= :drive/started (:type drive)) "driving"
+    (cond (:running drive) "driving"
           running (str "running " (:spawn/id running))
           ask (str "ask " (:id ask) " open")
           (and (seq items) (not-any? #(= :open (:state %)) (vals items))) "all closed"
-          drive (str "stopped: " (:why drive))
+          (:why drive) (str "stopped: " (:why drive))
           (empty? items) "no items"
           :else "idle")))
 
@@ -60,11 +59,11 @@
   (let [{:keys [goal items] :as state} (status/project events)
         open (count (filter #(= :open (:state %)) (vals items)))]
     (str (if current? "* " "  ")
-         (clip (- status/width 2)
+         (clip (- kernel/width 2)
                (str session-id " " (clip 40 (or goal "(no goal)"))
                     " · " open " open " (- (count items) open) " closed"
                     (when-let [t (:t (last events))] (str " · " (ago now t)))
-                    " · " (outcome events state))))))
+                    " · " (outcome state))))))
 
 (def ^:private ls-usage "usage: lume ls [--all]")
 
@@ -125,15 +124,33 @@
 
 (def ^:private replay-usage "usage: lume replay [<session>] [--at N] [--step] [-n N] [--color]")
 
+;; A decision is a drive turn or a spawn, and ends with its exit event.
+(defn decision? [e] (#{:drive/exited :spawn/exited} (:type e)))
+
+(defn decision-text
+  "What a decision did, in one line: its id, exit, then its result."
+  [e]
+  (str (or (:drive/id e) (:spawn/id e)) " " (if (:interrupted e) "interrupted" (str "exit " (:exit e)))
+       (when-let [r (:result e)] (str " · " r))))
+
+(defn- replay-screen
+  "Status as it stood after the first n of events, with the clock stopped at
+  event n and what the decision ending there did, if one does."
+  [sid events n color]
+  (let [shown (subvec events 0 n)
+        e (last shown)]
+    (status/render sid shown (Instant/parse (:t e))
+                   {:color color :replay {:of (count events) :decided (when (decision? e) (decision-text e))}})))
+
 (defn- decision-index [events from n]
-  (let [ds (filter (fn [[_ e]] (status/decision? e)) (drop from (map-indexed (fn [i e] [(inc i) e]) events)))
+  (let [ds (filter (fn [[_ e]] (decision? e)) (drop from (map-indexed (fn [i e] [(inc i) e]) events)))
         shown (take-last n ds)]
     (if (empty? ds)
       (str "no decisions" (when (pos? from) (str " after event " from)) " (drive turns or spawns); "
            (count events) " events — lume replay --at N")
       (str/join "\n" (concat (more ds shown (str "earlier decisions — -n " (count ds)))
                              (for [[i e] shown]
-                               (clip 100 (str i " " (subs (:t e) 0 16) " " (status/decision-text e))))
+                               (clip 100 (str i " " (subs (:t e) 0 16) " " (decision-text e))))
                              [(str "lume replay --at N: the screen after event N (of " (count events) ") · --step: each decision in turn")])))))
 
 (defn- replay-args
@@ -153,14 +170,13 @@
         sid (store/session-id session)
         events (store/read-events session)
         m (count events)
-        screen (fn [i] (status/render sid (subvec events 0 i) (Instant/parse (:t (nth events (dec i))))
-                                      {:color color :replay {:of m}}))]
+        screen #(replay-screen sid events % color)]
     (when (and at (not (<= 1 at m))) (fail! (str "--at " at " is outside the log: events 1.." m)))
     (cond
       (and at (not step)) (screen at)
       (not step) (decision-index events 0 n)
       :else
-      (let [ds (keep-indexed (fn [i e] (when (and (status/decision? e) (>= (inc i) (or at 1))) (inc i))) events)]
+      (let [ds (keep-indexed (fn [i e] (when (and (decision? e) (>= (inc i) (or at 1))) (inc i))) events)]
         (loop [[i & more] ds, k 1]
           (cond
             (nil? i) (if (= 1 k) (decision-index events (dec (or at 1)) n) (str "end of replay: " (dec k) (if (= 2 k) " decision" " decisions")))
@@ -195,9 +211,7 @@
                 (count events)))
             (render
               ([] (status/render sid @(ns-resolve ns-sym 'events) (Instant/now) {}))
-              ([n] (let [events @(ns-resolve ns-sym 'events)]
-                     (status/render sid (subvec events 0 n) (Instant/parse (:t (nth events (dec n))))
-                                    {:replay {:of (count events)}}))))]
+              ([n] (replay-screen sid @(ns-resolve ns-sym 'events) n false)))]
       (locking kernel/ns-lock
         (binding [*ns* (create-ns ns-sym)]
           (refer-clojure)

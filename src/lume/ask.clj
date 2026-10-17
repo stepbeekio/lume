@@ -3,8 +3,7 @@
   only the human answers, and the answer reaches status and workers alongside
   the notes, and LUME_NTFY (lume.ntfy reacts to :ask/opened)."
   (:require [clojure.string :as str]
-            [lume.kernel :as kernel :refer [*read-line* actor columns fail! human-only! next-id paint]]
-            [lume.status :as status :refer [wrap]]))
+            [lume.kernel :as kernel :refer [*read-line* actor columns fail! human-only! next-id paint width wrap]]))
 
 (defn open-asks
   "The open asks in state, oldest first."
@@ -118,7 +117,7 @@
   (->> (open-asks state)
        (map (fn [{:keys [id question]}]
               (let [indent (apply str (repeat (inc (count id)) " "))
-                    [l & more] (wrap question (- status/width 8 (count indent)) 3
+                    [l & more] (wrap question (- width 8 (count indent)) 3
                                      (str " — lume ask show " id))]
                 (map #(paint :yellow %)
                      (cons (str id " " l) (map #(str indent %) more))))))))
