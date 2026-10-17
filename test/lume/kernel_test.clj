@@ -1302,12 +1302,15 @@
                   _ (cli/item-add s ["do it"])
                   before (count @got)
                   gets-before (count @gets)
-                  drive (future (reset! *driver-turns* [(lume-cmd "ask" "which db?")])
+                  drive (future (reset! *driver-turns* [(lume-cmd "ask" "which db: (a) postgres, (b) sqlite, or (c) one \"ünusual\"; I pick a")])
                                 (binding [*out* (java.io.StringWriter.)]
                                   (cli/drive s *root* ["--agent" "driver" "--turns" "3" "--wait-on-ask"])))
                   n (sent (inc before))
                   code (code-of n)]
-              (is (nil? (:actions n)) "free text: no buttons")
+              (is (= (str/join "; " (for [[label l] [["a: postgres" "a"] ["b: sqlite" "b"] ["c: one nusual" "c"]]]
+                                      (str "http, " label ", " base "/reply, method=POST, body=a1 " code " " l ", clear=true")))
+                     (:actions n))
+                  "lettered options: a button each, posting the letter")
               (cli/answer s ["a1" "postgres"])
               (is (= "drive stopped: d2 logged no events" (deref drive 30000 "timed out")))
               (is (re-find #"^/reply/json\?since=\d+$" (nth @gets gets-before)))
@@ -1320,6 +1323,15 @@
             (is (thrown-with-msg? Exception #"needs LUME_NTFY "
                                   (cli/drive s *root* ["--wait-on-ask"]))))))
       (finally (httpkit/server-stop! server)))))
+
+(deftest lettered-asks-have-options
+  (let [lettered #'cli/lettered]
+    (is (= [["a" "keep going"] ["b" "try X"] ["c" "stop"]]
+           (lettered "i45 plateaued: (a) keep going (b) try X (c) stop? I'd pick c; see n120")))
+    (is (nil? (lettered "which db?")) "free text: no buttons")
+    (is (nil? (lettered "(a) w (b) x (c) y (d) z")) "more than ntfy's three")
+    (is (nil? (lettered "(a) w (c) y")) "not a, b, c in order")
+    (is (nil? (lettered "see (a) above")))))
 
 (deftest a-stalled-reply-stream-reconnects
   (let [gets (atom [])

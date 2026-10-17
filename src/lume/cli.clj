@@ -268,10 +268,23 @@
   [question]
   (boolean (re-find #"(?i)\((?:y/n|yes/no)\)\W*$" question)))
 
+(defn- lettered
+  "The options of a question that lists (a), (b) and maybe (c), as
+  [[letter text] ...]: each text runs to the next option or the first ?;.!
+  and loses the characters ntfy's Actions header can't carry (separators,
+  quotes, non-ASCII). nil unless the letters are a, b[, c] in order (ntfy
+  allows three buttons)."
+  [question]
+  (let [os (for [[_ l t] (re-seq #"\(([a-z])\)\s*([^()]*)" question)]
+             [l (-> t (str/split #"[?;.!]" 2) first (str/replace #"\s+" " ") (str/replace #"[,=\"'\x00-\x1f\x7f-￿]" "")
+                    (str/replace #"\s+or\s*$" "") str/trim)])]
+    (when (and (<= 2 (count os) 3) (= (map first os) (take (count os) ["a" "b" "c"])))
+      os)))
+
 (defn- notify-ask!
   "Send an ask, unless a waiting drive will. With a reply code, the message
-  says how to answer it and a yes/no ask carries buttons that post the
-  answer to the reply topic; the code and that URL are never logged."
+  says how to answer it and a yes/no or (a)/(b)/(c) ask carries buttons
+  that post the answer to the reply topic; the code and that URL are never logged."
   [session {id :ask/id :keys [question] :as opened} & [code]]
   (when (or code *ask-notices*)
     (let [item (ask-item (store/read-events session) opened)
@@ -284,8 +297,13 @@
                (str "lume: ask " id (when item (str " on " item)) " from " (:by opened))
                (str question "\n" (if code (str "reply " id " <code> <answer>, or lume answer " id) (str "lume answer " id)))
                :secret (when code (str "code " code))
-               :headers (when (and code (yes-no? question))
-                          {"Actions" (str (button "Yes" "yes") "; " (button "No" "no"))})))))
+               :headers (when-let [buttons (and code
+                                                (seq (if (yes-no? question)
+                                                       [["Yes" "yes"] ["No" "no"]]
+                                                       (for [[l t] (lettered question)
+                                                             :let [label (str/trim (str l ": " t))]]
+                                                         [(subs label 0 (min 30 (count label))) l]))))]
+                          {"Actions" (str/join "; " (map #(apply button %) buttons))})))))
 
 (defn- notify-asks-by!
   "Send the asks who (a spawn or drive turn) opened: its process can't."
