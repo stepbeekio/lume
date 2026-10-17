@@ -903,6 +903,37 @@
     (when (or (seq pos) (seq ns) (seq ids) (not (and n (<= 0 n)))) (fail! log-usage))
     (str/join "\n" (map pr-str (take-last n (store/read-events (session-by-id root id)))))))
 
+;; Ledger: every measurement row, open and closed items alike, newest last,
+;; each with its change against the row it was compared with when taken. A
+;; row names its spec when it's the first shown for its item or the spec changed.
+
+(def ^:private ledger-usage "usage: lume ledger [<item>] [-n N] [--session <id>]")
+
+(defn ledger [root args]
+  (let [[[id & extra] {[n & ns] "-n" [sid & sids] "--session"}] (take-flags args #{"-n" "--session"} ledger-usage)
+        n (if n (parse-long n) 20)
+        _ (when (or (seq extra) (seq ns) (seq sids) (not (and n (<= 0 n)))) (fail! ledger-usage))
+        {:keys [items ledger]} (status/project (store/read-events (session-by-id root sid)))
+        _ (when (and id (not (items id))) (fail! "no such item:" id))
+        rows (cond->> ledger id (filterv #(= id (:item/id %))))
+        shown (take-last n rows)
+        ;; Each shown row's spec, or nil when it's that of the item's previous shown row.
+        specs (second (reduce (fn [[last-spec out] {iid :item/id :as row}]
+                                (let [spec (status/spec-text row)]
+                                  [(assoc last-spec iid spec) (conj out (when (not= spec (last-spec iid)) spec))]))
+                              [{} []] shown))
+        lines (map (fn [{mid :measure/id iid :item/id :keys [t] :as row} spec]
+                     (str mid " " iid " " (subs t 0 16) " " (status/measure-text row)
+                          (when spec (str " · " (clip-to 60 spec)))))
+                   shown specs)]
+    (if (empty? rows)
+      (if id (str id " has no measurement rows") "no measurement rows")
+      (str/join "\n" (concat (when (> (count rows) (count shown))
+                               [(str "+" (- (count rows) (count shown)) " earlier rows — lume ledger"
+                                     (str/join (map #(str " " %) (remove nil? [id (when sid (str "--session " sid))])))
+                                     " -n " (count rows))])
+                             lines)))))
+
 ;; Clean: every trace of lume for this repo, or one session's. Lume writes
 ;; nothing inside the repo, so that is its state under LUME_HOME, plus any
 ;; refs/lume/* and git worktrees kept under that state. The log is the whole
@@ -1069,6 +1100,8 @@ lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]...
                                             N runs, first K dropped, give medians and min..max; lower is
                                             better unless --higher names it (shown name↑)
 lume measure <id>                           run the item's measurement now and print its row (a baseline)
+lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
+                                            numbers with change vs the row compared, spread, wall time, exit
 lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
 lume item show <id>                         one item in full: intent, gate, disposition and its events
 lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
@@ -1120,6 +1153,7 @@ lume clean [--session <id>] [--yes]         remove every trace of lume for this 
                "measure" (item-measure (session) more)
                (fail! "usage: lume item add|gate|measure|close|show ..."))
       "measure" (if (#{"-h" "--help"} sub) measure-usage (measure (session) (rest args)))
+      "ledger" (if (#{"-h" "--help"} sub) ledger-usage (ledger @root (rest args)))
       "note" (note (session) (rest args))
       "ask" (if (and (= "show" sub) (= 2 (count (rest args))))
               (ask-show (session) (drop 2 args))

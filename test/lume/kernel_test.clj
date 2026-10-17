@@ -372,7 +372,33 @@
       (is (= "usage: lume measure <id>" (cli/run ["measure" "--help"]))))
     (testing "a closed item can still be measured"
       (cli/item-close s [id "dropped" "x"])
-      (is (str/starts-with? (cli/measure s [id]) "m11 i1 ")))))
+      (is (str/starts-with? (cli/measure s [id]) "m11 i1 ")))
+    (testing "lume ledger: every row, closed items' too, each against its base, newest last"
+      (let [other (cli/item-add s ["other" "--gate" "true"])]
+        (is (= "i2 has no measurement rows" (cli/ledger *root* [other])))
+        (cli/item-measure s [other "echo q=4"])
+        (cli/measure s [other])
+        (let [lines (str/split-lines (cli/ledger *root* []))]
+          (is (= 12 (count lines)))
+          (is (re-matches #"m1 i1 \d{4}-\d\d-\d\dT\d\d:\d\d build_s=12\.5 hits=3 · \d+\.\ds · pwd; echo build_s=12\.5 hits=3" (first lines)))
+          (is (re-matches #"m2 i1 \S+ build_s=12\.5 hits=3 · \d+\.\ds · vs m1" (nth lines 1)) "the same spec isn't repeated")
+          (is (re-find #"^m3 i1 \S+ no numbers · \d+\.\ds · fail exit 2 · echo oops; exit 2$" (nth lines 2)))
+          (is (re-find #"^m8 i1 \S+ build_s=9\.5\(-0\.1\) hits=3 · \d+\.\ds · vs m6$" (nth lines 7)))
+          (is (re-matches #"m12 i2 \S+ q=4 · \d+\.\ds · echo q=4" (last lines))))
+        (let [lines (str/split-lines (cli/ledger *root* [id "-n" "3"]))]
+          (is (= "+8 earlier rows — lume ledger i1 -n 11" (first lines)))
+          (is (str/starts-with? (second lines) "m9 i1 ") "a bounded view names the spec on its first row")
+          (is (str/includes? (second lines) (str " · sh ")))
+          (is (str/starts-with? (last lines) "m11 i1 ")))
+        (testing "a past session's, by id"
+          (let [old-id (store/session-id s)]
+            (new-session "next")
+            (is (= "no measurement rows" (cli/ledger *root* [])))
+            (is (= (str "+11 earlier rows — lume ledger --session " old-id " -n 12")
+                   (first (str/split-lines (cli/ledger *root* ["--session" old-id "-n" "1"])))))))
+        (is (thrown-with-msg? Exception #"no such item" (cli/ledger *root* ["i9"])))
+        (doseq [args [["-n" "x"] ["i1" "i2"] ["-n"] ["--session" "a" "--session" "b"]]]
+          (is (thrown-with-msg? Exception #"usage" (cli/ledger *root* args)) (pr-str args)))))))
 
 (deftest measurements-repeat
   (testing "a row of runs is each number's median and its spread"

@@ -105,18 +105,20 @@
        ;; of the same spec (command, runs and drop) that passed with numbers
        ;; and shares a number's name with it, so a misparsed row isn't the
        ;; baseline for a good one. One good row is kept per set of names.
-       :measure/ran     (update-in s [:items (:item/id e)]
-                                   (fn [item]
-                                     (let [names #(set (keys (:values %)))
-                                           base (last (filter #(some (names %) (keys (:values e)))
-                                                              (get-in item [:good-measures (spec e)])))
-                                           p (plateau (get-in item [:plateaus (spec e)]) e)]
-                                       (cond-> (-> item
-                                                   (assoc :last-measure (cond-> e base (assoc :base base)) :plateau p)
-                                                   (assoc-in [:plateaus (spec e)] p))
-                                         (and (zero? (:exit e)) (seq (:values e)))
-                                         (update-in [:good-measures (spec e)]
-                                                    (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))))))
+       :measure/ran     (let [s (update-in s [:items (:item/id e)]
+                                       (fn [item]
+                                         (let [names #(set (keys (:values %)))
+                                               base (last (filter #(some (names %) (keys (:values e)))
+                                                                  (get-in item [:good-measures (spec e)])))
+                                               p (plateau (get-in item [:plateaus (spec e)]) e)]
+                                           (cond-> (-> item
+                                                       (assoc :last-measure (cond-> e base (assoc :base base)) :plateau p)
+                                                       (assoc-in [:plateaus (spec e)] p))
+                                             (and (zero? (:exit e)) (seq (:values e)))
+                                             (update-in [:good-measures (spec e)]
+                                                        (fn [rows] (conj (filterv #(not= (names %) (names e)) rows) e)))))))]
+                          ;; Every row, newest last, as compared when it was taken: lume ledger.
+                          (update s :ledger conj (get-in s [:items (:item/id e) :last-measure])))
        :item/closed     (update-in s [:items (:item/id e)] assoc
                                    :state (:disposition e) :why (:why e) :closed-at (:t e))
        :note/added      (update s :notes conj e)
@@ -141,7 +143,7 @@
        :spawn/exited    (-> s (update-in [:spawns (:spawn/id e)] merge e) (spend e))
        :drive/exited    (spend s e)
        s))
-   {:items {} :notes [] :spawns {} :allow [] :asks {} :spent {:usd 0 :spawns 0 :minutes 0}}
+   {:items {} :notes [] :ledger [] :spawns {} :allow [] :asks {} :spent {:usd 0 :spawns 0 :minutes 0}}
    events))
 
 (defn over-budget
