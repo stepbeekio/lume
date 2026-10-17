@@ -32,6 +32,11 @@
 
 (defn- driver? [] (boolean (re-matches #"d\d+" (actor))))
 
+(def ^:dynamic *default-agent*
+  "The agent spawn, drive, run and install use without --agent: LUME_AGENT, else
+  claude. Set it once on a machine whose agent CLI isn't claude. Tests bind it."
+  (or (not-empty (System/getenv "LUME_AGENT")) "claude"))
+
 ;; Human-only commands need more than LUME_ACTOR, which an agent running as your
 ;; uid can forge (a1): an interactive stdin and a typed confirmation. Spawns and
 ;; drives run with no tty, so they can't pass.
@@ -625,7 +630,7 @@
           (and before (= before after)) (str sid " changed nothing in the repo"))))
 
 (defn- run-spawn [session root id opts]
-  (let [agent (keyword (or (flag opts "--agent") "claude"))
+  (let [agent (keyword (or (flag opts "--agent") *default-agent*))
         events (store/read-events session)
         item (open-item events id)
         started (store/append! session (fn [events]
@@ -677,7 +682,7 @@
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
 ;; The cadence's batch is how many requests a turn may make.
 (defn spawn [session root [id & opts]]
-  (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude]"))
+  (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude|claude-acp|devin]"))
   (if (driver?)
     (let [requested (fn [events] (count (filter #(and (= :spawn/requested (:type %)) (= (actor) (:by %))) events)))]
       (store/append! session (fn [events]
@@ -749,12 +754,13 @@
 
 (defn- run-requests
   "Run a turn's spawn requests in order until the cadence hands back early; a
-  cut batch logs :drive/handed-back with the items it skipped."
-  [session root did say requests]
+  cut batch logs :drive/handed-back with the items it skipped. A request that
+  names no agent runs the drive's."
+  [session root agent did say requests]
   (loop [[{id :item/id a :agent} & more] requests]
     (when id
       (let [since (count (store/read-events session))]
-        (say (try (run-spawn session root id ["--agent" (name (or a :claude))])
+        (say (try (run-spawn session root id ["--agent" (name (or a agent))])
                   (catch clojure.lang.ExceptionInfo e (ex-message e))))
         (let [why (when (seq more) (hand-back-early (store/read-events session) since id))]
           (if why
@@ -795,9 +801,9 @@
   printing a line per turn and spawn. Returns why it stopped."
   [session root opts]
   (let [turns (parse-long (or (flag opts "--turns") "10"))
-        agent (or (flag opts "--agent") "claude")
+        agent (or (flag opts "--agent") *default-agent*)
         from (parse-long (or (flag opts "--from") "1"))
-        _ (when-not (and turns (pos? turns) from (pos? from)) (fail! "usage: lume drive [--turns N] [--agent claude]"))
+        _ (when-not (and turns (pos? turns) from (pos? from)) (fail! "usage: lume drive [--turns N] [--agent claude|claude-acp|devin]"))
         src *source*
         loaded (atom (fingerprint src))
         say #(do (println %) (flush))
@@ -843,7 +849,7 @@
               (say (str did " exit " exit (when result (str " · " (str/replace (str result) #"\s+" " "))) "\n" out))
               (if (empty? logged)
                 (stop! (str did " logged no events"))
-                (do (run-requests session root did say (filter #(= :spawn/requested (:type %)) logged))
+                (do (run-requests session root agent did say (filter #(= :spawn/requested (:type %)) logged))
                     (recur (inc n))))))))
       (finally (.removeShutdownHook (Runtime/getRuntime) hook)))))
 
@@ -893,7 +899,7 @@
 ;; what differs and nothing inside any repo.
 
 (defn install [[a b]]
-  (let [agent (keyword (if (= "--agent" a) b "claude"))
+  (let [agent (keyword (if (= "--agent" a) b *default-agent*))
         {:keys [files manual]} ((requiring-resolve 'lume.agents/setup) agent)]
     (str/join "\n"
               (concat
@@ -1092,7 +1098,7 @@
 ;; cadence above the default ceiling. A fresh session has no limits, so a
 ;; budget only adds them, which anyone may.
 
-(def ^:private run-usage "usage: lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]")
+(def ^:private run-usage "usage: lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude|claude-acp|devin]")
 
 (defn- spec-policy
   "The human-only parts of a spec, as text for the confirmation, or nil."
@@ -1272,7 +1278,8 @@
     @(promise)))
 
 (def usage
-  "lume install [--agent claude]               set up agents on this machine (a lume skill); safe to re-run
+  "lume install [--agent A]                    set up agents on this machine (a lume skill); safe to re-run.
+                                            Agents: claude, claude-acp, devin; LUME_AGENT sets the default (claude)
 lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
                                             start a session; items added without --gate get its --gate
 lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);
@@ -1306,11 +1313,12 @@ lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                             a failed gate ends the batch; K rows without a new best (lower
                                             is better, unless --higher) ask the human. No rules: print it. Above the human's
                                             latest cadence is the human's
-lume spawn <id> [--agent claude]            run a worker on an item, in the foreground (a driver's is a request)
-lume drive [--turns N] [--agent claude]     driver turns until an ask is open, a budget is reached, no items are open, or N (10) run
+lume spawn <id> [--agent A]                 run a worker on an item, in the foreground (a driver's is a request)
+lume drive [--turns N] [--agent A]          driver turns until an ask is open, a budget is reached, no items are open, or N (10) run;
+                                            workers run the drive's agent
 lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
 lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
-lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent claude]
+lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]
                                             check a spec, start a session from it, baseline its measurements,
                                             then drive (--turns 0: don't). A spec's allow, or a cadence above
                                             every-spawn, is the human's. Run by a worker or driver, the new

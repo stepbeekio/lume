@@ -1,27 +1,33 @@
 ;; Records one real ACP stdio transcript, as test data for the claude-acp adapter (i58, n10).
 ;;
-;;   bb dev/acp_record.clj [out-file]
+;;   bb dev/acp_record.clj [out-file] [prompt]
 ;;
-;; Runs the ACP agent (LUME_ACP_AGENT, else ~/.npm-global/bin/claude-agent-acp) in a
+;; Runs the ACP agent (LUME_ACP_AGENT, a path or an EDN argv like ["devin" "acp"], else
+;; ~/.npm-global/bin/claude-agent-acp) in a
 ;; fresh temp dir, sends initialize, session/new and one session/prompt that should
 ;; make it run a command and write a file (so it asks permission), allows each
 ;; permission once, and stops when the prompt's response arrives (or after 5 min).
 ;; Every JSON-RPC line is written to out-file (default test/data/acp-transcript.jsonl)
 ;; prefixed "> " (client to agent) or "< " (agent to client); the agent's stderr
-;; goes to out-file.stderr. It costs one short agent turn.
+;; goes to out-file.stderr. LUME_ACP_MODE, if set, is sent as session/set_mode first. It costs one short agent turn.
 (require '[babashka.fs :as fs]
          '[babashka.process :as p]
          '[cheshire.core :as json]
+         '[clojure.edn :as edn]
          '[clojure.java.io :as io]
          '[clojure.string :as str])
 
-(def agent-bin (or (System/getenv "LUME_ACP_AGENT")
-                   (str (fs/path (fs/home) ".npm-global" "bin" "claude-agent-acp"))))
+(def agent-argv (let [s (System/getenv "LUME_ACP_AGENT")]
+                  (cond (nil? s) [(str (fs/path (fs/home) ".npm-global" "bin" "claude-agent-acp"))]
+                        (str/starts-with? (str/trim s) "[") (edn/read-string s)
+                        :else [s])))
 (def out-file (or (first *command-line-args*) "test/data/acp-transcript.jsonl"))
+(def prompt (or (second *command-line-args*)
+                "Run the shell command `echo hello`, then create a file hello.txt containing its output. Reply with one short sentence."))
 (def work-dir (str (fs/create-temp-dir {:prefix "lume-acp-"})))
 (fs/create-dirs (fs/parent (fs/absolutize out-file)))
 
-(def proc (p/process [agent-bin] {:dir work-dir :err (io/file (str out-file ".stderr"))}))
+(def proc (p/process agent-argv {:dir work-dir :err (io/file (str out-file ".stderr"))}))
 (def in (io/writer (:in proc)))
 (def out (io/writer out-file))
 (def lock (Object.))
@@ -76,10 +82,12 @@
     (println "no sessionId from session/new; see" out-file)
     (p/destroy-tree proc)
     (System/exit 1))
+  (when-let [mode (System/getenv "LUME_ACP_MODE")]
+    (send! {:jsonrpc "2.0" :id 3 :method "session/set_mode" :params {:sessionId sid :modeId mode}})
+    (await-response 3))
   (send! {:jsonrpc "2.0" :id 2 :method "session/prompt"
           :params {:sessionId sid
-                   :prompt [{:type "text"
-                             :text "Run the shell command `echo hello`, then create a file hello.txt containing its output. Reply with one short sentence."}]}}))
+                   :prompt [{:type "text" :text prompt}]}}))
 (println "result:" (pr-str (deref done 300000 :timeout)))
 (p/destroy-tree proc)
 (.close out)

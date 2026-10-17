@@ -6,7 +6,7 @@ Nothing is written inside your repo. All state lives under `~/.lume`, and `lume 
 
 ## Install
 
-Needs [Babashka](https://babashka.org), [bbin](https://github.com/babashka/bbin) and the `claude` CLI.
+Needs [Babashka](https://babashka.org), [bbin](https://github.com/babashka/bbin) and an agent CLI: `claude` (the default) or `devin` (see [Devin](#devin) below).
 
 ```
 bbin install io.github.stepbeekio/lume
@@ -23,6 +23,26 @@ lume install
 It writes a Claude skill, `~/.claude/skills/lume/SKILL.md` (or under `$CLAUDE_CONFIG_DIR`), that teaches any Claude session to work in a repo through lume: start from `lume status`, add gated items, spawn and drive, review and commit, ask you rather than allow, answer or push. It prints each file it wrote, updated or left unchanged, so it's safe to re-run after an upgrade.
 
 It also prints one line for you to add yourself, because it never edits your settings: `"LUME_ACTOR": "claude"` in the `env` of `~/.claude/settings.json`. That makes interactive Claude sessions act as `claude` rather than as you, so lume refuses them `lume allow` and `lume answer` before it even asks for a confirmation (see below).
+
+### Devin
+
+On a machine with [Devin CLI](https://cli.devin.ai) instead of Claude:
+
+```
+devin auth login                  # once, if devin auth status says you aren't
+lume install --agent devin
+```
+
+That writes the same skill to `~/.config/devin/skills/lume/SKILL.md`, and lume's Devin config to `~/.lume/agents/devin.json`. It then prints two lines for your shell rc:
+
+```
+export LUME_AGENT=devin
+alias devin='LUME_ACTOR=devin devin'
+```
+
+`LUME_AGENT` makes `devin` the default for `spawn`, `drive`, `run` and `install`, so you never pass `--agent`. A drive's workers run the drive's agent. The alias makes interactive Devin sessions act as `devin`, not you. Re-run `lume install` after an upgrade.
+
+Lume drives Devin over ACP (`devin --config ~/.lume/agents/devin.json acp`). Devin's ACP sessions start in accept-edits mode, which would edit files and run commands it considers read-only without asking. Lume's config replaces your Devin user config for these runs, and its `ask` rules route every command and every write through lume. Lume answers each one from the allow list and logs it as a `:spawn/permission` event. Devin reports tokens, not dollars, so `lume budget --usd` doesn't limit its spawns; use `--spawns` and `--minutes`. Pass flags such as a model as `LUME_DEVIN_ARGS='["--model" "opus"]'`.
 
 ## Use
 
@@ -106,7 +126,8 @@ Pushing is up to you. Drivers commit, but they can't push.
 ## Commands
 
 ```
-lume install                   set up agents on this machine (the lume skill); safe to re-run
+lume install [--agent A]       set up agents on this machine (the lume skill); safe to re-run.
+                               A: claude, claude-acp or devin; LUME_AGENT sets the default
 lume init "<goal>" [--gate "<cmd>"] [--allow "<cmd>"]...
 lume status [<session>] [--color]
                                one screen: goal, asks, pinned notes, items, recent events

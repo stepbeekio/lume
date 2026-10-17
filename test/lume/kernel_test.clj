@@ -27,7 +27,8 @@
                   cli/*confirm* (constantly true) cli/*read-line* (constantly nil)
                   cli/*source* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
-                  agents/*claude-home* (str (fs/path home "claude"))]
+                  agents/*claude-home* (str (fs/path home "claude"))
+                  agents/*devin-home* (str (fs/path home "devin"))]
           (t))
         (finally (fs/delete-tree home) (fs/delete-tree root))))))
 
@@ -206,8 +207,9 @@
       (is (= {:result "boom"} (agents/summarize :claude "boom"))))))
 
 ;; ACP: a fake agent replays a real transcript (dev/acp_record.clj) and logs what lume sent.
-(defn- fake-acp [log]
-  ["bb" (str (fs/absolutize "test/fake_acp.clj")) (str (fs/absolutize "test/data/acp-transcript.jsonl")) log])
+(defn- fake-acp
+  ([log] (fake-acp "test/data/acp-transcript.jsonl" log))
+  ([transcript log] ["bb" (str (fs/absolutize "test/fake_acp.clj")) (str (fs/absolutize transcript)) log]))
 
 (defn- acp-permission [{:keys [kind command file]}]
   {"toolCall" {"kind" kind "rawInput" (cond-> {} command (assoc "command" command) file (assoc "file_path" file))}})
@@ -243,6 +245,8 @@
       worker {:kind "execute" :command "lume note 'x; rm -rf ."} false
       worker {:kind "execute" :command "lume note \"x\nrm -rf .\""} false
       worker {:kind "execute" :command "jj st"} false
+      {:allow ["test -f x && grep -q y x"]} {:kind "execute" :command "test -f x && grep -q y x"} true
+      {:allow ["test -f x && grep -q y x"]} {:kind "execute" :command "test -f x && rm -rf ."} false
       worker {:kind "edit" :file "a.clj"} true
       worker {:kind "fetch"} false
       driver {:kind "execute" :command "jj st"} true
@@ -266,6 +270,31 @@
   (testing "an agent that exits early is an error"
     (let [out (with-out-str (is (= 1 (agents/acp-bridge {:agent ["true"]} "hi"))))]
       (is (:agent-error (agents/summarize :claude-acp out))))))
+
+;; Devin's permission requests carry only a toolCallId; the bridge reads them over
+;; the tool_call that came first. Its message chunks have no messageId.
+(deftest acp-bridge-replays-a-devin-transcript
+  (doseq [[role answers] [[nil ["allow_once" "allow_once"]] [:driver ["allow_once" "reject_once"]]]]
+    (let [log (str (fs/path *root* (str "devin-" (name (or role :worker)) ".log")))
+          out (with-out-str (is (= 0 (agents/acp-bridge {:agent (fake-acp "test/data/devin-acp-transcript.jsonl" log)
+                                                          :allow ["echo"] :role role} "hi"))))
+          sent (map json/parse-string (str/split-lines (slurp log)))]
+      (testing (str (or role :worker) " answers echo, then the write, from the allow list")
+        (is (= answers (map #(get-in % ["result" "outcome" "optionId"]) (drop 3 sent)))))
+      (is (= {:steps 2 :last "Created hello.txt with the output."}
+             (reduce #(agents/progress :devin %1 %2) {} (str/split-lines out))))
+      (is (= {:result "Created hello.txt with the output." :agent-session "ethereal-salsa"}
+             (agents/summarize :devin out)))
+      (is (not (str/includes? out "agent_thought_chunk")) "thinking stays out of the spawn's output"))))
+
+(deftest devin-spawn-logs-permissions
+  (binding [agents/*acp-agent* (fake-acp "test/data/devin-acp-transcript.jsonl" (str (fs/path *root* "devin.log")))]
+    (let [s (new-session "goal")
+          id (cli/item-add s ["write hello"])]
+      (is (re-find #"^s1 i1 exit 0 in \d+s · Created hello.txt" (cli/spawn s *root* [id "--agent" "devin"])))
+      (is (= [["execute" "echo hello" :reject] ["edit" "/tmp/lume-acp-15701034023853507021/hello.txt" :allow]]
+             (->> (store/read-events s) (filter #(= :spawn/permission (:type %))) (map (juxt :tool :command :disposition)))))
+      (is (= :devin (:agent (first (filter #(= :spawn/started (:type %)) (store/read-events s)))))))))
 
 (deftest acp-spawn-logs-permissions-and-exits
   (binding [agents/*acp-agent* (fake-acp (str (fs/path *root* "acp.log")))]
@@ -993,6 +1022,13 @@
       (let [id (cli/item-add s ["commit" "--gate" "true"])]
         (is (str/ends-with? (cli/spawn s *root* [id "--agent" "commits"]) "i4 done · g2 pass"))))))
 
+(deftest the-default-agent-is-lume-agent
+  (let [s (new-session "goal")]
+    (cli/item-add s ["do it"])
+    (binding [cli/*default-agent* "test"]
+      (cli/spawn s *root* ["i1"]))
+    (is (= :test (:agent (first (filter #(= :spawn/started (:type %)) (store/read-events s))))))))
+
 (defn- drive! [s & turns]
   (reset! *driver-turns* (vec turns))
   (reset! *driver-calls* [])
@@ -1018,6 +1054,12 @@
         (is (= :driver role))
         (is (str/includes? prompt "turn d1"))
         (is (str/includes? prompt "open    i1  do it") "the prompt carries status"))))
+  (testing "a request that names no agent runs the drive's"
+    (let [s (new-session "goal")]
+      (cli/item-add s ["do it" "--gate" "true"])
+      (drive! s (lume-cmd "spawn" "i1") "echo worked")
+      (is (= :driver (:agent (first (filter #(= :spawn/started (:type %)) (store/read-events s))))))
+      (is (= [:driver nil] (take 2 (map :role @*driver-calls*))) "the worker ran the drive's agent, as a worker")))
   (testing "it stops when a turn logs nothing, when turns run out, and when an ask is open"
     (let [s (new-session "goal")]
       (cli/item-add s ["never done"])
@@ -1503,6 +1545,14 @@
         (is (str/includes? out "LUME_ACTOR=claude is set"))
         (is (not (str/includes? out "todo"))))
       (is (= "{\"env\": {\"LUME_ACTOR\": \"claude\"}}" (slurp settings))))
+    (testing "devin: the same skill in devin's skills dir, lume's devin config, and the shell lines"
+      (let [out (cli/install ["--agent" "devin"])
+            devin-skill (str (fs/path agents/*devin-home* "skills" "lume" "SKILL.md"))
+            config (str (fs/path store/*home* "agents" "devin.json"))]
+        (is (str/includes? out (str "wrote     " devin-skill)))
+        (is (= (slurp skill) (slurp devin-skill)))
+        (is (= ["exec" "edit" "Write(/**)"] (get-in (json/parse-string (slurp config)) ["permissions" "ask"])))
+        (is (str/includes? out "alias devin='LUME_ACTOR=devin devin'"))))
     (is (thrown-with-msg? Exception #"knows no agent" (cli/install ["--agent" "nope"])))
     (is (empty? (fs/list-dir *root*)) "nothing is written in the repo")))
 

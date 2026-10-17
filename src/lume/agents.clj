@@ -52,12 +52,14 @@
 
 (defn- bash-rule [cmd] (str "Bash(" cmd ":*)"))
 
-(defn- user-args [s]
-  (let [v (try (edn/read-string s) (catch Exception _ nil))]
-    (if (and (vector? v) (every? string? v))
-      v
-      (throw (ex-info (str "LUME_CLAUDE_ARGS must be an EDN vector of strings, e.g. [\"--model\" \"opus\"]; got: " s)
-                      {:lume/user-error true})))))
+(defn- user-args
+  ([s] (user-args "LUME_CLAUDE_ARGS" s))
+  ([var s]
+   (let [v (try (edn/read-string s) (catch Exception _ nil))]
+     (if (and (vector? v) (every? string? v))
+       v
+       (throw (ex-info (str var " must be an EDN vector of strings, e.g. [\"--model\" \"opus\"]; got: " s)
+                       {:lume/user-error true}))))))
 
 (defn claude-args
   "Flags after the prompt: `env` (LUME_CLAUDE_ARGS) replaces the defaults, and
@@ -121,6 +123,10 @@
 ;; runs the ACP agent, prints one JSON line per session/update (so progress and
 ;; summarize stay line-based), answers each permission request from the allow
 ;; list, logging it as a :spawn/permission event, and ends with a result line.
+;; Every ACP agent shares the bridge, its summary and its progress; only argv differs.
+
+(derive :claude-acp ::acp)
+(derive :devin ::acp)
 
 (def ^:dynamic *acp-agent*
   "argv of the ACP agent; nil finds it. Tests bind a fake."
@@ -166,18 +172,20 @@
       :else (recur more nil (.append out c)))))
 
 (defn- allowed-command?
-  "Whether shell `cmd` is only allowed commands: each part of a pipeline or
-  list (split on && || ; | and a lone &) must start with an allowed prefix (or
-  be head, tail, grep or wc), and nothing may substitute, redirect (bar 2>&1)
-  or open a subshell. Quoted text is an argument, so its metachars don't count."
+  "Whether shell `cmd` is only allowed commands: exactly an allowed one (a gate
+  like `test -f x && grep -q y x`), or each part of a pipeline or list (split
+  on && || ; | and a lone &) starts with an allowed prefix (or is head, tail,
+  grep or wc), and nothing substitutes, redirects (bar 2>&1) or opens a
+  subshell. Quoted text is an argument, so its metachars don't count."
   [prefixes cmd]
   (boolean
-   (when-let [cmd (some-> (mask-quoted (str/trim cmd)) (str/replace "2>&1" ""))]
-     (let [parts (map str/trim (str/split cmd #"&&|\|\||;|\||&"))
-           ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
-                                (concat prefixes ["head" "tail" "grep" "wc"])))]
-       (and (not (re-find #"[`$<>()]" cmd))
-            (every? ok? parts))))))
+   (or (some #{(str/trim cmd)} prefixes)
+       (when-let [cmd (some-> (mask-quoted (str/trim cmd)) (str/replace "2>&1" ""))]
+         (let [parts (map str/trim (str/split cmd #"&&|\|\||;|\||&"))
+               ok? (fn [part] (some #(or (= part %) (str/starts-with? part (str % " ")))
+                                    (concat prefixes ["head" "tail" "grep" "wc"])))]
+           (and (not (re-find #"[`$<>()]" cmd))
+                (every? ok? parts)))))))
 
 (defn acp-permit?
   "Whether to allow a session/request_permission. Workers may edit and run the
@@ -216,6 +224,9 @@
         emit! (fn [m] (println (json/generate-string m)) (flush))
         ;; Text comes in chunks; each message is printed whole, once it ends.
         text (atom nil)
+        ;; A permission request's toolCall may be just its id (Devin's are), so
+        ;; it's read over the tool_call that announced it.
+        calls (atom {})
         flush-text! (fn [] (when-let [{:keys [id parts]} @text]
                              (emit! {:sessionUpdate "agent_message_chunk" :messageId id
                                      :content {:type "text" :text (apply str parts)}})))]
@@ -238,15 +249,16 @@
             (nil? line) (finish {:error "the ACP agent exited before the prompt finished"} 1)
 
             (= "session/request_permission" method)
-            (let [permit? (acp-permit? opts params)
-                  call (get params "toolCall")
+            (let [call (merge (get @calls (get-in params ["toolCall" "toolCallId"])) (get params "toolCall"))
+                  params (assoc params "toolCall" call)
+                  permit? (acp-permit? opts params)
                   answer (acp-answer permit? params)]
               (send! {:jsonrpc "2.0" :id id :result {:outcome answer}})
-              (emit! {:type "permission" :tool (get call "name") :kind (get call "kind")
+              (emit! {:type "permission" :tool (or (get call "name") (get call "kind")) :kind (get call "kind")
                       :subject (acp-subject call) :allowed permit?})
               (when session
                 (store/append! session (constantly {:type :spawn/permission :spawn/id spawn
-                                                    :tool (get call "name") :command (acp-subject call)
+                                                    :tool (or (get call "name") (get call "kind")) :command (acp-subject call)
                                                     :disposition (if permit? :allow :reject) :by spawn})))
               (recur more sid cost))
 
@@ -255,14 +267,22 @@
                 (recur more sid cost))
 
             (= "session/update" method)
-            (let [{:strs [sessionUpdate messageId content] :as u} (get params "update")
+            (let [{:strs [sessionUpdate messageId content toolCallId] :as u} (get params "update")
                   cost (or (when (= "USD" (get-in u ["cost" "currency"])) (get-in u ["cost" "amount"])) cost)]
+              (when (#{"tool_call" "tool_call_update"} sessionUpdate)
+                (swap! calls update toolCallId merge u))
+              ;; A tool call ends the message before it, so the result is the
+              ;; text after the last call even when chunks have no messageId.
+              (when (= "tool_call" sessionUpdate)
+                (flush-text!)
+                (reset! text nil))
               (if (= "agent_message_chunk" sessionUpdate)
-                (do (when (not= messageId (:id @text))
+                ;; Devin's chunks have no messageId, so nil is an id too.
+                (do (when (or (nil? @text) (not= messageId (:id @text)))
                       (flush-text!)
                       (reset! text {:id messageId :parts []}))
                     (swap! text update :parts conj (get content "text")))
-                (when-not (#{"available_commands_update" "usage_update"} sessionUpdate)
+                (when-not (#{"available_commands_update" "usage_update" "agent_thought_chunk"} sessionUpdate)
                   (emit! u)))
               (recur more sid cost))
 
@@ -286,7 +306,7 @@
 (defn- acp-result [out]
   (->> (str/split-lines (str out)) (keep parse) (filter #(= "result" (get % "type"))) last))
 
-(defmethod summarize :claude-acp [_ out]
+(defmethod summarize ::acp [_ out]
   (if-let [{:strs [text sessionId costUsd stopReason error]} (acp-result out)]
     (cond-> {:result (or error text) :agent-session sessionId}
       costUsd (assoc :cost-usd costUsd)
@@ -294,7 +314,7 @@
     (summarize :default out)))
 
 ;; Steps are tool calls; :last is the latest call's title, or text when the agent is talking.
-(defmethod progress :claude-acp [_ prog line]
+(defmethod progress ::acp [_ prog line]
   (let [{:strs [sessionUpdate title content]} (parse line)]
     (case sessionUpdate
       "tool_call" (cond-> (update prog :steps (fnil inc 0)) title (assoc :last title))
@@ -302,6 +322,45 @@
       "agent_message_chunk" (let [t (get content "text")]
                               (cond-> prog (not (str/blank? t)) (assoc :last t)))
       prog)))
+
+;; Devin CLI over ACP, `devin acp`. Its ACP sessions start in accept-edits mode, which
+;; edits the workspace and runs commands it deems read-only without asking, and no
+;; mode asks for everything: --permission-mode doesn't reach acp, and ask mode can't
+;; run commands. So devin runs with a config of lume's own (--config replaces the
+;; user's ~/.config/devin/config.json) whose ask rules send every command and write
+;; through the bridge. Checked against test/data/devin-acp-transcript.jsonl. Devin
+;; reports tokens, not dollars, so its spawns add nothing to the budget's $.
+;; Flags for `devin acp` (e.g. --model) come from LUME_DEVIN_ARGS, an EDN vector.
+
+(def devin-config {:version 1 :permissions {:ask ["exec" "edit" "Write(/**)"]}})
+
+(defn- devin-config-path [] (fs/path store/*home* "agents" "devin.json"))
+
+(defn- devin-config-json [] (json/generate-string devin-config {:pretty true}))
+
+(defn- devin-config-file
+  "Path of lume's devin config under LUME_HOME, written when missing or stale."
+  []
+  (let [f (devin-config-path)
+        s (devin-config-json)]
+    (when-not (and (fs/exists? f) (= s (slurp (fs/file f))))
+      (fs/create-dirs (fs/parent f))
+      (let [tmp (fs/create-temp-file {:dir (fs/parent f) :prefix "devin." :suffix ".tmp"})]
+        (spit (fs/file tmp) s)
+        (fs/move tmp f {:replace-existing true :atomic-move true})))
+    (str f)))
+
+(defn devin-agent-argv []
+  (or *acp-agent*
+      (if-let [bin (fs/which "devin")]
+        (into [(str bin) "--config" (devin-config-file) "acp"]
+              (some->> (not-empty (System/getenv "LUME_DEVIN_ARGS")) (user-args "LUME_DEVIN_ARGS")))
+        (throw (ex-info "no devin on PATH: install Devin CLI, then devin auth login"
+                        {:lume/user-error true})))))
+
+(defmethod command :devin [_ prompt {:keys [allow role]}]
+  ["bb" "-cp" (lume-src) "-m" "lume.agents" "acp"
+   (pr-str {:agent (devin-agent-argv) :allow (vec allow) :role role}) prompt])
 
 (defn -main [& [cmd opts prompt]]
   (case cmd
@@ -313,13 +372,13 @@
       (println "usage: bb -m lume.agents acp <opts-edn> <prompt>")
       (System/exit 2))))
 
-;; Install: a user-level skill that teaches any Claude session to work through lume.
-;; Tests bind *claude-home* to a temp dir; nothing else should touch the real one.
+;; Install: a user-level skill that teaches any agent session to work through lume.
+;; Tests bind *claude-home* and *devin-home* to temp dirs; nothing else should touch the real ones.
 
 (def ^:dynamic *claude-home*
   (or (System/getenv "CLAUDE_CONFIG_DIR") (str (fs/path (fs/home) ".claude"))))
 
-(def claude-skill
+(def skill
   "---
 name: lume
 description: Work in a repo through lume, the durable log for long agent tasks. Use when a repo has a lume session (`lume status` prints one), or when asked to plan, drive, or hand off work with lume.
@@ -403,8 +462,28 @@ If there is no session, don't start one unprompted; ask the human for the goal.
 ;; in the user's own settings, which lume reads but never edits.
 (defmethod setup :claude [_]
   (let [settings (str (fs/path *claude-home* "settings.json"))]
-    {:files [[(str (fs/path *claude-home* "skills" "lume" "SKILL.md")) claude-skill]]
+    {:files [[(str (fs/path *claude-home* "skills" "lume" "SKILL.md")) skill]]
      :manual (if (claude-actor-set? settings)
                [(str "ok        LUME_ACTOR=claude is set in " settings)]
                [(str "todo      add to the \"env\" object in " settings ", so interactive Claude sessions act as 'claude', not the human:")
                 "          \"LUME_ACTOR\": \"claude\""])}))
+
+(def ^:dynamic *devin-home*
+  (str (fs/path (or (System/getenv "XDG_CONFIG_HOME") (fs/path (fs/home) ".config")) "devin")))
+
+;; Devin has no settings env, so the actor and the default agent go in the shell
+;; rc; the alias reaches only interactive sessions, since spawns run devin by path.
+(defmethod setup :devin [_]
+  (let [bin (fs/which "devin")]
+    {:files [[(str (fs/path *devin-home* "skills" "lume" "SKILL.md")) skill]
+             [(str (devin-config-path)) (devin-config-json)]]
+     :manual (concat
+              [(if bin
+                 (str "ok        devin is " bin "; if devin auth status isn't logged in, run devin auth login")
+                 "todo      install Devin CLI so devin is on PATH, then run devin auth login")]
+              (if (= "devin" (System/getenv "LUME_AGENT"))
+                ["ok        LUME_AGENT=devin is set"]
+                ["todo      add to your shell rc, so lume runs devin by default and interactive devin"
+                 "          sessions act as 'devin', not the human:"
+                 "          export LUME_AGENT=devin"
+                 "          alias devin='LUME_ACTOR=devin devin'"]))}))

@@ -1,0 +1,246 @@
+2026-10-17T12:19:05.554033Z  INFO chisel: elapsed_since_main_ms=15 logging initialized
+2026-10-17T12:19:05.554076Z  INFO chisel: log_file=/home/user/.local/share/devin/cli/logs/devin_20261017-131905_381025.log writing logs to file
+2026-10-17T12:19:05.554181Z  INFO acp_startup{pre_init_ms=15}:init_cli: chisel: version=3000.11.92 commit=7f4e64980e22 os=linux arch=aarch64 binary=devin startup
+2026-10-17T12:19:05.554271Z  INFO acp_startup{pre_init_ms=15}:init_cli:load_credentials: chisel: close time.busy=36.6µs time.idle=40.2µs
+2026-10-17T12:19:05.554367Z  INFO log_maintenance: chisel::log_maintenance: close time.busy=61.4µs time.idle=35.2µs
+2026-10-17T12:19:05.590698Z  INFO acp_startup{pre_init_ms=15}:init_cli: chisel_api::unleash: unleash flags evaluated: cli-smart-mode=true cli-user-edit-awareness=true cli-symlink-guard-killswitch=false cli-local-fusion-killswitch=false enable-devin-cli-cloud-compaction-schedule=true enable-devin-cli-swe2-self-compaction=false cli-agents-md-lazy-walk=false cli-trace-export=false cli-extend-context-tool=false cli-cloud-mcp-proxy=false (user_id=true team_id=false)
+2026-10-17T12:19:05.590897Z  INFO acp_startup{pre_init_ms=15}:init_cli:analytics_new: chisel: close time.busy=92.2µs time.idle=22.4µs
+2026-10-17T12:19:05.590989Z  INFO acp_startup{pre_init_ms=15}:init_cli: chisel: close time.busy=36.6ms time.idle=188µs
+2026-10-17T12:19:05.591185Z  INFO chisel: CLI init complete; dispatching command
+2026-10-17T12:19:05.591211Z  INFO run_acp_server: chisel_server::acp: Starting ACP server
+2026-10-17T12:19:05.591216Z  INFO run_acp_server: chisel_server::acp: ACP server PID: 381025
+2026-10-17T12:19:05.591256Z  INFO run_acp_server:init_acp_server: chisel_server::acp: ACP server credential policy: ACP_BACKEND not set. Will accept host credentials if provided, otherwise fall back to env vars and stored CLI credentials.
+2026-10-17T12:19:05.591605Z  INFO run_acp_server: chisel_server::acp: ACP server ready; starting stdio transport
+2026-10-17T12:19:05.591786Z  INFO acp_startup{pre_init_ms=15}:initialize: chisel_agent::acp_server::agent_impl: ACP: client capabilities — terminal=false, terminal_auth=false, fs.read=false, fs.write=false, subagents=false, elicitation=false, partial_content=false, multi_root=false, grouped_options=false, client_models=false, windsurf_config=false, message_grouping=false, raw_ref_tags=false, revert=false, load_stats=false, request_diagnostics=false, editor_context=false, terminal_context=false, mcp=false, plugins=false, fast_context=false, subagent_control=false, workspace_dir_commands=false, chains=false, browser_preview=false, browser_preview_open=false, clipboard_write=false, local_tools=false
+2026-10-17T12:19:05.591824Z  INFO acp_startup{pre_init_ms=15}:initialize: chisel_agent::acp_server::agent_impl: close time.busy=52.0µs time.idle=6.33µs
+2026-10-17T12:19:05.591838Z  INFO run_acp_server:acp_bridge_dispatch{method="initialize" queue_wait_ms=0}: chisel_agent::acp_server: close time.busy=73.1µs time.idle=12.4µs
+2026-10-17T12:19:05.592819Z  INFO acp_startup{pre_init_ms=15}:startup_prewarm_loads: chisel_agent::team_settings: Team settings ready in 0ms
+2026-10-17T12:19:05.595203Z  INFO run_acp_server:session_db_call:session_db_job:open: chisel_agent::session_db: close time.busy=3.44ms time.idle=34.4µs
+2026-10-17T12:19:05.595379Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=3.66ms time.idle=27.7µs
+2026-10-17T12:19:05.595405Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=10.9µs time.idle=3.71ms
+2026-10-17T12:19:05.595459Z  INFO run_acp_server: chisel_agent::process_memory: session DB inventory at boot: db_bytes=4096 wal_bytes=2962312 shm_bytes=32768 total_rows=6 visible_rows=6 newest_last_activity_at=1792239456 newest_visible_ids[6]=pollen-rumba,cold-sail,sleet-snowdrop,meteor-voice,mercurial-laugh,noiseless-algebra
+2026-10-17T12:19:05.601256Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-high: spawn=183500 apply=262000 hard=262000 max_tokens=None
+2026-10-17T12:19:05.601284Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-lightning: spawn=141926 apply=141926 hard=202752 max_tokens=None
+2026-10-17T12:19:05.601304Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601318Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601455Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601470Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601484Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601497Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601511Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601525Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601538Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601552Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601566Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601579Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601620Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601634Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601648Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601662Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601676Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601689Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601703Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601717Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601730Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601744Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601757Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601771Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601784Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601798Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601811Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601825Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601838Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601851Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601866Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601879Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601893Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601906Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601919Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601932Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601945Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601959Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601972Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.601986Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:05.602034Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:05.602047Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-medium: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:05.602060Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-lightning-medium: spawn=141926 apply=141926 hard=202752 max_tokens=None
+2026-10-17T12:19:05.602077Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-medium: spawn=183500 apply=262000 hard=262000 max_tokens=None
+2026-10-17T12:19:05.602090Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-max: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:05.602103Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-medium-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:05.602116Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-high-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:05.602129Z  WARN acp_startup{pre_init_ms=15}:startup_prewarm_loads: windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-max-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:05.603238Z  INFO acp_startup{pre_init_ms=15}:startup_prewarm_loads: chisel_server::acp: close time.busy=11.2ms time.idle=271µs
+2026-10-17T12:19:05.640964Z  INFO acp_startup{pre_init_ms=15}:new_session:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=97.4µs time.idle=49.5µs
+2026-10-17T12:19:05.640992Z  INFO acp_startup{pre_init_ms=15}:new_session:session_db_call: chisel_agent::session_db: close time.busy=10.7µs time.idle=167µs
+2026-10-17T12:19:05.641314Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:create_agent_client: chisel_server::acp: close time.busy=55.9µs time.idle=16.3µs
+2026-10-17T12:19:05.641471Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:managed_manifest_prefetch: chisel_server::acp: close time.busy=68.0µs time.idle=77.1µs
+2026-10-17T12:19:05.641692Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:team_settings_refresh: chisel_server::acp: close time.busy=341µs time.idle=19.8µs
+2026-10-17T12:19:05.644529Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:user_status_refresh: chisel_server::acp: close time.busy=2.68ms time.idle=514µs
+2026-10-17T12:19:05.648749Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:registry_reconcile: chisel_server::acp: close time.busy=4.21ms time.idle=3.20ms
+2026-10-17T12:19:05.649042Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:load_user_config: chisel_server::acp: close time.busy=126µs time.idle=151µs
+2026-10-17T12:19:05.649137Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:compute_read_config_from: chisel_server::acp: close time.busy=57.5µs time.idle=19.0µs
+2026-10-17T12:19:05.649405Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_sandbox: local_agent::agent_setup: close time.busy=237µs time.idle=16.2µs
+2026-10-17T12:19:05.652009Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:build_store_with_fetcher: local_agent::plugins: close time.busy=15.2µs time.idle=29.0µs
+2026-10-17T12:19:05.652663Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_all_skills:load_workspace_skills: chisel_agent::skills_loading: skills discovery: cwd=/tmp/lume-acp-15701034023853507021 workspace_root=/tmp/lume-acp-15701034023853507021 additional_dirs=0 providers=[devin,agents_standard,cursor,windsurf,claude,opencode,zed,copilot] scanned_scopes=2 loaded=4 by_provider=[builtin=3,claude=1] errors=0
+2026-10-17T12:19:05.652697Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_all_skills:load_workspace_skills: local_agent::agent_setup: close time.busy=344µs time.idle=89.6µs
+2026-10-17T12:19:05.652717Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_all_skills: local_agent::agent_setup: close time.busy=378µs time.idle=82.6µs
+2026-10-17T12:19:05.652754Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_cwd_rules: chisel_agent::skills_loading: rules discovery: cwd=/tmp/lume-acp-15701034023853507021 workspace_root=/tmp/lume-acp-15701034023853507021 additional_dirs=0 providers=[devin,agents_standard,cursor,windsurf,claude,opencode,zed,copilot] scanned_scopes=2 loaded=0 by_provider=[none] errors=0
+2026-10-17T12:19:05.652777Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_cwd_rules: local_agent::agent_setup: close time.busy=387µs time.idle=468µs
+2026-10-17T12:19:05.655499Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:ingest_managed_origin:manifest_load: plugin_host::ingest: close time.busy=3.39ms time.idle=72.0µs
+2026-10-17T12:19:05.662450Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:ingest_managed_origin:managed_ingest: plugin_host::ingest: close time.busy=6.88ms time.idle=32.7µs
+2026-10-17T12:19:05.662476Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:ingest_managed_origin: plugin_host: close time.busy=10.4ms time.idle=58.3µs
+2026-10-17T12:19:05.662552Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:ingest_repo_origins: plugin_host: close time.busy=51.1µs time.idle=15.1µs
+2026-10-17T12:19:05.662598Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:activate_plugin_content: plugin::activate: plugin selection: installed=0 considered=0 active=0 blocked=0 unavailable=0 unreachable=0 unreadable_manifest=0
+2026-10-17T12:19:05.662636Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:activate_plugin_content: plugin::activate: plugins discovery: cwd=/tmp/lume-acp-15701034023853507021 active_plugins=0 skills=0 hooks=0 rules=0 mcp_servers=0 agents=0
+2026-10-17T12:19:05.662654Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:activate_plugin_content: plugin_host: close time.busy=83.7µs time.idle=10.2µs
+2026-10-17T12:19:05.662756Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content:plugin_store_reconcile: plugin_host: close time.busy=57.5µs time.idle=38.2µs
+2026-10-17T12:19:05.662765Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:load_active_plugin_content: local_agent::agent_setup: close time.busy=10.7ms time.idle=176µs
+2026-10-17T12:19:05.663963Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent: config_importers::importers::hooks: hooks discovery: cwd=/tmp/lume-acp-15701034023853507021 workspace_root=/tmp/lume-acp-15701034023853507021 additional_dirs=0 providers=[devin,agents_standard,cursor,windsurf,claude,opencode,zed,copilot] scanned_scopes=2 loaded=0 (global=0 cascade=0 project=0 additional=0 session=0) by_provider=[none]
+2026-10-17T12:19:05.665848Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config:build_profiles:render_system_prompt:detect_installed_binaries: chisel_agent::agent_builder: close time.busy=1.96µs time.idle=14.1µs
+2026-10-17T12:19:05.666119Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config:build_profiles:load_custom_subagents: chisel_agent::agent_builder: close time.busy=75.2µs time.idle=99.5µs
+2026-10-17T12:19:05.666135Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config:build_profiles:register_builtin_profiles: chisel_agent::agent_builder: close time.busy=70.4µs time.idle=194µs
+2026-10-17T12:19:05.666143Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config:build_profiles:render_system_prompt: chisel_agent::agent_builder: close time.busy=39.9µs time.idle=276µs
+2026-10-17T12:19:05.666158Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config:build_profiles: chisel_agent::agent_builder: close time.busy=246µs time.idle=88.1µs
+2026-10-17T12:19:05.666226Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent:build_agent_config: chisel_agent::agent_builder: close time.busy=334µs time.idle=79.3µs
+2026-10-17T12:19:05.666401Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent: chisel_agent::acp_server::editor_context: EditorContextHandler registered
+2026-10-17T12:19:05.666415Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent: chisel_agent::acp_server::terminal_context: TerminalContextHandler registered
+2026-10-17T12:19:05.666432Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent: chisel_agent::acp_server::user_edits_context: UserEditsContextHandler registered
+2026-10-17T12:19:05.666487Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent:setup_agent: local_agent::agent_setup: close time.busy=4.05ms time.idle=10.6ms
+2026-10-17T12:19:05.667160Z  INFO acp_startup{pre_init_ms=15}:new_session:create_acp_agent: chisel_server::acp: close time.busy=15.1ms time.idle=10.8ms
+2026-10-17T12:19:05.667761Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=95.1µs time.idle=34.1µs
+2026-10-17T12:19:05.667986Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=14.2µs time.idle=345µs
+2026-10-17T12:19:05.668196Z  INFO acp_startup{pre_init_ms=15}:new_session:register_session: chisel_agent::skills_loading: skills discovery: cwd=/tmp/lume-acp-15701034023853507021 workspace_root=/tmp/lume-acp-15701034023853507021 additional_dirs=1 providers=[devin,agents_standard,cursor,windsurf,claude,opencode,zed,copilot] scanned_scopes=2 loaded=4 by_provider=[builtin=3,claude=1] errors=0
+2026-10-17T12:19:05.668283Z  INFO acp_startup{pre_init_ms=15}:new_session:register_session: chisel_agent::acp_server: close time.busy=818µs time.idle=291µs
+2026-10-17T12:19:05.668322Z  INFO acp_startup{pre_init_ms=15}:new_session: chisel_agent::acp_server::agent_impl: close time.busy=16.3ms time.idle=11.3ms
+2026-10-17T12:19:05.668336Z  INFO acp_startup{pre_init_ms=15}: chisel_otel::traces: close time.busy=53.1ms time.idle=61.1ms
+2026-10-17T12:19:05.668360Z  INFO run_acp_server:acp_bridge_dispatch{method="session/new" queue_wait_ms=0}: chisel_agent::acp_server: close time.busy=16.5ms time.idle=11.1ms
+2026-10-17T12:19:05.713417Z  INFO toolbox::tools::exec::login_shell_env: var_count=107 captured login-shell env snapshot from '/home/user/.nix-profile/bin/zsh'
+2026-10-17T12:19:05.742818Z  WARN message_forest: MessageChain tree duplication: system prefix changed (old_len=0, new_len=4, messages_to_copy=2)
+2026-10-17T12:19:05.743163Z  WARN message_forest: MessageChain tree duplication: system prefix changed (old_len=0, new_len=4, messages_to_copy=2)
+2026-10-17T12:19:05.744183Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=139µs time.idle=1.46ms
+2026-10-17T12:19:05.744210Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=27.6µs time.idle=1.61ms
+2026-10-17T12:19:05.744377Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Created new session: ethereal-salsa
+2026-10-17T12:19:05.745203Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 2 message nodes for session ethereal-salsa
+2026-10-17T12:19:05.745719Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=1.48ms time.idle=1.43ms
+2026-10-17T12:19:05.745738Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=10.7µs time.idle=2.93ms
+2026-10-17T12:19:05.746040Z  WARN message_forest: MessageChain tree duplication: system prefix changed (old_len=0, new_len=4, messages_to_copy=3)
+2026-10-17T12:19:05.752184Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 12 message nodes for session ethereal-salsa
+2026-10-17T12:19:05.752727Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=6.34ms time.idle=642µs
+2026-10-17T12:19:05.752750Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=21.7µs time.idle=6.99ms
+2026-10-17T12:19:05.754290Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 8 message nodes for session ethereal-salsa
+2026-10-17T12:19:05.754734Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=1.77ms time.idle=202µs
+2026-10-17T12:19:05.754752Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=19.7µs time.idle=1.98ms
+2026-10-17T12:19:06.182033Z  INFO connect_post{path="/exa.product_analytics_pb.ProductAnalyticsService/BatchRecordAnalyticsEvents"}: connect_rpc::client: close time.busy=2.27ms time.idle=588ms
+2026-10-17T12:19:06.216892Z  INFO connect_post{path="/exa.seat_management_pb.SeatManagementService/GetCliTeamSettings"}: connect_rpc::client: close time.busy=554µs time.idle=624ms
+2026-10-17T12:19:06.228886Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetCliModelConfigs"}: connect_rpc::client: close time.busy=3.66ms time.idle=622ms
+2026-10-17T12:19:06.302972Z  INFO run_acp_server:init_acp_server:startup_prewarm:connect_post{path="/exa.seat_management_pb.SeatManagementService/GetUserStatus"}: connect_rpc::client: close time.busy=546µs time.idle=699ms
+2026-10-17T12:19:06.326112Z  INFO connect_post{path="/exa.seat_management_pb.SeatManagementService/GetUserStatus"}: connect_rpc::client: close time.busy=2.03ms time.idle=721ms
+2026-10-17T12:19:06.334526Z  INFO connect_post{path="/exa.seat_management_pb.SeatManagementService/GetUserStatus"}: connect_rpc::client: close time.busy=521µs time.idle=730ms
+2026-10-17T12:19:06.336410Z  INFO run_acp_server:init_acp_server:startup_prewarm: chisel_server::acp: close time.busy=15.1ms time.idle=730ms
+2026-10-17T12:19:06.336421Z  INFO run_acp_server:init_acp_server: chisel_server::acp: close time.busy=288µs time.idle=745ms
+2026-10-17T12:19:06.354389Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-high: spawn=183500 apply=262000 hard=262000 max_tokens=None
+2026-10-17T12:19:06.354458Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-lightning: spawn=141926 apply=141926 hard=202752 max_tokens=None
+2026-10-17T12:19:06.354514Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.354555Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.354908Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.354945Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.354985Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355018Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355058Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355097Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355137Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355186Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355228Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355261Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-5-6-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355402Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355437Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355477Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355530Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355564Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355604Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355638Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355695Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355739Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-astra-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355783Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355815Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355861Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355895Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355935Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.355969Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356010Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356044Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356082Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356115Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-low: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356156Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-medium: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356189Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-high: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356228Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-xhigh: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356260Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-max: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356299Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-low-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356333Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-medium-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356476Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-high-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356523Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-xhigh-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356573Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model gpt-6-1-sol-max-priority: spawn=153000 apply=244800 hard=244800 max_tokens=None
+2026-10-17T12:19:06.356739Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:06.356777Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-medium: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:06.356815Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-1-7-lightning-medium: spawn=141926 apply=141926 hard=202752 max_tokens=None
+2026-10-17T12:19:06.356848Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-medium: spawn=183500 apply=262000 hard=262000 max_tokens=None
+2026-10-17T12:19:06.356882Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-max: spawn=183400 apply=183400 hard=262000 max_tokens=None
+2026-10-17T12:19:06.356915Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-medium-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:06.356953Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-high-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:06.356987Z  WARN windsurf_api_client::model_registry: Ignoring invalid compaction thresholds for model swe-2-max-lightning: spawn=183500 apply=183500 hard=262144 max_tokens=None
+2026-10-17T12:19:06.451839Z  INFO chisel_api::telemetry::manager::cache: Saved telemetry config cache at /home/user/.cache/devin/telemetry_state.json
+2026-10-17T12:19:06.546830Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetAccountManagedPlugins"}: connect_rpc::client: close time.busy=156µs time.idle=127ms
+2026-10-17T12:19:06.682901Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetChatMessage"}: connect_rpc::client: close time.busy=531µs time.idle=932ms
+2026-10-17T12:19:07.064125Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 1 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.064294Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=530µs time.idle=39.2µs
+2026-10-17T12:19:07.064309Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=18.1µs time.idle=579µs
+2026-10-17T12:19:07.064382Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 0 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.064459Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=136µs time.idle=17.8µs
+2026-10-17T12:19:07.064467Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=7.83µs time.idle=160µs
+2026-10-17T12:19:07.073763Z  INFO run_acp_server: chisel_core::translator: Permission decision for tool exec: prompting user (decision=Some(ForceAsk), perm_level=AcceptEdits)
+2026-10-17T12:19:07.074938Z  INFO run_acp_server: chisel_agent::acp_server::agent_impl: User approved tool permission: exec (grant=ApproveOnce)
+2026-10-17T12:19:07.075752Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] starting
+2026-10-17T12:19:07.075805Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] acquiring additional_env lock
+2026-10-17T12:19:07.075817Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] acquired additional_env lock
+2026-10-17T12:19:07.075831Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] acquiring sandbox_manager lock
+2026-10-17T12:19:07.075841Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] acquired sandbox_manager lock
+2026-10-17T12:19:07.075851Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] sandboxing disabled
+2026-10-17T12:19:07.075869Z  INFO toolbox::tools::exec::session_manager: shell=NonInteractive { shell: Bash, command: "echo hello", login: false } session_id=960e59 [create_session] creating PTY session
+2026-10-17T12:19:07.075882Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] creating RawExec session
+2026-10-17T12:19:07.076075Z  INFO toolbox::tools::exec::session_manager: session_id=960e59 [create_session] waiting for shell ready
+2026-10-17T12:19:07.079240Z  INFO toolbox_core::tools::context: Waiting for stop token 376f6910-cce4-42bc-803d-03b83522c158 to stop
+2026-10-17T12:19:07.097489Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 2 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.098665Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=2.20ms time.idle=132µs
+2026-10-17T12:19:07.099443Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=70.5µs time.idle=3.07ms
+2026-10-17T12:19:07.492091Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetChatMessage"}: connect_rpc::client: close time.busy=161µs time.idle=426ms
+2026-10-17T12:19:07.735105Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetChatMessage"}: connect_rpc::client: close time.busy=217µs time.idle=633ms
+2026-10-17T12:19:07.952804Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 1 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.953144Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=894µs time.idle=1.24ms
+2026-10-17T12:19:07.953180Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=47.5µs time.idle=2.15ms
+2026-10-17T12:19:07.953315Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 0 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.953563Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=338µs time.idle=40.4µs
+2026-10-17T12:19:07.953788Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=20.2µs time.idle=598µs
+2026-10-17T12:19:07.956344Z  INFO run_acp_server: chisel_core::translator: Permission decision for tool write: prompting user (decision=Some(ForceAsk), perm_level=AcceptEdits)
+2026-10-17T12:19:07.957913Z  INFO run_acp_server: chisel_agent::acp_server::agent_impl: User approved tool permission: write (grant=ApproveOnce)
+2026-10-17T12:19:07.958155Z  INFO toolbox::tools::write: Writing to file: /tmp/lume-acp-15701034023853507021/hello.txt
+2026-10-17T12:19:07.963208Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 2 message nodes for session ethereal-salsa
+2026-10-17T12:19:07.963557Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=708µs time.idle=750µs
+2026-10-17T12:19:07.964413Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=40.5µs time.idle=2.29ms
+2026-10-17T12:19:08.086730Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/RecordTrajectorySegmentEvents"}: connect_rpc::client: close time.busy=180µs time.idle=125ms
+2026-10-17T12:19:08.692044Z  INFO connect_post{path="/exa.api_server_pb.ApiServerService/GetChatMessage"}: connect_rpc::client: close time.busy=149µs time.idle=725ms
+2026-10-17T12:19:08.941873Z  INFO run_acp_server:extend{head=StoredNodeId(29) from=Some(StoredNodeId(1))}: chisel_core::turn_stats: close time.busy=113µs time.idle=67.9µs
+2026-10-17T12:19:08.942882Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: Saved 2 message nodes for session ethereal-salsa
+2026-10-17T12:19:08.943485Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=1.82ms time.idle=110µs
+2026-10-17T12:19:08.943543Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=51.3µs time.idle=1.97ms
+2026-10-17T12:19:08.943646Z  INFO run_acp_server:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=121µs time.idle=1.38ms
+2026-10-17T12:19:08.943665Z  INFO run_acp_server:session_db_call: chisel_agent::session_db: close time.busy=19.5µs time.idle=1.52ms
+2026-10-17T12:19:08.943889Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:await_turn_completion: chisel_agent::acp_server::agent_impl: close time.busy=13.7µs time.idle=3.20s
+2026-10-17T12:19:08.946590Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=1.37ms time.idle=89.5µs
+2026-10-17T12:19:08.946648Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state:session_db_call: chisel_agent::session_db: close time.busy=31.3µs time.idle=1.50ms
+2026-10-17T12:19:08.946702Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state: chisel_agent::acp_server: ACP: saved session ethereal-salsa
+2026-10-17T12:19:08.947109Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state:session_db_call:session_db_job: chisel_agent::session_db: close time.busy=305µs time.idle=62.9µs
+2026-10-17T12:19:08.947177Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state:session_db_call: chisel_agent::session_db: close time.busy=29.7µs time.idle=421µs
+2026-10-17T12:19:08.947282Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt:save_session_state: chisel_agent::acp_server: close time.busy=810µs time.idle=1.89ms
+2026-10-17T12:19:08.947370Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}:prompt: chisel_agent::acp_server::agent_impl: close time.busy=1.13ms time.idle=3.20s
+2026-10-17T12:19:08.947425Z  INFO run_acp_server:acp_bridge_dispatch{method="session/prompt" queue_wait_ms=0}: chisel_agent::acp_server: close time.busy=1.26ms time.idle=3.20s
+2026-10-17T12:19:08.957440Z  INFO run_acp_server: chisel_agent::acp_server: Dispatched SessionEnd for session ethereal-salsa
