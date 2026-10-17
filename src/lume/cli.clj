@@ -24,8 +24,10 @@
 
 ;; A session may have a default gate: items added without --gate get it, so
 ;; nothing is ungated by omission. --allow is lume allow, so it's human-only too.
+(def ^:private init-usage "usage: lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...")
+
 (defn init [root args]
-  (let [usage "usage: lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]..."
+  (let [usage init-usage
         [[goal & extra] {gates "--gate" allows "--allow"}] (take-flags args #{"--gate" "--allow"} usage)
         gate (first gates)
         allows (distinct allows)]
@@ -45,8 +47,10 @@
 
 ;; --parent files work that emerged while on an open item under it. The tree
 ;; only makes that work visible: nothing is inherited and nothing orders spawns.
+(def ^:private item-add-usage "usage: lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]")
+
 (defn item-add [session args]
-  (let [usage "usage: lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]"
+  (let [usage item-add-usage
         [[intent & extra] {[gate & gates] "--gate" [parent & parents] "--parent"}]
         (take-flags args #{"--gate" "--parent"} usage)]
     (when (or (str/blank? intent) (seq extra) (seq gates) (seq parents)) (fail! usage))
@@ -60,8 +64,10 @@
                                           parent (assoc :parent parent)))))]
       (:item/id e))))
 
+(def ^:private item-gate-usage "usage: lume item gate <id> \"<cmd>\"")
+
 (defn item-gate [session [id gate]]
-  (when (str/blank? gate) (fail! "usage: lume item gate <id> \"<cmd>\""))
+  (when (str/blank? gate) (fail! item-gate-usage))
   (kernel/append! session (fn [events]
                             (open-item events id)
                             {:type :item/gated :item/id id :gate gate :by (actor)}))
@@ -71,8 +77,11 @@
 ;; --runs N --drop K runs it N times and keeps the last N-K (warm-up runs dropped).
 ;; Lower is better unless a number is named with --higher (repeatable).
 ;; --before has each spawn measure first too, so it yields a before/after pair.
+(def ^:private item-measure-usage
+  "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]")
+
 (defn item-measure [session args]
-  (let [usage "usage: lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]"
+  (let [usage item-measure-usage
         before (boolean (some #{"--before"} args))
         [[id cmd & extra] {[runs & rs] "--runs" [drop & ds] "--drop" higher "--higher"}]
         (take-flags (remove #{"--before"} args) #{"--runs" "--drop" "--higher"} usage)
@@ -394,8 +403,10 @@
       (fail! id "not reverted:" (str/join " " cmd) "failed:" (str/trim (str err))))
     (assoc restored :measure/id mid)))
 
+(def ^:private item-close-usage "usage: lume item close <id> done|dropped [--revert] \"<why>\"")
+
 (defn item-close [session [id disposition & more]]
-  (let [usage "usage: lume item close <id> done|dropped [--revert] \"<why>\""
+  (let [usage item-close-usage
         revert (boolean (some #{"--revert"} more))
         why (first (remove #{"--revert"} more))]
     (when-not (#{"done" "dropped"} disposition) (fail! usage))
@@ -427,8 +438,10 @@
     (measure-row session (run-measure session item))))
 
 ;; Pinned notes stay in status and every worker prompt until unpinned; others age out.
+(def ^:private note-usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>")
+
 (defn note [session [a b]]
-  (let [usage "usage: lume note [--pin] \"<text>\" | lume note --unpin <id>"]
+  (let [usage note-usage]
     (case a
       "--unpin"
       (do (when (str/blank? b) (fail! usage))
@@ -449,8 +462,10 @@
 
 ;; Note show: what status clips. The text in full, who noted it and when, and
 ;; whether it's pinned.
+(def ^:private note-show-usage "usage: lume note show <id>")
+
 (defn note-show [session [id]]
-  (when (str/blank? id) (fail! "usage: lume note show <id>"))
+  (when (str/blank? id) (fail! note-show-usage))
   (let [events (store/read-events session)
         added (or (some #(when (and (= :note/added (:type %)) (= id (:note/id %))) %) events)
                   (fail! "no such note:" id))
@@ -465,10 +480,12 @@
 
 ;; Only the human grants permissions: workers and agent drivers would grant themselves
 ;; whatever they need, so they ask with lume ask instead.
+(def ^:private allow-usage "usage: lume allow [--revoke] \"<cmd>\"")
+
 (defn allow [session [a b]]
   (let [revoke (= "--revoke" a)
         command (if revoke b a)]
-    (when (str/blank? command) (fail! "usage: lume allow [--revoke] \"<cmd>\""))
+    (when (str/blank? command) (fail! allow-usage))
     (human-only! "only the human changes permissions; ask with lume ask \"<question>\""
                  (str (if revoke "Workers may no longer run: " "Workers may run: ") command ".") "yes")
     (kernel/append! session (constantly {:type (if revoke :session/disallowed :session/allowed)
@@ -477,8 +494,10 @@
 
 ;; Budgets: the substrate, not the driver, bounds spend. Anyone may lower or add
 ;; a limit; raising one is the human's, like permissions.
+(def ^:private budget-usage "usage: lume budget [--usd N] [--spawns N] [--minutes N]")
+
 (defn budget [session args]
-  (let [usage "usage: lume budget [--usd N] [--spawns N] [--minutes N]"
+  (let [usage budget-usage
         [pos vals] (take-flags args #{"--usd" "--spawns" "--minutes"} usage)
         limits (into {} (for [[flag [v & more]] vals
                               :let [k (keyword (subs flag 2))
@@ -550,9 +569,11 @@
                              (map #(str "  " %) (status/wrap question (- width 2)))
                              [(str "  → lume answer " id "   (or lume answer " id " \"<text>\")")])))))))
 
+(def ^:private ask-usage "usage: lume ask [\"<question>\"]")
+
 (defn ask [session [question & extra]]
   (cond (and (nil? question) (nil? extra)) (open-asks session (columns))
-        (or (str/blank? question) (seq extra)) (fail! "usage: lume ask \"<question>\"")
+        (or (str/blank? question) (seq extra)) (fail! ask-usage)
         :else (let [opened (kernel/append! session (fn [events]
                                                      {:type :ask/opened :ask/id (next-id "a" :ask/opened events)
                                                       :question question :by (actor)}))]
@@ -561,8 +582,10 @@
 
 ;; With no text, at a terminal, the human reads the question in full and types
 ;; the answer at the prompt; the typed-id confirmation still follows.
+(def ^:private answer-usage "usage: lume answer <id> [\"<text>\"]")
+
 (defn answer [session [id text]]
-  (when (str/blank? id) (fail! "usage: lume answer <id> [\"<text>\"]"))
+  (when (str/blank? id) (fail! answer-usage))
   (when-not (= "human" (actor)) (fail! "only the human answers asks; record what you think with lume note"))
   (let [open-ask (fn [events]
                    (let [{:keys [state] :as a} (get-in (status/project events) [:asks id])]
@@ -577,7 +600,7 @@
                                str/trim)
                        (fail! "refused: human-only commands need an interactive terminal and a typed confirmation;"
                               "agents ask with lume ask \"<question>\""))))]
-    (when (str/blank? text) (fail! "usage: lume answer <id> [\"<text>\"]"))
+    (when (str/blank? text) (fail! answer-usage))
     (human-only! "only the human answers asks; record what you think with lume note"
                  (str "Answer " id ": " text) id)
     (kernel/append! session (fn [events]
@@ -587,8 +610,10 @@
 
 ;; Ask show: what status clips. The question in full, who asked and when, the
 ;; item it concerns (a plateau's, or the asking worker's), and the answer.
+(def ^:private ask-show-usage "usage: lume ask show <id>")
+
 (defn ask-show [session [id]]
-  (when (str/blank? id) (fail! "usage: lume ask show <id>"))
+  (when (str/blank? id) (fail! ask-show-usage))
   (let [events (store/read-events session)
         opened (or (some #(when (and (= :ask/opened (:type %)) (= id (:ask/id %))) %) events)
                    (fail! "no such ask:" id))
@@ -744,8 +769,10 @@
 
 ;; A driver's spawn is only a request: its turn ends first, then drive runs it.
 ;; The cadence's batch is how many requests a turn may make (its guard).
+(def ^:private spawn-usage "usage: lume spawn <id> [--agent claude|claude-acp|devin]")
+
 (defn spawn [session root [id & opts]]
-  (when (str/blank? id) (fail! "usage: lume spawn <id> [--agent claude|claude-acp|devin]"))
+  (when (str/blank? id) (fail! spawn-usage))
   (if (driver?)
     (do
       (kernel/append! session (fn [events]
@@ -1105,8 +1132,10 @@
                                            :command :gate :measure :text :question :answer :why :result :tail]))))
        (when (:by e) (str " [" (:by e) "]"))))
 
+(def ^:private item-show-usage "usage: lume item show <id>")
+
 (defn item-show [session [id]]
-  (when (str/blank? id) (fail! "usage: lume item show <id>"))
+  (when (str/blank? id) (fail! item-show-usage))
   (let [events (store/read-events session)
         item (or (get-in (status/project events) [:items id]) (fail! "no such item:" id))
         related (filter (item-event? id (set (:spawns item))) events)
@@ -1504,128 +1533,164 @@
     (flush)
     @(promise)))
 
-(def usage
-  "lume install [--agent A]                    set up agents on this machine (a lume skill); safe to re-run.
-                                            Agents: claude, claude-acp, devin; LUME_AGENT sets the default (claude)
-lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
-                                            start a session; items added without --gate get its --gate
-lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);
-                                            a past session's by id (lume ls)
-lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]
+;; The built-in commands (see kernel/run), by feature name: joined to the
+;; built-in features here until those move out of status.clj (i87+). Each
+;; :help is its entry in lume help, which lists them in feature order.
+
+(def ^:private commands
+  {"install"
+   [{:path ["install"] :needs :none :usage "usage: lume install [--agent claude|claude-acp|devin]"
+     :run (fn [_ args] (install args))
+     :help "lume install [--agent A]                    set up agents on this machine (a lume skill); safe to re-run.
+                                            Agents: claude, claude-acp, devin; LUME_AGENT sets the default (claude)"}]
+   "session"
+   [{:path ["init"] :needs :root :usage init-usage
+     :run (fn [{:keys [root]} args] (init root args))
+     :help "lume init \"<goal>\" [--gate \"<cmd>\"] [--allow \"<cmd>\"]...
+                                            start a session; items added without --gate get its --gate"}
+    {:path ["status"] :needs :root :usage status-usage
+     :run (fn [{:keys [root]} args] (show-status root args))
+     :help "lume status [<session>] [--color]           one screen: goal, items, notes, recent events (colour on a tty);
+                                            a past session's by id (lume ls)"}]
+   "item"
+   [{:path ["item" "add"] :needs :session :usage item-add-usage
+     :run (fn [{:keys [session]} args] (item-add session args))
+     :help "lume item add \"<intent>\" [--gate \"<cmd>\"] [--parent <id>]
                                             add a work item; the gate's exit code decides done;
                                             --parent files work that emerged on an open item under it
-                                            (status indents it there; nothing else follows from it)
-lume item gate <id> \"<cmd>\"                 set or replace an open item's gate
-lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]
+                                            (status indents it there; nothing else follows from it)"}
+    {:path ["item" "gate"] :needs :session :usage item-gate-usage
+     :run (fn [{:keys [session]} args] (item-gate session args))
+     :help "lume item gate <id> \"<cmd>\"                 set or replace an open item's gate"}
+    {:path ["item" "close"] :needs :session :usage item-close-usage
+     :run (fn [{:keys [session]} args] (item-close session args))
+     :help "lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
+lume item close <id> dropped --revert \"<why>\"
+                                            also restore the working copy to the jj (else git) commit
+                                            of the item's before row; refused if it has none or that fails"}
+    {:path ["item" "show"] :needs :session :usage item-show-usage
+     :run (fn [{:keys [session]} args] (item-show session args))
+     :help "lume item show <id>                         one item in full: intent, gate, disposition and its events"}]
+   ;; note show and ask show need an id: with anything else, show is the text.
+   "ask"
+   [{:path ["ask"] :needs :session :usage ask-usage
+     :run (fn [{:keys [session]} args] (ask session args))
+     :help "lume ask \"<question>\"                       put a question to the human; open asks top status
+lume ask                                    open asks in full, wrapped to the terminal, each with its answer command"}
+    {:path ["ask" "show"] :needs :session :usage ask-show-usage
+     :run (fn [{:keys [session]} args] (if (= 1 (count args)) (ask-show session args) (ask session (cons "show" args))))
+     :help "lume ask show <id>                          one ask in full: question, who asked and when, its item, its answer"}
+    {:path ["answer"] :needs :session :usage answer-usage
+     :run (fn [{:keys [session]} args] (answer session args))
+     :help "lume answer <id> [\"<text>\"]                 answer an ask (human at a tty: retype the id); no text: prompt for it
+                                            after the full question. Answers join the notes"}]
+   "note"
+   [{:path ["note"] :needs :session :usage note-usage
+     :run (fn [{:keys [session]} args] (note session args))
+     :help "lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
+lume note --unpin <id>                      let a pinned note age out like the rest"}
+    {:path ["note" "show"] :needs :session :usage note-show-usage
+     :run (fn [{:keys [session]} args] (if (= 1 (count args)) (note-show session args) (note session (cons "show" args))))
+     :help "lume note show <id>                         one note in full: text, who noted it and when, pinned or not"}]
+   "spawn"
+   [{:path ["spawn"] :needs #{:session :root} :usage spawn-usage
+     :run (fn [{:keys [session root]} args] (spawn session root args))
+     :help "lume spawn <id> [--agent A]                 run a worker on an item, in the foreground (a driver's is a request)"}
+    {:path ["allow"] :needs :session :usage allow-usage
+     :run (fn [{:keys [session]} args] (allow session args))
+     :help "lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)"}]
+   "measure"
+   [{:path ["item" "measure"] :needs :session :usage item-measure-usage
+     :run (fn [{:keys [session]} args] (item-measure session args))
+     :help "lume item measure <id> \"<cmd>\" [--runs N] [--drop K] [--higher <name>]... [--before]
                                             measure an item after each spawn: output's name=number pairs
                                             (or else its last number) and wall time become a ledger row;
                                             N runs, first K dropped, give medians and min..max; lower is
                                             better unless --higher names it (shown name↑); rows after a
-                                            spawn compare with its before row; --before takes one first
-lume measure <id>                           run the item's measurement now and print its row (a baseline)
-lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
-                                            numbers with change vs the row compared, spread, wall time, exit
-lume item close <id> done|dropped \"<why>\"   record a disposition; done runs the gate, refused if it fails
-lume item close <id> dropped --revert \"<why>\"
-                                            also restore the working copy to the jj (else git) commit
-                                            of the item's before row; refused if it has none or that fails
-lume item show <id>                         one item in full: intent, gate, disposition and its events
-lume note [--pin] \"<text>\"                  steering for drivers and workers; pinned notes never age out
-lume note --unpin <id>                      let a pinned note age out like the rest
-lume note show <id>                         one note in full: text, who noted it and when, pinned or not
-lume ask \"<question>\"                       put a question to the human; open asks top status
-lume ask                                    open asks in full, wrapped to the terminal, each with its answer command
-lume ask show <id>                          one ask in full: question, who asked and when, its item, its answer
-lume answer <id> [\"<text>\"]                 answer an ask (human at a tty: retype the id); no text: prompt for it
-                                            after the full question. Answers join the notes
-lume allow [--revoke] \"<cmd>\"               human at a tty, types yes: let workers run commands starting with <cmd> (their gate is always allowed)
-lume budget [--usd N] [--spawns N] [--minutes N]
+                                            spawn compare with its before row; --before takes one first"}
+    {:path ["measure"] :needs :session :usage measure-usage
+     :run (fn [{:keys [session]} args] (measure session args))
+     :help "lume measure <id>                           run the item's measurement now and print its row (a baseline)"}
+    {:path ["ledger"] :needs :root :usage ledger-usage
+     :run (fn [{:keys [root]} args] (ledger root args))
+     :help "lume ledger [<item>] [-n N] [--session <id>] measurement rows, newest last (default 20), open and closed items:
+                                            numbers with change vs the row compared, spread, wall time, exit"}]
+   "budget"
+   [{:path ["budget"] :needs :session :usage budget-usage
+     :run (fn [{:keys [session]} args] (budget session args))
+     :help "lume budget [--usd N] [--spawns N] [--minutes N]
                                             limit the session's agent spend (spawns and drive turns); with no
-                                            flags, print spent/limit. Lowering is anyone's; raising, the human's
-lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
+                                            flags, print spent/limit. Lowering is anyone's; raising, the human's"}]
+   "cadence"
+   [{:path ["cadence"] :needs :session :usage cadence-usage
+     :run (fn [{:keys [session]} args] (cadence session args))
+     :help "lume cadence [every-spawn | batch N] [on gate-fail] [on plateau K]
                                             when drive hands back: N spawn requests a turn, run in order;
                                             a failed gate ends the batch; K rows without a new best (lower
                                             is better, unless --higher) ask the human. No rules: print it. Above the human's
-                                            latest cadence is the human's
-lume spawn <id> [--agent A]                 run a worker on an item, in the foreground (a driver's is a request)
-lume drive [--turns N] [--agent A] [--wait-on-ask]
+                                            latest cadence is the human's"}]
+   "drive"
+   [{:path ["drive"] :needs #{:session :root} :usage drive-usage
+     :run (fn [{:keys [session root]} args] (drive session root args))
+     :help "lume drive [--turns N] [--agent A] [--wait-on-ask]
                                             driver turns until an ask is open, a budget is reached, no items are open, or N (10) run;
                                             workers run the drive's agent. LUME_NTFY=<ntfy topic URL>: each
                                             ask opened and each drive stop is POSTed there (logged :notify/*).
                                             --wait-on-ask: on an open ask, send it with a one-time code and wait
                                             for 'aN <code> <answer>' on that topic (LUME_NTFY_REPLY, if set,
-                                            is a separate reply topic) or lume answer, then go on
-lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any
-lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)
-lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]
+                                            is a separate reply topic) or lume answer, then go on"}]
+   "spec"
+   [{:path ["check"] :needs :none :usage check-usage
+     :run (fn [_ args] (check args))
+     :help "lume check <spec.edn>                       validate a harness spec: every problem, one per line, exit 1 on any"}
+    {:path ["spec"] :needs :session :usage spec-usage
+     :run (fn [{:keys [session]} args] (show-spec session args))
+     :help "lume spec [--all]                           this session's harness as spec EDN (open items; --all, closed too)"}
+    {:path ["run"] :needs :root :usage run-usage
+     :run (fn [{:keys [root]} args] (run-spec root args))
+     :help "lume run <spec.edn> [\"<goal>\"] [--turns N] [--agent A]
                                             check a spec, start a session from it, baseline its measurements,
                                             then drive (--turns 0: don't). A spec's allow, or a cadence above
                                             every-spawn, is the human's. Run by a worker or driver, the new
-                                            session starts alongside; the current one stays
-lume ls [--all]                             this repo's sessions, newest first (* current): goal, open/closed
-                                            items, last event, outcome; 10 unless --all
-lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]
+                                            session starts alongside; the current one stays"}]
+   "inspect"
+   [{:path ["ls"] :needs :root :usage ls-usage
+     :run (fn [{:keys [root]} args] (ls root args))
+     :help "lume ls [--all]                             this repo's sessions, newest first (* current): goal, open/closed
+                                            items, last event, outcome; 10 unless --all"}
+    {:path ["log"] :needs :root :usage log-usage
+     :run (fn [{:keys [root]} args] (show-log root args))
+     :help "lume log [-n N] [--session <id>] [--type <t>] [--item <id>] [--by <actor>] [--grep <re>]
                                             raw events as EDN (default last 20), of a past session by id;
                                             filters combine: type prefix (note, spawn/), an item's events,
-                                            actor, regex over the event; a ;; line counts what -n left out
-lume replay [<session>] [--at N] [--step]   status as it stood after event N, from the log alone; no flags:
+                                            actor, regex over the event; a ;; line counts what -n left out"}
+    {:path ["replay"] :needs :root :usage replay-usage
+     :run (fn [{:keys [root]} args] (replay root args))
+     :help "lume replay [<session>] [--at N] [--step]   status as it stood after event N, from the log alone; no flags:
                                             the decisions (drive turns, spawns), each with its N (-n, 20);
-                                            --step: the screen after each decision in turn, at a terminal
-lume repl [<session>] [--port N]            an nREPL (free port) with the session's events, state, render
-                                            and lume.* in user; prints the port; writes nothing; runs until killed
-lume clean [--session <id>] [--yes]         remove every trace of lume for this repo (or one session):
-                                            its state, refs/lume/*, worktrees; lists them, refused without --yes")
+                                            --step: the screen after each decision in turn, at a terminal"}
+    {:path ["repl"] :needs :root :usage repl-usage
+     :run (fn [{:keys [root]} args] (repl root args))
+     :help "lume repl [<session>] [--port N]            an nREPL (free port) with the session's events, state, render
+                                            and lume.* in user; prints the port; writes nothing; runs until killed"}]
+   "clean"
+   [{:path ["clean"] :needs :root :usage clean-usage
+     :run (fn [{:keys [root]} args] (clean root args))
+     :help "lume clean [--session <id>] [--yes]         remove every trace of lume for this repo (or one session):
+                                            its state, refs/lume/*, worktrees; lists them, refused without --yes"}]})
 
-(defn run [args]
-  (let [;; Finding the repo runs git, so only commands that need it do: a
-        ;; worker's lume note has its session from LUME_SESSION.
-        root (delay (store/repo-root))
-        [cmd sub & more] args
-        session #(or store/*session* (store/current-session @root)
-                     (fail! "no session for this repo; run lume init \"<goal>\""))]
-    (case cmd
-      "init" (init @root (rest args))
-      "install" (install (rest args))
-      "status" (if (#{"-h" "--help"} sub) status-usage (show-status @root (rest args)))
-      "item" (case sub
-               "add" (item-add (session) more)
-               "close" (item-close (session) more)
-               "gate" (item-gate (session) more)
-               "show" (item-show (session) more)
-               "measure" (item-measure (session) more)
-               (fail! "usage: lume item add|gate|measure|close|show ..."))
-      "measure" (if (#{"-h" "--help"} sub) measure-usage (measure (session) (rest args)))
-      "ledger" (if (#{"-h" "--help"} sub) ledger-usage (ledger @root (rest args)))
-      "note" (if (and (= "show" sub) (= 2 (count (rest args))))
-               (note-show (session) (drop 2 args))
-               (note (session) (rest args)))
-      "ask" (if (and (= "show" sub) (= 2 (count (rest args))))
-              (ask-show (session) (drop 2 args))
-              (ask (session) (rest args)))
-      "answer" (answer (session) (rest args))
-      "allow" (allow (session) (rest args))
-      "budget" (if (#{"-h" "--help"} sub)
-                 "usage: lume budget [--usd N] [--spawns N] [--minutes N]"
-                 (budget (session) (rest args)))
-      "cadence" (if (#{"-h" "--help"} sub)
-                  cadence-usage
-                  (cadence (session) (rest args)))
-      "check" (if (#{"-h" "--help"} sub) check-usage (check (rest args)))
-      "spec" (if (#{"-h" "--help"} sub) spec-usage (show-spec (session) (rest args)))
-      "run" (if (#{"-h" "--help"} sub) run-usage (run-spec @root (rest args)))
-      "spawn" (spawn (session) @root (rest args))
-      "drive" (drive (session) @root (rest args))
-      "log" (if (#{"-h" "--help"} sub) log-usage (show-log @root (rest args)))
-      "ls" (if (#{"-h" "--help"} sub) ls-usage (ls @root (rest args)))
-      "replay" (if (#{"-h" "--help"} sub) replay-usage (replay @root (rest args)))
-      "repl" (if (#{"-h" "--help"} sub) repl-usage (repl @root (rest args)))
-      "clean" (if (#{"-h" "--help"} sub) clean-usage (clean @root (rest args)))
-      (nil "help" "-h" "--help") usage
-      (fail! "unknown command:" cmd "\n\n" usage))))
+(def features
+  "The built-in features with their commands, in order: lume help lists the
+  commands in this order. -main binds kernel/*features* to these."
+  (let [named (into {} (map (juxt :name identity)) status/features)
+        order ["install" "session" "item" "ask" "note" "spawn" "measure" "budget" "cadence" "drive"
+               "ntfy" "spec" "inspect" "clean"]]
+    (assert (every? (set order) (keys named)) "every built-in feature has a place in the order")
+    (mapv #(assoc (get named % {:name %}) :commands (get commands % [])) order)))
 
 (defn -main [& args]
   (try
-    (println (binding [kernel/*features* status/features] (run args)))
+    (println (binding [kernel/*features* features] (kernel/run args)))
     (catch clojure.lang.ExceptionInfo e
       (if (:lume/user-error (ex-data e))
         (do (binding [*out* *err*] (println (ex-message e)))

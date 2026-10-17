@@ -26,7 +26,7 @@
           root (str (fs/create-temp-dir {:prefix "lume-repo"}))]
       (try
         (binding [store/*home* home store/*session* nil kernel/*actor* "human" *root* root
-                  kernel/*features* status/features
+                  kernel/*features* cli/features
                   kernel/*confirm* (constantly true) kernel/*read-line* (constantly nil)
                   cli/*source* nil cli/*ntfy* nil cli/*reexec* (fn [& _] (throw (ex-info "no exec in tests" {})))
                   *driver-turns* (atom []) *driver-calls* (atom [])
@@ -120,6 +120,33 @@
     (testing "nothing bound is an error, not an empty state"
       (binding [kernel/*features* nil]
         (is (thrown? IllegalStateException (kernel/project [])))))))
+
+(deftest commands-are-data
+  (let [s (new-session "commands")
+        echo {:name "echo"
+              :commands [{:path ["echo"] :needs :session :usage "usage: lume echo <word>" :help "lume echo <word>   says it"
+                          :run (fn [ctx args] (str (= s (:session ctx)) " " (str/join " " args)))}
+                         {:path ["echo" "loud"] :needs :none :usage "usage: lume echo loud <word>"
+                          :run (fn [ctx args] (str (contains? ctx :session) " " (str/upper-case (first args))))}]}]
+    (binding [kernel/*features* (conj cli/features echo) store/*session* s]
+      (testing "the longest matching path runs, with what it needs in ctx and the rest as args"
+        (is (= "true hi there" (kernel/run ["echo" "hi" "there"])))
+        (is (= "false HI" (kernel/run ["echo" "loud" "hi"]))))
+      (testing "-h/--help prints the usage"
+        (is (= "usage: lume echo loud <word>" (kernel/run ["echo" "loud" "--help"])))
+        (is (= "usage: lume echo <word>" (kernel/run ["echo" "-h"]))))
+      (testing "lume help lists each :help in order, the extension's last"
+        (doseq [args [[] ["help"] ["--help"]]]
+          (let [h (kernel/run args)]
+            (is (str/starts-with? h "lume install [--agent A]"))
+            (is (str/ends-with? h "lume echo <word>   says it")))))
+      (testing "a group with no such subcommand lists its subcommands; an unknown command is refused"
+        (is (thrown-with-msg? Exception #"usage: lume item add\|gate\|close\|show\|measure \.\.\." (kernel/run ["item" "nope"])))
+        (is (thrown-with-msg? Exception #"unknown command: nope" (kernel/run ["nope"])))))
+    (testing "every built-in command has a usage and a help entry"
+      (doseq [c (kernel/commands)]
+        (is (str/starts-with? (:usage c) (str "usage: lume " (str/join " " (:path c)))) (pr-str (:path c)))
+        (is (re-find (re-pattern (str "(?m)^lume " (str/join " " (:path c)) "\\b")) (:help c)) (pr-str (:path c)))))))
 
 (deftest subitems-show-under-their-parent
   (let [s (new-session "tree")]
@@ -501,7 +528,7 @@
                (status/measure-text {:values {"a" 37.9} :ms 0 :exit 0 :base base}))
             "a single-run row gets no mark")))
     (testing "lume measure --help prints usage"
-      (is (= "usage: lume measure <id>" (cli/run ["measure" "--help"]))))
+      (is (= "usage: lume measure <id>" (kernel/run ["measure" "--help"]))))
     (testing "a closed item can still be measured"
       (cli/item-close s [id "dropped" "x"])
       (is (str/starts-with? (cli/measure s [id]) "m11 i1 ")))
@@ -981,8 +1008,8 @@
     (is (str/starts-with? (cli/note-show s ["n2"]) "n2 pinned\n"))
     (is (re-find #"^n3 unpinned\nnoted .*\nunpinned \S+ by human\nwas lasting$" (cli/note-show s ["n3"])))
     (binding [store/*session* s]
-      (is (str/starts-with? (cli/run ["note" "show" "n2"]) "n2 pinned"))
-      (is (= "noted n4" (cli/run ["note" "show"])) "a note that just says show is still a note"))
+      (is (str/starts-with? (kernel/run ["note" "show" "n2"]) "n2 pinned"))
+      (is (= "noted n4" (kernel/run ["note" "show"])) "a note that just says show is still a note"))
     (is (thrown-with-msg? Exception #"no such note: n9" (cli/note-show s ["n9"])))
     (is (thrown-with-msg? Exception #"usage: lume note show <id>" (cli/note-show s [])))))
 
@@ -1020,7 +1047,7 @@
         (is (re-find #"(?m)^answer   yes\nanswered \S+ by human$" out))))
     (testing "routing and errors"
       (binding [store/*session* s]
-        (is (str/starts-with? (cli/run ["ask" "show" "a2"]) "a2 answered")))
+        (is (str/starts-with? (kernel/run ["ask" "show" "a2"]) "a2 answered")))
       (is (thrown-with-msg? Exception #"no such ask: a9" (cli/ask-show s ["a9"])))
       (is (thrown-with-msg? Exception #"usage: lume ask show <id>" (cli/ask-show s []))))
     (testing "no open asks"
@@ -1814,7 +1841,7 @@
     (testing "usage"
       (is (thrown-with-msg? Exception #"usage" (cli/check [])))
       (is (thrown-with-msg? Exception #"usage" (cli/show-spec (store/current-session *root*) ["--open"])))
-      (is (= "usage: lume check <spec.edn>" (cli/run ["check" "--help"]))))))
+      (is (= "usage: lume check <spec.edn>" (kernel/run ["check" "--help"]))))))
 
 (defn- run! [& args]
   (let [ret (atom nil)
@@ -1834,7 +1861,7 @@
     (testing "usage"
       (doseq [args [[] ["f" "g" "h"] ["f" "--turns" "-1"] ["f" "--turns" "x"] ["f" "--turns"] ["f" ""]]]
         (is (re-find #"^usage: lume run" (apply refused args)) (pr-str args)))
-      (is (re-find #"^usage: lume run" (cli/run ["run" "--help"]))))
+      (is (re-find #"^usage: lume run" (kernel/run ["run" "--help"]))))
     (testing "it starts the session, baselines measurements, then drives"
       (reset! *driver-turns* [(str (lume-cmd "spawn" "i1" "--agent" "test")) (lume-cmd "item" "close" "i2" "done" "written")
                               (lume-cmd "item" "close" "i1" "done" "t is smaller")])

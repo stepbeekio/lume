@@ -128,6 +128,48 @@
   [session f]
   (store/append! session (fn [events] (some-> (f events) (checked #(project events))))))
 
+;; Commands are data too: a feature's :commands are
+;;   {:path ["item" "measure"]   the words that name it
+;;    :needs :session            what its ctx holds: :session, :root, :none, or a set of them
+;;    :usage "usage: lume .."    printed for -h/--help, and its usage errors
+;;    :help "lume item .."       its entry in lume help
+;;    :run (fn [ctx args] text)} ctx {:session dir :root repo}, args after the path
+;; Finding the repo runs git, so only commands that need it do: a worker's
+;; lume note has its session from LUME_SESSION.
+
+(defn commands [] (mapcat :commands (features)))
+
+(defn help
+  "lume help: every command's :help, in feature order."
+  []
+  (str/join "\n" (keep :help (commands))))
+
+(defn- ctx [needs]
+  (let [needs (if (keyword? needs) #{needs} (set needs))
+        root (delay (store/repo-root))]
+    (cond-> {}
+      (needs :root) (assoc :root @root)
+      (needs :session) (assoc :session (or store/*session* (store/current-session @root)
+                                           (fail! "no session for this repo; run lume init \"<goal>\""))))))
+
+(defn run
+  "Run the command whose :path is the longest prefix of args, and return what
+  it prints: its :usage for -h/--help, lume help with no command."
+  [args]
+  (let [cmds (commands)
+        cmd (first (sort-by #(- (count (:path %)))
+                            (filter #(= (:path %) (take (count (:path %)) args)) cmds)))
+        [word] args]
+    (cond cmd (let [args (drop (count (:path cmd)) args)]
+                (if (#{"-h" "--help"} (first args))
+                  (:usage cmd)
+                  ((:run cmd) (ctx (:needs cmd)) args)))
+          (contains? #{nil "help" "-h" "--help"} word) (help)
+          :else (let [subs (keep #(when (= word (first (:path %))) (second (:path %))) cmds)]
+                  (if (seq subs)
+                    (fail! (str "usage: lume " word " " (str/join "|" subs) " ..."))
+                    (fail! "unknown command:" word "\n\n" (help)))))))
+
 (defn open-item [events id]
   (let [item (get-in (project events) [:items id])]
     (cond (nil? item) (fail! "no such item:" id)
