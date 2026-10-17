@@ -796,6 +796,13 @@
         (is (= "true" (ev "(str/starts-with? (render 1) \"lume replay\")")))
         (is (= "true" (ev "(= state (status/project (store/read-events session)))")))
         (is (= "true" (ev "(fn? spec/problems)"))))
+      (testing "measure runs a candidate as a spec would, in the repo, and logs nothing"
+        (is (= "[0 {\"a\" 1, \"b\" 2.5} true]"
+               (ev "(let [r (measure \"echo a=1 b=2.5; pwd\")] [(:exit r) (:values r) (str/includes? (:output r) (:repo state))])")))
+        (is (= "[3 1 {\"n\" [4 4]} true]"
+               (ev "(let [r (measure \"echo n=4\" {:runs 3 :drop 1})] [(:runs r) (:drop r) (:spread r) (int? (:ms r))])")))
+        (is (= "[2 nil]" (ev "((juxt :exit :values) (measure \"exit 2\"))")))
+        (is (= (str (count events)) (ev "(count (store/read-events session))"))))
       (testing "refresh! picks up what a live session logged since"
         (cli/note s ["later"])
         (is (= (str (count events)) (ev "(count events)")))

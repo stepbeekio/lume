@@ -165,6 +165,20 @@
 ;; under the session. A gate's exit code decides done; a measurement's output
 ;; is numbers, one ledger row per run.
 
+(defn- run-repeated
+  "Run cmd with sh -c in root up to n times, stopping at the first failure;
+  returns the runs, {:exit :ms :output} in order. (on-run i run) sees each."
+  [session root cmd n on-run]
+  (reduce (fn [runs i]
+            (let [t0 (System/currentTimeMillis)
+                  {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
+                                                                   :extra-env {"LUME_SESSION" session}})
+                  run {:exit exit :ms (- (System/currentTimeMillis) t0) :output out}
+                  r (conj runs run)]
+              (on-run i run)
+              (if (zero? exit) r (reduced r))))
+          [] (range n)))
+
 (defn- run-in-repo
   "Run cmd in the repo up to n times (1 by default), stopping at the first
   failure, with all output in one file in the session's `kind` dir. Log the
@@ -176,20 +190,11 @@
   (let [root (:repo (status/project (store/read-events session)))
         dir (fs/create-dirs (fs/path session kind))
         tmp (fs/file (fs/create-temp-file {:dir dir :prefix "running-"}))
-        run1 (fn [i]
-               (let [t0 (System/currentTimeMillis)
-                     {:keys [exit out]} @(p/process ["sh" "-c" cmd] {:dir root :in "" :out :string :err :out
-                                                                      :extra-env {"LUME_SESSION" session}})
-                     ms (- (System/currentTimeMillis) t0)
-                     output out]
-                 (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (status/secs ms) "\n"))
-                                output)
-                       :append true)
-                 {:exit exit :ms ms :output output}))
-        runs (reduce (fn [runs i]
-                       (let [r (conj runs (run1 i))]
-                         (if (zero? (:exit (peek r))) r (reduced r))))
-                     [] (range n))
+        runs (run-repeated session root cmd n
+                           (fn [i {:keys [exit ms output]}]
+                             (spit tmp (str (when (> n 1) (str "--- run " (inc i) "/" n " · exit " exit " · " (status/secs ms) "\n"))
+                                            output)
+                                   :append true)))
         {:keys [exit ms output]} (peek runs)
         tail (last (remove str/blank? (str/split-lines output)))
         ran (store/append! session (fn [events]
@@ -287,26 +292,43 @@
                                        "; keep going, change approach, or stop?")
                         :by (actor)})))))
 
+(defn- measure-fields
+  "A row's fields from its runs: the kept runs summarized, the spec, and which
+  run failed if one did."
+  [ran {:keys [measure runs drop higher] :or {runs 1 drop 0}}]
+  (let [kept (nthrest ran drop)
+        failed (when-not (zero? (:exit (peek ran))) (count ran))]
+    (cond-> (merge {:measure measure} (when (seq kept) (summarize-runs kept)))
+      (> runs 1) (assoc :runs runs)
+      (pos? drop) (assoc :drop drop)
+      (seq higher) (assoc :higher higher)
+      (and failed (> runs 1)) (assoc :failed-run failed))))
+
 (defn- run-measure
   "Run the item's measurement --runs times, drop the first --drop, and log one
   :measure/ran row, which is returned (with :ask if it opened a plateau ask).
   A failed run ends the measurement; the row has the runs kept so far and the
   failing run's exit."
-  [session {:keys [id measure runs drop higher] :or {runs 1 drop 0}}]
+  [session {:keys [id measure runs] :or {runs 1} :as item}]
   (let [env (environment (:repo (status/project (store/read-events session))))
         ran (run-in-repo session "measures" measure
                          (fn [events ran]
-                           (let [mid (next-id "m" :measure/ran events)
-                                 kept (nthrest ran drop)
-                                 failed (when-not (zero? (:exit (peek ran))) (count ran))]
-                             [mid (cond-> (merge {:type :measure/ran :measure/id mid :item/id id :measure measure :env env}
-                                                 (when (seq kept) (summarize-runs kept)))
-                                    (> runs 1) (assoc :runs runs)
-                                    (pos? drop) (assoc :drop drop)
-                                    (seq higher) (assoc :higher higher)
-                                    (and failed (> runs 1)) (assoc :failed-run failed))]))
+                           (let [mid (next-id "m" :measure/ran events)]
+                             [mid (merge {:type :measure/ran :measure/id mid :item/id id :env env}
+                                         (measure-fields ran item))]))
                          :n runs)]
     (if-let [ask (plateau-ask! session ran)] (assoc ran :ask ask) ran)))
+
+(defn try-measure
+  "Run cmd exactly as an item's measurement would (sh -c in the repo, runs,
+  drop, name=number values, wall time) and return the row with the last run's
+  :exit and :output. Logs nothing and keeps no output file: for trying a
+  candidate in lume repl before it goes into a spec."
+  [session cmd & {:keys [runs drop higher] :or {runs 1 drop 0}}]
+  (let [ran (run-repeated session (:repo (status/project (store/read-events session))) cmd runs (fn [_ _]))
+        {:keys [exit output]} (peek ran)]
+    (merge {:exit exit} (measure-fields ran {:measure cmd :runs runs :drop drop :higher higher})
+           {:output output})))
 
 (defn- measure-row
   "The ledger row, not the output: the numbers and wall time against the
@@ -1192,8 +1214,9 @@
 (def ^:private repl-usage "usage: lume repl [<session>] [--port N]")
 
 (defn repl-ns!
-  "Set up ns-sym for working on session: events, state, render, refresh! and
-  the lume namespaces aliased. refresh! re-reads the log, for a live session."
+  "Set up ns-sym for working on session: events, state, render, refresh!,
+  measure and the lume namespaces aliased. refresh! re-reads the log, for a
+  live session; measure is try-measure on it."
   [ns-sym session]
   (let [sid (store/session-id session)]
     (binding [*ns* (create-ns ns-sym)]
@@ -1214,6 +1237,9 @@
       (intern ns-sym 'sid sid)
       (intern ns-sym 'refresh! refresh!)
       (intern ns-sym 'render render)
+      (intern ns-sym 'measure (fn measure
+                                ([cmd] (measure cmd {}))
+                                ([cmd opts] (try-measure session cmd opts))))
       (refresh!))))
 
 (defn start-repl
@@ -1231,7 +1257,9 @@
                      [(str "lume repl · " (store/session-id session) " · " n " events · nREPL on 127.0.0.1:" port)
                       (str "connect: clj-nrepl-eval -p " port " \"(count events)\"")
                       (str "in " ns ": events, state (status/project events), (render) status now, (render N) after event N,")
-                      "  (refresh!) re-reads the log; aliases store status spec agents cli str"
+                      "  (refresh!) re-reads the log, (measure \"<cmd>\" {:runs N :drop K :higher [..]}) runs a"
+                      "  candidate measurement as a spec would and returns the row, unlogged;"
+                      "  aliases store status spec agents cli str"
                       "runs until killed; logs repl/opened and writes nothing else"])}))
 
 (defn repl [root args]
