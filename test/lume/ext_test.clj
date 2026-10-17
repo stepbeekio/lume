@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [lume.ext :as ext]
             [lume.features :as features]
+            [lume.inspect :as inspect]
             [lume.item :as item]
             [lume.kernel :as kernel]
             [lume.session :as session]
@@ -52,6 +53,25 @@
 (defn- render [s]
   (binding [kernel/*features* (ext/with-extensions features/all s)]
     (status/render "sess" (store/read-events s) (Instant/now))))
+
+(deftest loading-an-extension-drops-no-repl-names
+  ;; bb's require writes the namespace map back from a snapshot, so an ns form
+  ;; loading in one thread could drop what a repl's set-up interned in another
+  ;; (i97); both hold kernel/ns-lock.
+  (let [s (new-session "goal")
+        path (put! s "tallyrace")
+        _ (lume s "ext" "approve" path)
+        stop (atom false)
+        loads (doall (for [_ (range 3)]
+                       (future (while (not @stop) (ext/with-extensions features/all s)))))
+        missing (doall (for [i (range 500)
+                             :let [ns-sym (symbol (str "lume.ext-race-" (System/nanoTime) "-" i))]]
+                         (try (inspect/repl-ns! ns-sym s)
+                              (filterv #(nil? (ns-resolve ns-sym %)) '[events state session sid refresh! render measure])
+                              (finally (remove-ns ns-sym)))))]
+    (reset! stop true)
+    (run! deref loads)
+    (is (= [] (apply concat missing)))))
 
 (deftest extensions-load-only-as-approved
   (let [s (new-session "goal")

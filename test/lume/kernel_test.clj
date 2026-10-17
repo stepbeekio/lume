@@ -759,9 +759,9 @@
 (defn- nrepl-eval
   "Evaluate code in ns over nREPL at port: the value, or the error's message."
   [port ns code]
-  (require 'bencode.core)
-  (let [write (resolve 'bencode.core/write-bencode)
-        read (resolve 'bencode.core/read-bencode)
+  ;; Not require: see kernel/ns-lock.
+  (let [write (requiring-resolve 'bencode.core/write-bencode)
+        read (requiring-resolve 'bencode.core/read-bencode)
         text #(if (bytes? %) (String. ^bytes %) %)]
     (with-open [sock (java.net.Socket. "127.0.0.1" (int port))]
       (let [out (.getOutputStream sock)

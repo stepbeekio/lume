@@ -96,6 +96,13 @@
 (defn features []
   (or *features* (throw (IllegalStateException. "no features bound: bind lume.kernel/*features*"))))
 
+(def ns-lock
+  "Held while lume changes namespaces at runtime (loading an extension, setting
+  up a repl's). bb's require (an ns form's too) writes back the whole namespace
+  map from a snapshot, so one running in another thread can drop interns made
+  meanwhile; parallel tests do both at once."
+  (Object.))
+
 (defn events
   "Every declared event type: {type {:req #{keys} :human true?}}."
   []

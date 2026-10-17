@@ -156,7 +156,7 @@
   (if-let [why (or (name-why name features) (source-why name src))]
     [nil why]
     (try
-      (load-file path)
+      (locking kernel/ns-lock (load-file path))
       (let [f (some-> (ns-resolve (symbol (str "lume.ext." name)) 'feature) deref)]
         (if-let [why (feature-why name f)] [nil why] [f nil]))
       (catch Exception x [nil (str "it failed to load: " (ex-message x))]))))

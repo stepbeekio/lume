@@ -171,30 +171,33 @@
   live session; measure is try-measure on it."
   [ns-sym session]
   (let [sid (store/session-id session)]
-    (binding [*ns* (create-ns ns-sym)]
-      (refer-clojure)
-      (require '[clojure.string :as str] '[lume.store :as store] '[lume.status :as status]
-               '[lume.spec :as spec] '[lume.agents :as agents] '[lume.kernel :as kernel]))
     (letfn [(refresh! []
-              (let [events (store/read-events session)]
-                (intern ns-sym 'events events)
-                (intern ns-sym 'state (status/project events))
+              (let [events (store/read-events session)
+                    state (status/project events)]
+                (locking kernel/ns-lock
+                  (intern ns-sym 'events events)
+                  (intern ns-sym 'state state))
                 (count events)))
             (render
               ([] (status/render sid @(ns-resolve ns-sym 'events) (Instant/now) {}))
               ([n] (let [events @(ns-resolve ns-sym 'events)]
                      (status/render sid (subvec events 0 n) (Instant/parse (:t (nth events (dec n))))
                                     {:replay {:of (count events)}}))))]
-      (intern ns-sym 'session session)
-      (intern ns-sym 'sid sid)
-      (intern ns-sym 'refresh! refresh!)
-      (intern ns-sym 'render render)
-      (intern ns-sym 'measure (fn measure
-                                ([cmd] (measure cmd {}))
-                                ;; nREPL evaluates outside the run's binding.
-                                ([cmd opts] (binding [kernel/*features* (or kernel/*features*
-                                                                            @(requiring-resolve 'lume.features/all))]
-                                              (measure/try-measure session cmd opts)))))
+      (locking kernel/ns-lock
+        (binding [*ns* (create-ns ns-sym)]
+          (refer-clojure)
+          (require '[clojure.string :as str] '[lume.store :as store] '[lume.status :as status]
+                   '[lume.spec :as spec] '[lume.agents :as agents] '[lume.kernel :as kernel]))
+        (intern ns-sym 'session session)
+        (intern ns-sym 'sid sid)
+        (intern ns-sym 'refresh! refresh!)
+        (intern ns-sym 'render render)
+        (intern ns-sym 'measure (fn measure
+                                  ([cmd] (measure cmd {}))
+                                  ;; nREPL evaluates outside the run's binding.
+                                  ([cmd opts] (binding [kernel/*features* (or kernel/*features*
+                                                                              @(requiring-resolve 'lume.features/all))]
+                                                (measure/try-measure session cmd opts))))))
       (refresh!))))
 
 (defn start-repl
